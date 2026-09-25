@@ -1,0 +1,9 @@
+{
+  "id": "tuple-to-userset",
+  "owner_task": "task-1",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4",
+  "production": "relationDefRewrite/rewriteTuplesetName",
+  "expected_parse": "accept",
+  "evidence": "upstream-executed",
+  "notes": "Tuple-to-userset rewrite with a tupleset and computed relation."
+}

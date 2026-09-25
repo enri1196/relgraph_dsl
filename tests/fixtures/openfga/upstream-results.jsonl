@@ -1,0 +1,10 @@
+{"fixture_id":"missing-header","accepted":false,"diagnostic_count":3}
+{"fixture_id":"unknown-character","accepted":false,"diagnostic_count":2}
+{"fixture_id":"computed-userset","accepted":true,"diagnostic_count":0}
+{"fixture_id":"difference","accepted":true,"diagnostic_count":0}
+{"fixture_id":"direct-assignment","accepted":true,"diagnostic_count":0}
+{"fixture_id":"intersection","accepted":true,"diagnostic_count":0}
+{"fixture_id":"multiline-header","accepted":true,"diagnostic_count":0}
+{"fixture_id":"simple-condition","accepted":true,"diagnostic_count":0}
+{"fixture_id":"tuple-to-userset","accepted":true,"diagnostic_count":0}
+{"fixture_id":"union","accepted":true,"diagnostic_count":0}

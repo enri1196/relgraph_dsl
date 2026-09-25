@@ -1,0 +1,12 @@
+{
+  "id": "missing-header",
+  "owner_task": "task-1",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4",
+  "production": "main/modelHeader-or-moduleHeader",
+  "expected_parse": "reject",
+  "evidence": "upstream-executed",
+  "notes": "A type declaration cannot replace the required document header.",
+  "error_code": "UnexpectedToken",
+  "span_start": 0,
+  "span_end": 4
+}
