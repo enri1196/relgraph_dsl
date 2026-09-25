@@ -1,0 +1,5 @@
+model
+schema 1.1
+type b
+  relations
+    define team--: b

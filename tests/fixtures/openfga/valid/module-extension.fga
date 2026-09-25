@@ -1,0 +1,4 @@
+module team-access
+extend type document
+  relations
+    define viewer: [user]

@@ -1,0 +1,9 @@
+{
+  "id": "grouped-left-direct-assignment",
+  "owner_task": "3",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L19-L41",
+  "production": "relationDef, relationRecurse",
+  "expected_parse": "accept",
+  "evidence": "grammar-derived",
+  "notes": "A direct assignment may be the left/base relation expression, including inside parentheses."
+}

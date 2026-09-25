@@ -465,7 +465,12 @@ fn bytes_string_length(input: &str) -> usize {
     if !matches!(bytes.first(), Some(b'b' | b'B')) {
         return 0;
     }
-    string_length(&input[1..]).checked_add(1).unwrap_or(0)
+    let content_length = string_length(&input[1..]);
+    if content_length == 0 {
+        0
+    } else {
+        content_length + 1
+    }
 }
 
 fn string_length(input: &str) -> usize {

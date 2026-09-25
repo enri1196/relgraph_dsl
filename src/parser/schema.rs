@@ -1,8 +1,6 @@
 use nom::{IResult, Parser, error::Error};
 
-use super::common::{
-    Res, TokenInput, expect_kind, parse_extended_identifier, parse_identifier, skip_layout,
-};
+use super::common::{Res, TokenInput, expect_kind, parse_extended_identifier, parse_identifier};
 use super::condition::parse_condition_definition;
 use super::lexer::{Token, TokenKind, lex};
 use super::relation::parse_relations_block;
@@ -10,6 +8,7 @@ use crate::ast::{Schema, SchemaHeader, TypeDefinition};
 use crate::diagnostics::{ParseError, ParseErrorCode, SourceSpan};
 
 fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
+    let (input, _) = skip_header_comments(input)?;
     match input.first().map(|token| token.kind) {
         Some(TokenKind::Model) => {
             let (input, model) = expect_kind(input, TokenKind::Model)?;
@@ -17,6 +16,7 @@ fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
             let (input, _) = expect_kind(input, TokenKind::Schema)?;
             let (input, _) = expect_kind(input, TokenKind::Whitespace)?;
             let (input, version) = expect_kind(input, TokenKind::SchemaVersion)?;
+            let input = take_optional_whitespace(input);
             let header = SchemaHeader::ModelSchema {
                 version: input.text(&version).to_string(),
             };
@@ -38,6 +38,7 @@ fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
                 .first()
                 .map_or(module.span.end, |token| token.span.end);
             let (input, name) = parse_identifier(input)?;
+            let input = take_optional_whitespace(input);
             Ok((
                 input,
                 (
@@ -53,6 +54,35 @@ fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
             input,
             nom::error::ErrorKind::Alt,
         ))),
+    }
+}
+
+fn skip_header_comments(mut input: TokenInput<'_>) -> Res<'_, ()> {
+    while input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Hash)
+    {
+        input = input.tail();
+        while input
+            .first()
+            .is_some_and(|token| token.kind != TokenKind::Newline)
+        {
+            input = input.tail();
+        }
+        let (rest, _) = expect_kind(input, TokenKind::Newline)?;
+        input = rest;
+    }
+    Ok((input, ()))
+}
+
+fn take_optional_whitespace(input: TokenInput<'_>) -> TokenInput<'_> {
+    if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Whitespace)
+    {
+        input.tail()
+    } else {
+        input
     }
 }
 
@@ -76,12 +106,14 @@ fn parse_type_definition(
     let name_end = input.first().map_or(0, |token| token.span.end);
     let (input, name) = parse_extended_identifier(input)?;
 
-    let (after_layout, relation_comments) = skip_layout(input)?;
-    let (rest, relations) = if after_layout
-        .first()
-        .is_some_and(|token| token.kind == TokenKind::Relations)
-    {
-        parse_relations_block(after_layout, relation_comments)?
+    let (rest, relations) = if input.first().is_some_and(|token| {
+        token.kind == TokenKind::Newline
+            && input
+                .tail()
+                .first()
+                .is_some_and(|next| next.kind == TokenKind::Relations)
+    }) {
+        parse_relations_block(input.tail(), Vec::new())?
     } else {
         (input, Vec::new())
     };
@@ -106,35 +138,61 @@ fn parse_type_definition(
 }
 
 fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Schema> {
-    let (input, _) = skip_layout(input)?;
-    let (input, (header, header_span)) = parse_header(input)?;
-    let (mut input, mut pending_comments) = skip_layout(input)?;
+    let input = if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Whitespace)
+    {
+        input.tail()
+    } else {
+        input
+    };
+    let input = if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Newline)
+    {
+        input.tail()
+    } else {
+        input
+    };
+    let (mut input, (header, header_span)) = parse_header(input)?;
 
     let mut type_definitions = Vec::new();
     loop {
-        if !input
+        let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
+            break;
+        };
+        if !declaration
             .first()
             .is_some_and(|token| matches!(token.kind, TokenKind::Type | TokenKind::Extend))
         {
             break;
         }
-        let (rest, type_definition) = parse_type_definition(input, pending_comments)?;
+        let (rest, type_definition) = parse_type_definition(declaration, comments)?;
         type_definitions.push(type_definition);
-        let (next, comments) = skip_layout(rest)?;
-        input = next;
-        pending_comments = comments;
+        input = rest;
     }
 
     let mut condition_definitions = Vec::new();
-    while input
-        .first()
-        .is_some_and(|token| token.kind == TokenKind::Condition)
-    {
-        let (rest, condition) = parse_condition_definition(input, pending_comments, source)?;
+    loop {
+        let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
+            break;
+        };
+        if !declaration
+            .first()
+            .is_some_and(|token| token.kind == TokenKind::Condition)
+        {
+            break;
+        }
+        let (rest, condition) = parse_condition_definition(declaration, comments, source)?;
         condition_definitions.push(condition);
-        let (next, comments) = skip_layout(rest)?;
-        input = next;
-        pending_comments = comments;
+        input = rest;
+    }
+
+    if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Newline)
+    {
+        input = input.tail();
     }
 
     if input.is_empty() {

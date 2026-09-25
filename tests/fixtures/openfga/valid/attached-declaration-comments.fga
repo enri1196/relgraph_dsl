@@ -1,0 +1,8 @@
+# header note is discarded
+model
+schema 1.1
+# type note
+type document
+  relations
+    # relation note
+    define viewer: [user]

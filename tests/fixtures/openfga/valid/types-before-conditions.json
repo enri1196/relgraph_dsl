@@ -1,0 +1,9 @@
+{
+  "id": "types-before-conditions",
+  "owner_task": "3",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L4-L4,L12-L16,L52-L59",
+  "production": "typeDefs, conditions",
+  "expected_parse": "accept",
+  "evidence": "grammar-derived",
+  "notes": "The document accepts type declarations followed by condition declarations."
+}

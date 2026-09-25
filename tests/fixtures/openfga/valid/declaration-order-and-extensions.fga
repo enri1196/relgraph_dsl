@@ -1,0 +1,8 @@
+model
+schema 1.2
+type document
+  relations
+    define viewer: reader
+extend type document
+  relations
+    define reader: [user]

@@ -1,0 +1,12 @@
+{
+  "id": "version-three-components",
+  "owner_task": "3",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L7-L7",
+  "production": "schemaVersion",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "The DSL header version token has exactly two numeric components.",
+  "error_code": "UnexpectedToken",
+  "span_start": 16,
+  "span_end": 18
+}

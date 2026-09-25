@@ -1,0 +1,5 @@
+model
+schema 2.0
+type team/access
+  relations
+    define relation: type

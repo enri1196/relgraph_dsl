@@ -156,6 +156,58 @@ pub(super) fn skip_layout<'a>(mut input: TokenInput<'a>) -> Res<'a, Vec<String>>
     Ok((input, comments))
 }
 
+/// Recognizes the pinned grammar's declaration prefix: a required newline,
+/// optionally followed by one or more grammar-attached `#` comment lines and
+/// the newline that terminates that comment block.
+///
+/// This is deliberately separate from `skip_layout`: declaration boundaries
+/// are significant, and comments are only consumed where a production allows
+/// `multiLineComment`.
+pub(super) fn declaration_prefix<'a>(
+    input: TokenInput<'a>,
+) -> Option<(TokenInput<'a>, Vec<String>)> {
+    if input.first()?.kind != TokenKind::Newline {
+        return None;
+    }
+
+    let mut rest = input.tail();
+    let mut comments = Vec::new();
+    while rest
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Hash)
+    {
+        rest = rest.tail();
+        let mut text = String::new();
+        while let Some(token) = rest.first() {
+            if token.kind == TokenKind::Newline {
+                break;
+            }
+            text.push_str(rest.text(token));
+            rest = rest.tail();
+        }
+        if !rest
+            .first()
+            .is_some_and(|token| token.kind == TokenKind::Newline)
+        {
+            return None;
+        }
+        comments.push(text.trim().to_string());
+        rest = rest.tail();
+    }
+
+    Some((rest, comments))
+}
+
+pub(super) fn skip_horizontal_whitespace<'a>(mut input: TokenInput<'a>) -> TokenInput<'a> {
+    while input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Whitespace)
+    {
+        input = input.tail();
+    }
+    input
+}
+
 pub(super) fn is_identifier_kind(kind: TokenKind) -> bool {
     matches!(
         kind,

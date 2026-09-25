@@ -216,6 +216,115 @@ fn reports_lexical_errors_first_with_utf8_scalar_spans() {
 }
 
 #[test]
+fn parses_header_versions_names_extensions_and_declaration_comments() {
+    for input in [
+        "model\nschema 1.2",
+        "model\nschema 2.0",
+        "model\nschema 01.02",
+        "module team-access",
+        "module model",
+        "model\nschema 1.1\ntype team/access\n  relations\n    define team/access: team/access\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define viewer: [user, group#member, user:*]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define viewer: [user] or viewer\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define viewer: (writer and editor) or owner\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define union: a or b or c\n    define intersection: a and b and c\n    define difference: a but not b\n",
+        "# discarded header note\nmodel\nschema 1.1\n# type note\ntype document\n  relations\n    # relation note\n    define viewer: [user]\n",
+    ] {
+        let parsed = openfga_dsl::parse_fga_schema(input);
+        assert!(
+            parsed.is_ok(),
+            "expected valid grammar input to parse: {input:?}; got {parsed:?}"
+        );
+    }
+
+    let schema = openfga_dsl::parse_fga_schema(
+        "model\nschema 1.1\ntype document\n  relations\n    define union: a or b or c\n    define intersection: a and b and c\n    define difference: a but not b\n",
+    )
+    .expect("homogeneous rewrite chains should parse");
+    let union = &schema.type_definitions[0].relations[0]
+        .definition
+        .expression;
+    assert!(matches!(
+        union,
+        openfga_dsl::ast::RelationExpression::Union(left, right)
+            if matches!(left.as_ref(), openfga_dsl::ast::RelationExpression::Union(_, _))
+                && matches!(right.as_ref(), openfga_dsl::ast::RelationExpression::ComputedUserset(name) if name == "c")
+    ));
+    assert!(matches!(
+        &schema.type_definitions[0].relations[1]
+            .definition
+            .expression,
+        openfga_dsl::ast::RelationExpression::Intersection(left, right)
+            if matches!(left.as_ref(), openfga_dsl::ast::RelationExpression::Intersection(_, _))
+                && matches!(right.as_ref(), openfga_dsl::ast::RelationExpression::ComputedUserset(name) if name == "c")
+    ));
+    assert!(matches!(
+        schema.type_definitions[0].relations[2]
+            .definition
+            .expression,
+        openfga_dsl::ast::RelationExpression::Difference(_, _)
+    ));
+
+    let schema = openfga_dsl::parse_fga_schema(
+        "# ignored header comments\nmodel\nschema 1.1\n# type documentation\ntype document\n",
+    )
+    .expect("header-only types and attached comments should parse");
+    assert_eq!(
+        schema.type_definitions[0].comments_before,
+        vec!["type documentation"]
+    );
+
+    let schema = openfga_dsl::parse_fga_schema(
+        "# header note\nmodel\nschema 1.1\n# type note\ntype document\n  relations\n    # relation note\n    define viewer: [user]\n",
+    )
+    .expect("grammar-attached comments should parse");
+    assert_eq!(schema.type_definitions[0].comments_before, ["type note"]);
+    assert_eq!(
+        schema.type_definitions[0].relations[0].comments_before,
+        ["relation note"]
+    );
+}
+
+#[test]
+fn rejects_non_grammar_headers_declarations_and_rewrites() {
+    for input in [
+        "model schema 1.1",
+        "model\nschema 1",
+        "model\nschema 1.",
+        "model\nschema .1",
+        "model\nschema 1.1.0",
+        "model\nschema v1.1",
+        "model\nschema 1.1suffix",
+        "module team/access",
+        "module team.access",
+        "model\nschema 1.1 type document",
+        "model\nschema 1.1\ntype document relations\n    define viewer: [user]\n",
+        "model\nschema 1.1\ntype document\n  relations\n",
+        "model\nschema 1.1\ncondition c(value: bool) { true }\ntype document\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define empty: []\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define trailing: [user,]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define malformed: [user#*]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define malformed: [user:member]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define malformed: [group#member:*]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define mixed: a and b or c\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define repeated: a but not b but not c\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define missing: a or\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or [user]\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or ([user])\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or (([user]))\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or\n      b\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a # not a grammar comment\n",
+        "model\nschema 1.1\ntype document\n# trailing prose\n",
+        "model\nschema 1.1\nmodel\nschema 1.2\n",
+    ] {
+        assert!(
+            openfga_dsl::parse_fga_schema(input).is_err(),
+            "expected invalid grammar input to fail: {input:?}"
+        );
+    }
+}
+
+#[test]
 fn honors_identifier_priority_module_names_and_line_endings() {
     for newline in ["\n", "\r\n", "\r", " \u{000c}\n "] {
         let source = format!("model{newline}schema 1.1{newline}type modelx--{newline}");

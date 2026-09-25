@@ -1,0 +1,12 @@
+{
+  "id": "empty-restriction-list",
+  "owner_task": "3",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L41-L50",
+  "production": "relationDefDirectAssignment",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "A direct assignment requires at least one restriction.",
+  "error_code": "UnexpectedToken",
+  "span_start": 64,
+  "span_end": 65
+}

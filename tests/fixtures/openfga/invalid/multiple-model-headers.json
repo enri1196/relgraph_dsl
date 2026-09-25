@@ -1,0 +1,12 @@
+{
+  "id": "multiple-model-headers",
+  "owner_task": "3",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L4-L9",
+  "production": "main",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "A document has exactly one model or module header.",
+  "error_code": "UnexpectedToken",
+  "span_start": 17,
+  "span_end": 22
+}

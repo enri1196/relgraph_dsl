@@ -1,0 +1,6 @@
+model
+schema 1.1
+type document
+  relations
+    define
+      viewer: [user]

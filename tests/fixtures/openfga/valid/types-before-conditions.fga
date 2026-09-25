@@ -1,0 +1,4 @@
+model
+schema 1.2
+type document
+condition can_view(user: string) { user == "alice" }

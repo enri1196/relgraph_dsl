@@ -1,8 +1,6 @@
 use nom::{error::Error, error::ErrorKind};
 
-use super::common::{
-    Res, TokenInput, expect_kind, parse_extended_identifier, skip_layout, span_from_consumed,
-};
+use super::common::{Res, TokenInput, expect_kind, parse_extended_identifier, span_from_consumed};
 use super::lexer::TokenKind;
 use crate::ast::{Relation, RelationDefinitionBody, RelationExpression, RelationTarget};
 
@@ -62,33 +60,45 @@ fn parse_relation_target(input: TokenInput<'_>) -> Res<'_, RelationTarget> {
 
 fn parse_relation_target_list(input: TokenInput<'_>) -> Res<'_, Vec<RelationTarget>> {
     let (input, _) = expect_kind(input, TokenKind::LBracket)?;
-    let (mut input, _) = skip_layout(input)?;
+    let mut input = super::common::skip_horizontal_whitespace(input);
     let mut targets = Vec::new();
 
-    if input
-        .first()
-        .is_some_and(|token| token.kind == TokenKind::RBracket)
-    {
-        let (input, _) = expect_kind(input, TokenKind::RBracket)?;
-        return Ok((input, targets));
-    }
-
     loop {
-        let (rest, target) = parse_relation_target(input)?;
+        let (rest, target) = parse_relation_restriction(input)?;
         targets.push(target);
-        let (rest, _) = skip_layout(rest)?;
+        let rest = super::common::skip_horizontal_whitespace(rest);
         if rest
             .first()
             .is_some_and(|token| token.kind == TokenKind::Comma)
         {
             let (rest, _) = expect_kind(rest, TokenKind::Comma)?;
-            let (rest, _) = skip_layout(rest)?;
-            input = rest;
+            input = super::common::skip_horizontal_whitespace(rest);
             continue;
         }
         let (rest, _) = expect_kind(rest, TokenKind::RBracket)?;
         return Ok((rest, targets));
     }
+}
+
+fn parse_relation_restriction(input: TokenInput<'_>) -> Res<'_, RelationTarget> {
+    let input = if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Newline)
+    {
+        input.tail()
+    } else {
+        input
+    };
+    let (input, target) = parse_relation_target(input)?;
+    let input = if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Newline)
+    {
+        input.tail()
+    } else {
+        input
+    };
+    Ok((input, target))
 }
 
 fn parse_rewrite(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
@@ -113,33 +123,15 @@ fn parse_rewrite(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
     ))
 }
 
-fn parse_base_expression(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
-    let (input, _) = skip_layout(input)?;
-    match input.first().map(|token| token.kind) {
-        Some(TokenKind::LBracket) => {
-            let (input, targets) = parse_relation_target_list(input)?;
-            Ok((input, RelationExpression::DirectAssignment(targets)))
-        }
-        Some(TokenKind::LParen) => {
-            let (input, _) = expect_kind(input, TokenKind::LParen)?;
-            let (input, expression) = parse_relation_expression(input)?;
-            let (input, _) = skip_layout(input)?;
-            let (input, _) = expect_kind(input, TokenKind::RParen)?;
-            Ok((input, expression))
-        }
-        _ => parse_rewrite(input),
-    }
-}
-
 fn parse_right_term(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
-    let (input, _) = skip_layout(input)?;
     if input
         .first()
         .is_some_and(|token| token.kind == TokenKind::LParen)
     {
         let (input, _) = expect_kind(input, TokenKind::LParen)?;
-        let (input, expression) = parse_relation_expression(input)?;
-        let (input, _) = skip_layout(input)?;
+        let input = super::common::skip_horizontal_whitespace(input);
+        let (input, expression) = parse_no_direct_expression(input)?;
+        let input = super::common::skip_horizontal_whitespace(input);
         let (input, _) = expect_kind(input, TokenKind::RParen)?;
         Ok((input, expression))
     } else {
@@ -155,7 +147,18 @@ fn operator_kind(input: TokenInput<'_>) -> Option<TokenKind> {
 }
 
 fn parse_relation_expression(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
-    let (input, base) = parse_base_expression(input)?;
+    parse_expression(input, true)
+}
+
+fn parse_no_direct_expression(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
+    parse_expression(input, false)
+}
+
+fn parse_expression(
+    input: TokenInput<'_>,
+    direct_assignment_allowed: bool,
+) -> Res<'_, RelationExpression> {
+    let (input, base) = parse_expression_primary(input, direct_assignment_allowed)?;
     let (after_space, had_space) = take_whitespace(input);
     if !had_space {
         return Ok((input, base));
@@ -173,26 +176,28 @@ fn parse_relation_expression(input: TokenInput<'_>) -> Res<'_, RelationExpressio
     let mut terms = vec![first_term];
     rest = next;
 
-    loop {
-        let (after_space, had_space) = take_whitespace(rest);
-        if !had_space
-            || !after_space
-                .first()
-                .is_some_and(|token| token.kind == operator)
-        {
-            break;
+    if operator != TokenKind::ButNot {
+        loop {
+            let (after_space, had_space) = take_whitespace(rest);
+            if !had_space
+                || !after_space
+                    .first()
+                    .is_some_and(|token| token.kind == operator)
+            {
+                break;
+            }
+            let (after_operator, _) = expect_kind(after_space, operator)?;
+            let (after_required_space, had_space) = take_whitespace(after_operator);
+            if !had_space {
+                return Err(nom::Err::Error(Error::new(
+                    after_required_space,
+                    ErrorKind::Tag,
+                )));
+            }
+            let (next, term) = parse_right_term(after_required_space)?;
+            terms.push(term);
+            rest = next;
         }
-        let (after_operator, _) = expect_kind(after_space, operator)?;
-        let (after_required_space, had_space) = take_whitespace(after_operator);
-        if !had_space {
-            return Err(nom::Err::Error(Error::new(
-                after_required_space,
-                ErrorKind::Tag,
-            )));
-        }
-        let (next, term) = parse_right_term(after_required_space)?;
-        terms.push(term);
-        rest = next;
     }
 
     let expression = terms.into_iter().fold(base, |left, right| match operator {
@@ -202,6 +207,27 @@ fn parse_relation_expression(input: TokenInput<'_>) -> Res<'_, RelationExpressio
         _ => unreachable!("only rewrite operators are accepted"),
     });
     Ok((rest, expression))
+}
+
+fn parse_expression_primary(
+    input: TokenInput<'_>,
+    direct_assignment_allowed: bool,
+) -> Res<'_, RelationExpression> {
+    match input.first().map(|token| token.kind) {
+        Some(TokenKind::LBracket) if direct_assignment_allowed => {
+            let (input, targets) = parse_relation_target_list(input)?;
+            Ok((input, RelationExpression::DirectAssignment(targets)))
+        }
+        Some(TokenKind::LParen) => {
+            let (input, _) = expect_kind(input, TokenKind::LParen)?;
+            let input = super::common::skip_horizontal_whitespace(input);
+            let (input, expression) = parse_expression(input, direct_assignment_allowed)?;
+            let input = super::common::skip_horizontal_whitespace(input);
+            let (input, _) = expect_kind(input, TokenKind::RParen)?;
+            Ok((input, expression))
+        }
+        _ => parse_rewrite(input),
+    }
 }
 
 fn parse_relation(input: TokenInput<'_>, comments_before: Vec<String>) -> Res<'_, Relation> {
@@ -230,30 +256,31 @@ pub(super) fn parse_relations_block(
     _block_comments: Vec<String>,
 ) -> Res<'_, Vec<Relation>> {
     let (input, _) = expect_kind(input, TokenKind::Relations)?;
-    let (mut input, mut comments) = skip_layout(input)?;
+    let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)));
+    };
+    if !declaration
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::Define)
+    {
+        return Err(nom::Err::Error(Error::new(declaration, ErrorKind::Tag)));
+    }
     let mut relations = Vec::new();
 
+    let (mut input, relation) = parse_relation(declaration, comments)?;
+    relations.push(relation);
     loop {
-        if !input
+        let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
+            return Ok((input, relations));
+        };
+        if !declaration
             .first()
             .is_some_and(|token| token.kind == TokenKind::Define)
         {
-            if relations.is_empty() {
-                return Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)));
-            }
             return Ok((input, relations));
         }
-        let (rest, relation) = parse_relation(input, comments)?;
+        let (rest, relation) = parse_relation(declaration, comments)?;
         relations.push(relation);
-        let (next, next_comments) = skip_layout(rest)?;
-        if next
-            .first()
-            .is_some_and(|token| token.kind == TokenKind::Define)
-        {
-            input = next;
-            comments = next_comments;
-        } else {
-            return Ok((rest, relations));
-        }
+        input = rest;
     }
 }

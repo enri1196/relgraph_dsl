@@ -1,0 +1,7 @@
+model
+schema 1.1
+type document
+  relations
+    define union: a or b or c
+    define intersection: a and b and c
+    define difference: a but not b

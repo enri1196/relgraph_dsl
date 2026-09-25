@@ -1,0 +1,5 @@
+model
+schema 1.1
+type document
+  relations
+    define invalid: a but not b but not c
