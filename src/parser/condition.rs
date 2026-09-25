@@ -1,121 +1,124 @@
-use nom::{
-    Parser,
-    branch::alt,
-    bytes::complete::{tag, take_till},
-    character::complete::{char, multispace1},
-    combinator::map,
-    error::context,
-    multi::separated_list0,
-    sequence::{delimited, preceded, separated_pair},
-};
+use nom::{error::Error, error::ErrorKind};
 
-use super::common::{Res, fga_identifier, spnl};
+use super::common::{Res, TokenInput, expect_kind, skip_layout, span_from_consumed};
+use super::lexer::TokenKind;
 use crate::ast::{ConditionDefinition, ConditionParameter, ParameterType};
+use crate::diagnostics::SourceSpan;
 
-// Condition Parsing (Refined)
+fn parse_parameter_type(input: TokenInput<'_>) -> Res<'_, ParameterType> {
+    if input
+        .first()
+        .is_some_and(|token| token.kind == TokenKind::ConditionType)
+    {
+        let (input, simple) = expect_kind(input, TokenKind::ConditionType)?;
+        return Ok((
+            input,
+            ParameterType::Simple(input.text(&simple).to_string()),
+        ));
+    }
 
-fn parse_parameter_type<'a>(input: &'a str) -> Res<&'a str, ParameterType> {
-    // ANTLR: parameterType: CONDITION_PARAM_TYPE | (CONDITION_PARAM_CONTAINER LESS CONDITION_PARAM_TYPE GREATER);
-    // CONDITION_PARAM_TYPE: 'bool' | 'string' | 'int' | 'uint' | 'double' | 'duration' | 'timestamp' | 'ipaddress';
-    // CONDITION_PARAM_CONTAINER: 'map' | 'list';
-    let simple_type_parser = || {
-        alt((
-            tag("bool"),
-            tag("string"),
-            tag("int"),
-            tag("uint"),
-            tag("double"),
-            tag("duration"),
-            tag("timestamp"),
-            tag("ipaddress"),
-        ))
-    };
-
-    alt((
-        map(
-            (
-                alt((tag("list"), tag("map"))),
-                preceded(spnl, char('<')),
-                preceded(spnl, simple_type_parser()),
-                preceded(spnl, char('>')),
-            ),
-            |(container, _, inner, _)| ParameterType::Generic {
-                container: container.to_string(),
-                inner: inner.to_string(),
-            },
-        ),
-        map(simple_type_parser(), |s: &str| {
-            ParameterType::Simple(s.to_string())
-        }),
-    ))
-    .parse(input)
-}
-
-fn parse_condition_parameter<'a>(input: &'a str) -> Res<&'a str, ConditionParameter> {
-    context(
-        "condition_parameter",
-        map(
-            separated_pair(
-                preceded(spnl, fga_identifier), // parameterName
-                (spnl, char(':'), spnl),
-                parse_parameter_type, // parameterType
-            ),
-            |(name, param_type)| ConditionParameter { name, param_type },
-        ),
-    )
-    .parse(input)
-}
-
-fn parse_condition_parameters<'a>(input: &'a str) -> Res<&'a str, Vec<ConditionParameter>> {
-    context(
-        "condition_parameters",
-        delimited(
-            preceded(spnl, char('(')),
-            separated_list0((spnl, char(','), spnl), parse_condition_parameter),
-            preceded(spnl, char(')')),
-        ),
-    )
-    .parse(input)
-}
-
-// Parses the CEL expression part: { <CEL string> }
-fn parse_cel_expression_block<'a>(input: &'a str) -> Res<&'a str, String> {
-    context(
-        "cel_expression_block",
-        delimited(
-            preceded(spnl, char('{')),
-            map(
-                // Take everything until the balancing '}'
-                // This is a simplified way; a robust CEL parser would handle nested braces.
-                // For now, we find the *last* '}' on the assumption that CEL itself is well-formed.
-                // A better approach for nom would be to count braces or use a more context-aware take.
-                // For simplicity here, we'll take until the first '}' and assume no '}' in CEL strings.
-                // This is a known simplification.
-                take_till(|c| c == '}'),
-                |s: &str| s.trim().to_string(),
-            ),
-            preceded(spnl, char('}')),
-        ),
-    )
-    .parse(input)
-}
-
-pub(super) fn parse_condition_definition<'a>(input: &'a str) -> Res<&'a str, ConditionDefinition> {
-    let (i, comments_before) = spnl(input)?; // Consume comments/newlines before 'condition'
-    let (i, _) = tag("condition")(i)?;
-    let (i, _) = multispace1(i)?;
-    let (i, name) = fga_identifier(i)?; // conditionName
-    let (i, params) = parse_condition_parameters(i)?;
-    // spnl before '{' is handled by parse_cel_expression_block
-    let (i, expr) = parse_cel_expression_block(i)?;
-
+    let (input, container) = expect_kind(input, TokenKind::ConditionContainer)?;
+    let (input, _) = expect_kind(input, TokenKind::Less)?;
+    let (input, inner) = expect_kind(input, TokenKind::ConditionType)?;
+    let (input, _) = expect_kind(input, TokenKind::Greater)?;
     Ok((
-        i,
+        input,
+        ParameterType::Generic {
+            container: input.text(&container).to_string(),
+            inner: input.text(&inner).to_string(),
+        },
+    ))
+}
+
+fn parse_parameter(input: TokenInput<'_>) -> Res<'_, ConditionParameter> {
+    let start = input;
+    let name_token = input
+        .first()
+        .filter(|token| token.kind == TokenKind::Identifier)
+        .cloned()
+        .ok_or_else(|| nom::Err::Error(Error::new(input, ErrorKind::Tag)))?;
+    let (input, _) = expect_kind(input, TokenKind::Identifier)?;
+    let (input, _) = skip_layout(input)?;
+    let (input, _) = expect_kind(input, TokenKind::Colon)?;
+    let (input, _) = skip_layout(input)?;
+    let (input, param_type) = parse_parameter_type(input)?;
+    let span = span_from_consumed(start, input).unwrap_or(SourceSpan {
+        start: name_token.span.start,
+        end: name_token.span.end,
+    });
+    Ok((
+        input,
+        ConditionParameter {
+            name: start.text(&name_token).to_string(),
+            param_type,
+            span: Some(span),
+        },
+    ))
+}
+
+pub(super) fn parse_condition_definition<'a>(
+    input: TokenInput<'a>,
+    comments_before: Vec<String>,
+    source: &str,
+) -> Res<'a, ConditionDefinition> {
+    let (input, condition_token) = expect_kind(input, TokenKind::Condition)?;
+    let (input, _) = expect_kind(input, TokenKind::Whitespace)?;
+    let (input, name_token) = expect_kind(input, TokenKind::Identifier)?;
+    let (mut input, _) = expect_kind(input, TokenKind::LParen)?;
+
+    let mut parameters = Vec::new();
+    loop {
+        let (rest, _) = skip_layout(input)?;
+        let (rest, parameter) = parse_parameter(rest)?;
+        parameters.push(parameter);
+        let (rest, _) = skip_layout(rest)?;
+        if rest
+            .first()
+            .is_some_and(|token| token.kind == TokenKind::Comma)
+        {
+            input = rest.tail();
+            continue;
+        }
+        input = rest;
+        break;
+    }
+    let (input, _) = expect_kind(input, TokenKind::RParen)?;
+    let (input, _) = skip_layout(input)?;
+    let (input, open_brace) = expect_kind(input, TokenKind::LBrace)?;
+
+    let Some(close_index) = input
+        .iter()
+        .position(|token| token.kind == TokenKind::RBrace)
+    else {
+        return Err(nom::Err::Error(Error::new(
+            input.take_from(input.len()),
+            ErrorKind::Eof,
+        )));
+    };
+    let close_brace = input
+        .get(close_index)
+        .expect("position returned an in-range index");
+    let body_start = open_brace.span.end;
+    let body_end = close_brace.span.start;
+    let input_after_close = input.take_from(close_index + 1);
+    let expression = source
+        .get(body_start..body_end)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let span = SourceSpan {
+        start: condition_token.span.start,
+        end: close_brace.span.end,
+    };
+    Ok((
+        input_after_close,
         ConditionDefinition {
-            name,
-            parameters: params,
-            expression: expr,
+            name: input.text(&name_token).to_string(),
+            parameters,
+            expression,
             comments_before,
+            span: Some(span),
         },
     ))
 }

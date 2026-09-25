@@ -1,0 +1,12 @@
+{
+  "id": "module-extended-name",
+  "owner_task": "2",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L9-L9",
+  "production": "moduleHeader / identifier",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "Module names use identifier rather than extended_identifier, so slash-separated names are rejected.",
+  "error_code": "UnexpectedToken",
+  "span_start": 7,
+  "span_end": 18
+}

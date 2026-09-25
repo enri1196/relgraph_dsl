@@ -1,0 +1,9 @@
+{
+  "id": "identifier-token-priority",
+  "owner_task": "2",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L67-L69",
+  "production": "identifier / extended_identifier",
+  "expected_parse": "accept",
+  "evidence": "grammar-derived",
+  "notes": "A longer plain IDENTIFIER wins over a keyword prefix and retains repeated trailing hyphens; listed keyword tokens are valid extended_identifier alternatives."
+}

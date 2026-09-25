@@ -1,79 +1,222 @@
-use nom::{
-    IResult, Parser,
-    branch::alt,
-    bytes::complete::{tag, take_till, take_while1},
-    character::complete::{alpha1, alphanumeric1, multispace1, one_of},
-    combinator::{map, opt, recognize},
-    error::{Error, context},
-    multi::many0,
-    sequence::{pair, preceded, terminated},
-};
+use nom::{IResult, error::Error};
 
-pub(super) type Res<T, U> = IResult<T, U, Error<T>>;
+use super::lexer::{Token, TokenKind};
 
-// Consumes at least one EOL (CRLF, LF, CR, FF)
-fn eol_any<'a>(input: &'a str) -> Res<&'a str, &'a str> {
-    alt((tag("\r\n"), tag("\n"), tag("\r"), tag("\u{000C}"))).parse(input)
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TokenInput<'a> {
+    tokens: &'a [Token],
+    source: &'a str,
 }
 
-// `spnl` (space and newlines): consumes inline whitespace, comments (and their newlines), and any other newlines.
-// Returns collected comments.
-pub(super) fn spnl<'a>(input: &'a str) -> Res<&'a str, Vec<String>> {
-    map(
-        many0(alt((
-            map(multispace1, |_| None), // Consume any whitespace including newlines
-            map(
-                preceded(
-                    tag("#"),
-                    terminated(take_till(|c| c == '\n' || c == '\r'), eol_any),
-                ),
-                |s: &str| Some(s.trim().to_string()),
-            ), // # comment
-            map(
-                preceded(
-                    tag("//"),
-                    terminated(take_till(|c| c == '\n' || c == '\r'), eol_any),
-                ),
-                |s: &str| Some(s.trim().to_string()),
-            ), // // comment (for CEL, but good to have)
+impl<'a> TokenInput<'a> {
+    pub(super) fn new(tokens: &'a [Token], source: &'a str) -> Self {
+        Self { tokens, source }
+    }
+
+    pub(super) fn first(self) -> Option<&'a Token> {
+        self.tokens.first()
+    }
+
+    pub(super) fn is_empty(self) -> bool {
+        self.tokens.is_empty()
+    }
+
+    pub(super) fn len(self) -> usize {
+        self.tokens.len()
+    }
+
+    pub(super) fn tail(self) -> Self {
+        Self {
+            tokens: &self.tokens[1..],
+            source: self.source,
+        }
+    }
+
+    pub(super) fn take_from(self, index: usize) -> Self {
+        Self {
+            tokens: &self.tokens[index..],
+            source: self.source,
+        }
+    }
+
+    pub(super) fn take(self, count: usize) -> Self {
+        Self {
+            tokens: &self.tokens[..count],
+            source: self.source,
+        }
+    }
+
+    pub(super) fn get(self, index: usize) -> Option<&'a Token> {
+        self.tokens.get(index)
+    }
+
+    pub(super) fn iter(self) -> std::slice::Iter<'a, Token> {
+        self.tokens.iter()
+    }
+
+    pub(super) fn text(self, token: &Token) -> &'a str {
+        &self.source[token.span.start..token.span.end]
+    }
+}
+
+impl<'a> nom::Input for TokenInput<'a> {
+    type Item = Token;
+    type Iter = std::iter::Cloned<std::slice::Iter<'a, Token>>;
+    type IterIndices = std::iter::Enumerate<Self::Iter>;
+
+    fn input_len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    fn take(&self, index: usize) -> Self {
+        Self {
+            tokens: &self.tokens[..index],
+            source: self.source,
+        }
+    }
+
+    fn take_from(&self, index: usize) -> Self {
+        Self {
+            tokens: &self.tokens[index..],
+            source: self.source,
+        }
+    }
+
+    fn take_split(&self, index: usize) -> (Self, Self) {
+        let (prefix, suffix) = self.tokens.split_at(index);
+        (
+            Self {
+                tokens: suffix,
+                source: self.source,
+            },
+            Self {
+                tokens: prefix,
+                source: self.source,
+            },
+        )
+    }
+
+    fn position<P>(&self, predicate: P) -> Option<usize>
+    where
+        P: Fn(Self::Item) -> bool,
+    {
+        self.tokens.iter().cloned().position(predicate)
+    }
+
+    fn iter_elements(&self) -> Self::Iter {
+        self.tokens.iter().cloned()
+    }
+
+    fn iter_indices(&self) -> Self::IterIndices {
+        self.iter_elements().enumerate()
+    }
+
+    fn slice_index(&self, count: usize) -> Result<usize, nom::Needed> {
+        if count <= self.tokens.len() {
+            Ok(count)
+        } else {
+            Err(nom::Needed::new(count))
+        }
+    }
+}
+
+pub(super) type Res<'a, T> = IResult<TokenInput<'a>, T, Error<TokenInput<'a>>>;
+
+pub(super) fn expect_kind<'a>(input: TokenInput<'a>, kind: TokenKind) -> Res<'a, Token> {
+    match input.first() {
+        Some(token) if token.kind == kind => Ok((input.tail(), token.clone())),
+        _ => Err(nom::Err::Error(Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
         ))),
-        |v| v.into_iter().flatten().collect(),
-    )
-    .parse(input)
+    }
 }
 
-// Parses an FGA identifier: (LETTER | '_') (LETTER | DIGIT | '_' | MINUS)*
-pub(super) fn fga_identifier<'a>(input: &'a str) -> Res<&'a str, String> {
-    context(
-        "fga_identifier",
-        map(
-            recognize(pair(
-                alt((alpha1, tag("_"))),
-                many0(alt((alphanumeric1, tag("_"), tag("-")))),
-            )),
-            |s: &str| s.to_string(),
-        ),
-    )
-    .parse(input)
+pub(super) fn skip_layout<'a>(mut input: TokenInput<'a>) -> Res<'a, Vec<String>> {
+    let mut comments = Vec::new();
+    loop {
+        match input.first().map(|token| token.kind) {
+            Some(TokenKind::Whitespace | TokenKind::Newline) => input = input.tail(),
+            Some(TokenKind::Hash) => {
+                input = input.tail();
+                let mut text = String::new();
+                while let Some(token) = input.first() {
+                    if token.kind == TokenKind::Newline {
+                        input = input.tail();
+                        break;
+                    }
+                    text.push_str(input.text(token));
+                    input = input.tail();
+                }
+                comments.push(text.trim().to_string());
+            }
+            _ => break,
+        }
+    }
+    Ok((input, comments))
 }
 
-// Parses an FGA extended_identifier: (LETTER | '_')((SLASH | DOT | MINUS)?(LETTER | DIGIT | '_')+)*
-pub(super) fn fga_extended_identifier<'a>(input: &'a str) -> Res<&'a str, String> {
-    context(
-        "fga_extended_identifier",
-        map(
-            recognize(pair(
-                alt((alpha1, tag("_"))), // Starts with letter or underscore
-                many0(pair(
-                    // Zero or more segments
-                    opt(one_of("/.-")), // Optional separator
-                    take_while1(|c: char| c.is_alphanumeric() || c == '_'), // Followed by alphanumeric or underscore
-                )),
-            )),
-            |s: &str| s.to_string(),
-        ),
+pub(super) fn is_identifier_kind(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Module
+            | TokenKind::Model
+            | TokenKind::Schema
+            | TokenKind::Type
+            | TokenKind::Relation
+            | TokenKind::Extend
     )
-    .parse(input)
 }
 
-// Parses "model schema 1.1" line
+pub(super) fn is_extended_identifier_kind(kind: TokenKind) -> bool {
+    kind == TokenKind::ExtendedIdentifier || is_identifier_kind(kind)
+}
+
+pub(super) fn parse_identifier<'a>(input: TokenInput<'a>) -> Res<'a, String> {
+    match input.first() {
+        Some(token) if is_identifier_kind(token.kind) => {
+            Ok((input.tail(), input.text(token).to_string()))
+        }
+        _ => Err(nom::Err::Error(Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        ))),
+    }
+}
+
+pub(super) fn parse_extended_identifier<'a>(input: TokenInput<'a>) -> Res<'a, String> {
+    match input.first() {
+        Some(token) if is_extended_identifier_kind(token.kind) => {
+            Ok((input.tail(), input.text(token).to_string()))
+        }
+        _ => Err(nom::Err::Error(Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        ))),
+    }
+}
+
+pub(super) fn span_from_consumed(
+    start: TokenInput<'_>,
+    rest: TokenInput<'_>,
+) -> Option<crate::diagnostics::SourceSpan> {
+    let consumed = start.len().checked_sub(rest.len())?;
+    let consumed_tokens = start.take(consumed);
+    let first = consumed_tokens.iter().find(|token| {
+        !matches!(
+            token.kind,
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Hash
+        )
+    })?;
+    let last = consumed_tokens.iter().rev().find(|token| {
+        !matches!(
+            token.kind,
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Hash
+        )
+    })?;
+    Some(crate::diagnostics::SourceSpan {
+        start: first.span.start,
+        end: last.span.end,
+    })
+}

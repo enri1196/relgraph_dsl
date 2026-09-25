@@ -1,8 +1,11 @@
 //! Public syntax tree types for parsed OpenFGA schemas.
 
+use crate::diagnostics::SourceSpan;
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Schema {
     pub header: SchemaHeader,
+    pub header_span: Option<SourceSpan>,
     pub type_definitions: Vec<TypeDefinition>,
     pub condition_definitions: Vec<ConditionDefinition>,
 }
@@ -19,6 +22,7 @@ pub struct TypeDefinition {
     pub name: String,      // Extended identifier
     pub relations: Vec<Relation>,
     pub comments_before: Vec<String>,
+    pub span: Option<SourceSpan>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -26,6 +30,7 @@ pub struct Relation {
     pub name: String, // Extended identifier
     pub definition: RelationDefinitionBody,
     pub comments_before: Vec<String>,
+    pub span: Option<SourceSpan>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -62,12 +67,14 @@ pub struct ConditionDefinition {
     pub parameters: Vec<ConditionParameter>,
     pub expression: String, // CEL expression string
     pub comments_before: Vec<String>,
+    pub span: Option<SourceSpan>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ConditionParameter {
     pub name: String, // Identifier
     pub param_type: ParameterType,
+    pub span: Option<SourceSpan>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

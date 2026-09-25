@@ -4,7 +4,8 @@ use openfga_dsl::parse_fga_schema;
 fn main() {
     let fga_dsl_example_refined = r#"
 # This is a model header comment
-model schema 1.1
+model
+schema 1.1
 
 # This is a module header comment (alternative, only one header is allowed)
 # module my_store
@@ -71,7 +72,8 @@ condition specific_user_cond(param1: list<string>, param2: map<int>) {
     }
 
     let fga_invalid_mix = r#"
-model schema 1.1
+model
+schema 1.1
 type test
   relations
     define r: writer and editor or owner # Invalid mixing
@@ -94,7 +96,8 @@ type test
     }
 
     let fga_valid_mix_parens = r#"
-model schema 1.1
+model
+schema 1.1
 type test
   relations
     define r: (writer and editor) or owner # Valid mixing with parens

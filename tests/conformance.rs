@@ -169,7 +169,7 @@ fn fixtures() -> Vec<(PathBuf, FixtureMetadata)> {
 }
 
 #[test]
-fn syntax_fixtures_match_current_parser_acceptance() {
+fn syntax_fixtures_match_parser_acceptance_and_diagnostics() {
     for (path, metadata) in fixtures() {
         let input = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("could not read fixture {}: {error}", path.display()));
@@ -181,12 +181,23 @@ fn syntax_fixtures_match_current_parser_acceptance() {
                 path.display(),
                 metadata.id
             ),
-            "reject" => assert!(
-                parsed.is_err(),
-                "fixture {} ({}) should be rejected",
-                path.display(),
-                metadata.id
-            ),
+            "reject" => {
+                let error = parsed.unwrap_err();
+                assert_eq!(
+                    error.code.code(),
+                    metadata.error_code.as_deref().unwrap(),
+                    "fixture {} ({}) diagnostic code",
+                    path.display(),
+                    metadata.id
+                );
+                assert_eq!(
+                    (error.span.start, error.span.end),
+                    (metadata.span_start.unwrap(), metadata.span_end.unwrap()),
+                    "fixture {} ({}) diagnostic span",
+                    path.display(),
+                    metadata.id
+                );
+            }
             _ => unreachable!("fixture metadata validated during discovery"),
         }
     }

@@ -1,0 +1,12 @@
+{
+  "id": "same-line-model-header",
+  "owner_task": "2",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L7-L7",
+  "production": "modelHeader",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "MODEL must be followed by a NEWLINE token, not same-line WHITESPACE.",
+  "error_code": "UnexpectedToken",
+  "span_start": 5,
+  "span_end": 6
+}

@@ -1,5 +1,6 @@
 mod common;
 mod condition;
+mod lexer;
 mod relation;
 mod schema;
 
