@@ -3,6 +3,11 @@ name = "openfga_dsl"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["openfga-authz"]
+default-members = [".", "openfga-authz"]
+resolver = "3"
+
 [dependencies]
 nom = "8.0.0"
 serde = { version = "1", features = ["derive"] }
