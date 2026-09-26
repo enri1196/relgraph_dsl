@@ -1,6 +1,6 @@
 use openfga_dsl::{
-    ConditionDefinition, ParameterType, ParseErrorCode, RelationExpression, SchemaHeader,
-    SourceSpan, parse_fga_schema,
+    ConditionDefinition, ParameterType, ParseErrorCode, RelationCondition, RelationExpression,
+    SchemaHeader, SourceSpan, parse_fga_schema,
 };
 
 #[test]
@@ -64,7 +64,69 @@ fn parses_relation_target_restrictions_and_conditions() {
     assert_eq!(targets[0].target_type, "user");
     assert_eq!(targets[1].relation_or_wildcard.as_deref(), Some("member"));
     assert_eq!(targets[2].relation_or_wildcard.as_deref(), Some("*"));
-    assert_eq!(targets[2].condition.as_deref(), Some("can_view"));
+    assert_eq!(
+        targets[2].condition,
+        Some(RelationCondition::Named("can_view".to_string()))
+    );
+}
+
+#[test]
+fn parses_named_and_inline_relation_conditions() {
+    let schema = parse_fga_schema(
+        "model\nschema 1.2\ntype document\n  relations\n    define viewer: [user with can_view, group#member with $expression, document:* with can_view]\n",
+    )
+    .expect("named and inline restriction conditions should parse");
+
+    let RelationExpression::DirectAssignment(targets) = &schema.type_definitions[0].relations[0]
+        .definition
+        .expression
+    else {
+        panic!("expected a direct assignment");
+    };
+    assert_eq!(
+        targets[0].condition,
+        Some(RelationCondition::Named("can_view".to_string()))
+    );
+    assert_eq!(
+        targets[1].condition,
+        Some(RelationCondition::InlineExpression)
+    );
+    assert_eq!(
+        targets[2].condition,
+        Some(RelationCondition::Named("can_view".to_string()))
+    );
+
+    let unconditioned = parse_fga_schema(
+        "model\nschema 1.2\ntype document\n  relations\n    define viewer: [user, group#member with $expression, document:*]\n",
+    )
+    .expect("conditioned and unconditioned targets should mix");
+    let RelationExpression::DirectAssignment(targets) = &unconditioned.type_definitions[0]
+        .relations[0]
+        .definition
+        .expression
+    else {
+        panic!("expected a direct assignment");
+    };
+    assert_eq!(targets[0].condition, None);
+    assert_eq!(
+        targets[1].condition,
+        Some(RelationCondition::InlineExpression)
+    );
+    assert_eq!(targets[2].condition, None);
+}
+
+#[test]
+fn rejects_missing_and_invalid_inline_relation_conditions() {
+    for source in [
+        "model\nschema 1.2\ntype document\n  relations\n    define viewer: [user with]\n",
+        "model\nschema 1.2\ntype document\n  relations\n    define viewer: [user with $foo]\n",
+        "model\nschema 1.2\ntype document\n  relations\n    define viewer: [user with $expression_suffix]\n",
+    ] {
+        assert!(
+            parse_fga_schema(source).is_err(),
+            "invalid restriction condition should fail: {source:?}"
+        );
+    }
 }
 
 #[test]

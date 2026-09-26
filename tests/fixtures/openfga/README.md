@@ -20,5 +20,9 @@ restriction-list boundaries, homogeneous rewrite chains, grouping, and
 newline-sensitive declaration structure. Its fixtures have not yet been
 executed by the pinned Java runner; they remain `grammar-derived` until Task 10.
 
+Task 4 adds a grammar-derived restriction fixture covering named and inline
+conditions (`$expression`) alongside unconditioned targets. Rejected missing
+and malformed condition forms are covered by parser regressions.
+
 The pinned grammar and reference checksums are in `upstream/`. Maintainer tooling
 that executes the fixtures against the pinned grammar is in `../../../../tools/conformance/`.

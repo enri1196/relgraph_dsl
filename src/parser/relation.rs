@@ -2,7 +2,9 @@ use nom::{error::Error, error::ErrorKind};
 
 use super::common::{Res, TokenInput, expect_kind, parse_extended_identifier, span_from_consumed};
 use super::lexer::TokenKind;
-use crate::ast::{Relation, RelationDefinitionBody, RelationExpression, RelationTarget};
+use crate::ast::{
+    Relation, RelationCondition, RelationDefinitionBody, RelationExpression, RelationTarget,
+};
 
 fn take_whitespace(input: TokenInput<'_>) -> (TokenInput<'_>, bool) {
     if input
@@ -41,7 +43,16 @@ fn parse_relation_target(input: TokenInput<'_>) -> Res<'_, RelationTarget> {
     {
         let (rest, _) = expect_kind(after_space, TokenKind::With)?;
         let (rest, _) = expect_kind(rest, TokenKind::Whitespace)?;
-        let (rest, condition) = super::common::parse_identifier(rest)?;
+        let (rest, condition) = if rest
+            .first()
+            .is_some_and(|token| token.kind == TokenKind::DollarExpression)
+        {
+            let (rest, _) = expect_kind(rest, TokenKind::DollarExpression)?;
+            (rest, RelationCondition::InlineExpression)
+        } else {
+            let (rest, name) = super::common::parse_identifier(rest)?;
+            (rest, RelationCondition::Named(name))
+        };
         input = rest;
         Some(condition)
     } else {

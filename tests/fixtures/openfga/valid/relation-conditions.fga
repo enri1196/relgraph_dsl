@@ -1,0 +1,5 @@
+model
+schema 1.2
+type document
+  relations
+    define viewer: [user with can_view, group#member with $expression, document:*]

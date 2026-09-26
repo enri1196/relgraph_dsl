@@ -58,7 +58,16 @@ pub struct RelationTarget {
     pub target_type: String, // e.g., "user", "group", "document" (extended_identifier)
     pub relation_or_wildcard: Option<String>, // None for 'type', Some("relation") for 'type#relation', Some("*") for 'type:*'
     // relation here is an extended_identifier
-    pub condition: Option<String>, // Name of the condition for this specific target
+    pub condition: Option<RelationCondition>, // Condition applied to this specific target
+}
+
+/// A condition applied to a relationship restriction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationCondition {
+    /// A reference to a named condition definition.
+    Named(String),
+    /// The OpenFGA inline condition expression marker (`$expression`).
+    InlineExpression,
 }
 
 #[derive(Debug, PartialEq, Clone)]
