@@ -1,6 +1,6 @@
 # OpenFGA authorization for Axum
 
-Status: in progress; Task 1 is complete and Tasks 2–8 are TODO.
+Status: in progress; Tasks 1–2 are complete and Tasks 3–8 are TODO.
 
 ## 1. Goal and architecture decision
 
@@ -172,15 +172,15 @@ Implement `FgaAuthz::new(definition)`, parse/semantic diagnostic propagation, im
 
 Acceptance/tests: valid definition constructs; malformed syntax and unresolved references preserve diagnostics; relation expressions outside unconditional direct assignment, wildcard/condition restrictions, and relation dependency cycles are rejected; cloning shares compiled data; construction takes only definition text and performs no store I/O. Verified with `cargo test -p openfga-authz --all-targets` and `cargo test --workspace --all-targets`; the latter preserves parser-only regression coverage.
 
-### Task 2 — [TODO] Bind relationship data and deliver the first check
+### Task 2 — [DONE] Bind relationship data and deliver the first check
 
 Dependencies: Task 1.
 
 Files: `openfga-authz/src/authz/{mod,store,request,evaluator}.rs`, `openfga-authz/tests/authz_store.rs`, `openfga-authz/tests/authz_check.rs`.
 
-Implement `RelationshipStore`, read sessions, tuple validation, in-memory storage, binding, and `check`. Evaluate unconditional direct membership for concrete subjects. Establish structured identifiers, tenant scoping, limits, and error contracts.
+Implement `RelationshipStore`, read sessions, tuple validation, in-memory storage, binding, and `check`. Evaluate unconditional direct membership for concrete subjects. Establish structured identifiers, tenant scoping, limits, and error contracts. The store contract uses a typed associated read-session and bounded asynchronous futures; the in-memory store provides immutable read snapshots and keeps tenants separate. Tuples can retain userset, wildcard, and condition/context data, while the current evaluator rejects those tuple forms until their model capabilities are implemented. The first evaluation limit bounds returned tuples (1–100,000; default 10,000); graph depth and broader work budgets are introduced with traversal tasks.
 
-Acceptance/tests: matching tuple allows; absent tuple denies; invalid tuple and store failure return errors; unknown check relation/type is rejected; empty store is an explicit valid store; bound state is required to call `check`; identical IDs in different namespaces do not share decisions.
+Acceptance/tests: matching tuple allows; absent tuple denies; invalid tuple and store failure return errors; unknown check relation/type is rejected; empty store is an explicit valid store; bound state is required to call `check`; identical IDs in different namespaces do not share decisions. Store tests cover immutable sessions, tuple-limit exhaustion, and persisted condition-context preservation; check tests cover clone-shared store state. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
 ### Task 3 — [TODO] Execute compound relations and graph traversal
 

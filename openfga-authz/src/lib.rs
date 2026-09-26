@@ -7,6 +7,10 @@
 mod authz;
 
 pub use authz::{
-    Bound, CapabilityDiagnostic, ConstructionError, FgaAuthz, RelationExpressionKind,
-    RelationLocation, RuntimeCapability, Unbound,
+    AuthorizationDecision, AuthorizationError, Bound, CapabilityDiagnostic, CheckRequest,
+    ConditionContext, ConditionName, ConstructionError, EntityId, EvaluationLimits,
+    EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
+    InMemoryRelationshipStore, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, RuntimeCapability, StoreError,
+    StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound,
 };
