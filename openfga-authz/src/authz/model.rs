@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use openfga_dsl::{RelationCondition, RelationExpression, RelationTarget, Schema, validate_schema};
 
 use super::request::{
-    CapabilityDiagnostic, ConstructionError, RelationExpressionKind, RelationLocation,
-    RuntimeCapability,
+    CapabilityDiagnostic, ConstructionError, RelationLocation, RuntimeCapability,
 };
 
 /// The immutable model shared by all lifecycle handles.
@@ -128,45 +127,10 @@ fn inspect_expression(
                 inspect_target(target, location, span.clone(), diagnostics);
             }
         }
-        RelationExpression::ComputedUserset(_) => push_expression_error(
-            RuntimeCapability::RelationExpression(RelationExpressionKind::ComputedUserset),
-            location,
-            span,
-            diagnostics,
-        ),
-        RelationExpression::TupleToUserset { .. } => push_expression_error(
-            RuntimeCapability::RelationExpression(RelationExpressionKind::TupleToUserset),
-            location,
-            span,
-            diagnostics,
-        ),
-        RelationExpression::Union(left, right) => {
-            push_expression_error(
-                RuntimeCapability::RelationExpression(RelationExpressionKind::Union),
-                location,
-                span.clone(),
-                diagnostics,
-            );
-            inspect_expression(left, location, span.clone(), diagnostics);
-            inspect_expression(right, location, span, diagnostics);
-        }
-        RelationExpression::Intersection(left, right) => {
-            push_expression_error(
-                RuntimeCapability::RelationExpression(RelationExpressionKind::Intersection),
-                location,
-                span.clone(),
-                diagnostics,
-            );
-            inspect_expression(left, location, span.clone(), diagnostics);
-            inspect_expression(right, location, span, diagnostics);
-        }
-        RelationExpression::Difference(left, right) => {
-            push_expression_error(
-                RuntimeCapability::RelationExpression(RelationExpressionKind::Difference),
-                location,
-                span.clone(),
-                diagnostics,
-            );
+        RelationExpression::ComputedUserset(_) | RelationExpression::TupleToUserset { .. } => {}
+        RelationExpression::Union(left, right)
+        | RelationExpression::Intersection(left, right)
+        | RelationExpression::Difference(left, right) => {
             inspect_expression(left, location, span.clone(), diagnostics);
             inspect_expression(right, location, span, diagnostics);
         }
@@ -180,28 +144,6 @@ fn inspect_target(
     span: Option<openfga_dsl::SourceSpan>,
     diagnostics: &mut Vec<CapabilityDiagnostic>,
 ) {
-    match target.relation_or_wildcard.as_deref() {
-        Some("*") => diagnostics.push(CapabilityDiagnostic {
-            capability: RuntimeCapability::WildcardRestriction,
-            relation: Some(location.clone()),
-            span: span.clone(),
-            message: format!(
-                "typed wildcard subject '{}:*' is not supported yet",
-                target.target_type
-            ),
-        }),
-        Some(_) => diagnostics.push(CapabilityDiagnostic {
-            capability: RuntimeCapability::UsersetRestriction,
-            relation: Some(location.clone()),
-            span: span.clone(),
-            message: format!(
-                "userset subject restriction on type '{}' is not supported yet",
-                target.target_type
-            ),
-        }),
-        None => {}
-    }
-
     match target.condition {
         Some(RelationCondition::Named(_)) => diagnostics.push(CapabilityDiagnostic {
             capability: RuntimeCapability::ConditionalRelationship,
@@ -217,21 +159,6 @@ fn inspect_target(
         }),
         None => {}
     }
-}
-
-/// Records a relation expression that the current evaluator cannot execute.
-fn push_expression_error(
-    capability: RuntimeCapability,
-    location: &RelationLocation,
-    span: Option<openfga_dsl::SourceSpan>,
-    diagnostics: &mut Vec<CapabilityDiagnostic>,
-) {
-    diagnostics.push(CapabilityDiagnostic {
-        capability,
-        relation: Some(location.clone()),
-        span,
-        message: "only unconditional direct-assignment relations are supported yet".into(),
-    });
 }
 
 #[derive(Debug, Clone)]
@@ -472,5 +399,92 @@ mod tests {
         let document = model.type_id("document").unwrap();
         assert!(model.relation_id(document, "viewer").is_some());
         assert!(model.relation_id(document, "missing").is_none());
+    }
+
+    #[test]
+    fn evaluator_detects_in_flight_tuple_graph_cycles() {
+        use crate::authz::evaluator;
+        use crate::authz::request::{
+            AuthorizationError, CheckRequest, EvaluationLimits, ObjectRef, RelationName, Subject,
+            TenantId,
+        };
+        use crate::authz::store::{InMemoryRelationshipStore, RelationshipTuple, TupleSubject};
+        use std::collections::HashMap;
+        use std::future::Future;
+        use std::sync::Arc;
+        use std::task::{Context, Poll, Wake, Waker};
+
+        let schema = parse_fga_schema(
+            "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user, group#member]\ntype document\n  relations\n    define viewer: [group#member]\n",
+        )
+        .unwrap();
+        let mut type_index = HashMap::new();
+        let mut relation_index = HashMap::new();
+        let mut relation_count = 0;
+        for (type_id, type_definition) in schema.type_definitions.iter().enumerate() {
+            type_index.insert(type_definition.name.clone(), type_id);
+            for relation in &type_definition.relations {
+                relation_index.insert((type_id, relation.name.clone()), relation_count);
+                relation_count += 1;
+            }
+        }
+        let compiled = CompiledModel {
+            schema,
+            type_index,
+            relation_index,
+            relation_count,
+        };
+        let store = InMemoryRelationshipStore::new();
+        let tenant = TenantId::new("tenant-a").unwrap();
+        store
+            .insert(RelationshipTuple::new(
+                tenant.clone(),
+                ObjectRef::new("document", "42").unwrap(),
+                RelationName::new("viewer").unwrap(),
+                TupleSubject::Userset {
+                    object: ObjectRef::new("group", "8").unwrap(),
+                    relation: RelationName::new("member").unwrap(),
+                },
+            ))
+            .unwrap();
+        store
+            .insert(RelationshipTuple::new(
+                tenant.clone(),
+                ObjectRef::new("group", "8").unwrap(),
+                RelationName::new("member").unwrap(),
+                TupleSubject::Userset {
+                    object: ObjectRef::new("group", "8").unwrap(),
+                    relation: RelationName::new("member").unwrap(),
+                },
+            ))
+            .unwrap();
+        let request = CheckRequest::new(
+            tenant,
+            Subject::new("user", "anne").unwrap(),
+            ObjectRef::new("document", "42").unwrap(),
+            RelationName::new("viewer").unwrap(),
+        );
+
+        struct NoopWake;
+        impl Wake for NoopWake {
+            fn wake(self: Arc<Self>) {}
+        }
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(evaluator::check(
+            &compiled,
+            &store,
+            EvaluationLimits::default(),
+            &request,
+        ));
+        let result = loop {
+            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                break result;
+            }
+        };
+        assert!(matches!(
+            result,
+            Err(AuthorizationError::TupleGraphCycle { .. })
+        ));
     }
 }

@@ -1,4 +1,4 @@
-use openfga_authz::{ConstructionError, FgaAuthz, RelationExpressionKind, RuntimeCapability};
+use openfga_authz::{ConstructionError, FgaAuthz, RuntimeCapability};
 use openfga_dsl::{ParseErrorCode, ValidationIssue};
 
 const DIRECT_MODEL: &str =
@@ -43,27 +43,22 @@ fn preserves_semantic_diagnostics_for_unresolved_references() {
 }
 
 #[test]
-fn rejects_every_relation_expression_outside_the_initial_runtime_profile() {
+fn accepts_every_supported_relation_expression() {
     let cases = [
-        ("owner", RelationExpressionKind::ComputedUserset),
-        ("editor from parent", RelationExpressionKind::TupleToUserset),
-        ("owner or editor", RelationExpressionKind::Union),
-        ("owner and editor", RelationExpressionKind::Intersection),
-        ("owner but not editor", RelationExpressionKind::Difference),
+        "owner",
+        "editor from parent",
+        "owner or editor",
+        "owner and editor",
+        "owner but not editor",
     ];
 
-    for (expression, expected_kind) in cases {
+    for expression in cases {
         let definition = format!(
             "model\nschema 1.1\ntype user\ntype folder\n  relations\n    define editor: [user]\ntype document\n  relations\n    define owner: [user]\n    define editor: [user]\n    define parent: [folder]\n    define viewer: {expression}\n"
         );
-        let error = FgaAuthz::new(&definition).unwrap_err();
-
-        let ConstructionError::UnsupportedCapabilities(diagnostics) = error else {
-            panic!("expected runtime capability diagnostic for {expression}");
-        };
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.capability == RuntimeCapability::RelationExpression(expected_kind)
-        }));
+        let _model = FgaAuthz::new(&definition).unwrap_or_else(|error| {
+            panic!("supported expression {expression} was rejected: {error}")
+        });
     }
 }
 
@@ -81,15 +76,10 @@ fn rejects_relation_dependency_cycles_even_when_the_parser_accepts_them() {
 }
 
 #[test]
-fn rejects_typed_wildcards_and_conditions_until_their_evaluators_exist() {
+fn accepts_typed_wildcards_but_rejects_conditions_until_task_four() {
     let wildcard =
         "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user:*]\n";
-    let error = FgaAuthz::new(wildcard).unwrap_err();
-    assert!(matches!(
-        error,
-        ConstructionError::UnsupportedCapabilities(diagnostics)
-            if diagnostics.iter().any(|diagnostic| diagnostic.capability == RuntimeCapability::WildcardRestriction)
-    ));
+    let _model = FgaAuthz::new(wildcard).unwrap();
 
     let conditional = "model\nschema 1.2\ntype user\ntype document\n  relations\n    define viewer: [user with active]\ncondition active(now: timestamp) { now < timestamp(\"2030-01-01T00:00:00Z\") }\n";
     let error = FgaAuthz::new(conditional).unwrap_err();
@@ -102,13 +92,7 @@ fn rejects_typed_wildcards_and_conditions_until_their_evaluators_exist() {
 }
 
 #[test]
-fn rejects_userset_restrictions_until_graph_traversal_exists() {
+fn accepts_userset_restrictions_for_graph_traversal() {
     let definition = "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user]\ntype document\n  relations\n    define viewer: [group#member]\n";
-    let error = FgaAuthz::new(definition).unwrap_err();
-
-    assert!(matches!(
-        error,
-        ConstructionError::UnsupportedCapabilities(diagnostics)
-            if diagnostics.iter().any(|diagnostic| diagnostic.capability == RuntimeCapability::UsersetRestriction)
-    ));
+    let _model = FgaAuthz::new(definition).unwrap();
 }

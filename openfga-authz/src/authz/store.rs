@@ -174,6 +174,45 @@ pub trait RelationshipReadSession: Send {
         relation: &'a RelationName,
         maximum: usize,
     ) -> StoreFuture<'a, Result<Vec<RelationshipTuple>, StoreError>>;
+
+    /// Returns one complete page from a tenant-scoped snapshot.
+    ///
+    /// The default adapts bounded complete-read stores as a single page. Stores
+    /// that support pagination should override this method. A page must contain
+    /// no more than `maximum` tuples; a continuation cursor must advance from
+    /// the supplied cursor and continue the same read-session snapshot.
+    fn tuples_page<'a>(
+        &'a self,
+        object: &'a ObjectRef,
+        relation: &'a RelationName,
+        cursor: Option<usize>,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
+        if cursor.is_some() {
+            return Box::pin(async {
+                Err(StoreError::new(
+                    StoreErrorKind::IncompleteRead,
+                    "this relationship read session does not support continuation pages",
+                ))
+            });
+        }
+        let tuples = self.tuples(object, relation, maximum);
+        Box::pin(async move {
+            tuples.await.map(|tuples| RelationshipPage {
+                tuples,
+                next_cursor: None,
+            })
+        })
+    }
+}
+
+/// One bounded relationship-store page and its optional continuation cursor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelationshipPage {
+    /// Tuples returned by this page.
+    pub tuples: Vec<RelationshipTuple>,
+    /// Cursor for the next page from the same read-session snapshot.
+    pub next_cursor: Option<usize>,
 }
 
 /// An asynchronous relationship source. Each check opens one read session so
@@ -290,4 +329,39 @@ impl RelationshipReadSession for InMemoryReadSession {
             Ok(tuples.to_vec())
         })
     }
+
+    fn tuples_page<'a>(
+        &'a self,
+        object: &'a ObjectRef,
+        relation: &'a RelationName,
+        cursor: Option<usize>,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
+        Box::pin(async move {
+            if maximum == 0 {
+                return Err(StoreError::new(
+                    StoreErrorKind::IncompleteRead,
+                    "relationship page size must be greater than zero",
+                ));
+            }
+            let key = (self.tenant.clone(), object.clone(), relation.clone());
+            let tuples = self.snapshot.get(&key).map_or(&[][..], Vec::as_slice);
+            let start = cursor.unwrap_or(0);
+            if start > tuples.len() {
+                return Err(StoreError::new(
+                    StoreErrorKind::IncompleteRead,
+                    "relationship page cursor is outside the read-session snapshot",
+                ));
+            }
+            let page_size = maximum.min(IN_MEMORY_PAGE_SIZE);
+            let end = start.saturating_add(page_size).min(tuples.len());
+            let next_cursor = (end < tuples.len()).then_some(end);
+            Ok(RelationshipPage {
+                tuples: tuples[start..end].to_vec(),
+                next_cursor,
+            })
+        })
+    }
 }
+
+const IN_MEMORY_PAGE_SIZE: usize = 128;

@@ -1,6 +1,6 @@
 # OpenFGA authorization for Axum
 
-Status: in progress; Tasks 1–2 are complete and Tasks 3–8 are TODO.
+Status: in progress; Tasks 1–3 are complete and Tasks 4–8 are TODO.
 
 ## 1. Goal and architecture decision
 
@@ -182,15 +182,15 @@ Implement `RelationshipStore`, read sessions, tuple validation, in-memory storag
 
 Acceptance/tests: matching tuple allows; absent tuple denies; invalid tuple and store failure return errors; unknown check relation/type is rejected; empty store is an explicit valid store; bound state is required to call `check`; identical IDs in different namespaces do not share decisions. Store tests cover immutable sessions, tuple-limit exhaustion, and persisted condition-context preservation; check tests cover clone-shared store state. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
-### Task 3 — [TODO] Execute compound relations and graph traversal
+### Task 3 — [DONE] Execute compound relations and graph traversal
 
 Dependencies: Task 2.
 
-Files: `openfga-authz/src/authz/{model,evaluator,store}.rs`, `openfga-authz/tests/authz_relations.rs`.
+Files: `openfga-authz/src/authz/{model,evaluator,store,request}.rs`, `openfga-authz/src/{lib.rs,authz/mod.rs}`, `openfga-authz/tests/{authz_model,authz_relations}.rs`.
 
-Implement computed usersets, group membership, typed wildcards, tuple-to-userset, union, intersection, and difference. Expand the construction capability profile to match. Add bounded pagination, in-flight detection, cancellation, and per-check memoization.
+Implement computed usersets, group membership, typed wildcards, tuple-to-userset, union, intersection, and difference. Expand the construction capability profile to match. Add paged reads, relation-depth/store-call/work/tuple bounds, in-flight detection, cancellation-safe per-check state, and completed-decision memoization. Legacy stores can use the bounded complete-read adapter; stores can override it for incremental pages.
 
-Acceptance/tests: positive and negative cases for each operator; nested group membership; inherited document access; unrelated wildcard type denies; subtraction errors never grant; branch-order invariant error handling; tuple graph cycles and exhausted limits terminate safely. Conditional rules remain rejected until Task 4.
+Acceptance/tests: positive and negative cases cover all six expression forms; nested group membership; inherited document access; unrelated wildcard type denies; subtraction errors never grant; boolean error handling is branch-order invariant; tuple graph cycles and exhausted limits return errors safely. A runtime cycle regression test constructs an internal cyclic graph directly because public construction rejects recursive model dependencies. Conditional rules remain rejected until Task 4. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
 ### Task 4 — [TODO] Compile conditions and validate schema-driven context
 

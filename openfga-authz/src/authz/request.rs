@@ -367,16 +367,34 @@ pub enum AuthorizationDecision {
     Deny,
 }
 
-/// Work limits for the currently supported direct-membership check.
+/// Work limits for one authorization check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvaluationLimits {
     max_tuples_scanned: usize,
+    max_relation_depth: usize,
+    max_store_calls: usize,
+    max_work_units: usize,
 }
 
 impl EvaluationLimits {
+    /// Default maximum number of tuples scanned by one check.
     pub const DEFAULT_MAX_TUPLES_SCANNED: usize = 10_000;
+    /// Largest tuple scan limit accepted by the runtime.
     pub const MAX_TUPLES_SCANNED: usize = 100_000;
+    /// Default number of relation-to-relation traversal steps.
+    pub const DEFAULT_MAX_RELATION_DEPTH: usize = 64;
+    /// Largest relation depth accepted by the runtime.
+    pub const MAX_RELATION_DEPTH: usize = 256;
+    /// Default maximum number of relationship-store page reads.
+    pub const DEFAULT_MAX_STORE_CALLS: usize = 1_024;
+    /// Largest store-call limit accepted by the runtime.
+    pub const MAX_STORE_CALLS: usize = 10_000;
+    /// Default maximum number of expression and tuple work units.
+    pub const DEFAULT_MAX_WORK_UNITS: usize = 100_000;
+    /// Largest work-unit limit accepted by the runtime.
+    pub const MAX_WORK_UNITS: usize = 1_000_000;
 
+    /// Creates limits with the supplied tuple budget and defaults for other bounds.
     pub fn new(max_tuples_scanned: usize) -> Result<Self, EvaluationLimitsError> {
         if max_tuples_scanned == 0 {
             return Err(EvaluationLimitsError::ZeroTupleLimit);
@@ -386,11 +404,77 @@ impl EvaluationLimits {
                 maximum: Self::MAX_TUPLES_SCANNED,
             });
         }
-        Ok(Self { max_tuples_scanned })
+        Ok(Self {
+            max_tuples_scanned,
+            max_relation_depth: Self::DEFAULT_MAX_RELATION_DEPTH,
+            max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
+            max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
+        })
     }
 
+    /// Returns the tuple scan budget.
     pub const fn max_tuples_scanned(self) -> usize {
         self.max_tuples_scanned
+    }
+
+    /// Sets the maximum number of relation-to-relation traversal steps.
+    pub fn with_max_relation_depth(
+        mut self,
+        maximum: usize,
+    ) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroRelationDepth);
+        }
+        if maximum > Self::MAX_RELATION_DEPTH {
+            return Err(EvaluationLimitsError::RelationDepthTooLarge {
+                maximum: Self::MAX_RELATION_DEPTH,
+            });
+        }
+        self.max_relation_depth = maximum;
+        Ok(self)
+    }
+
+    /// Sets the maximum number of paged relationship-store reads.
+    pub fn with_max_store_calls(mut self, maximum: usize) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroStoreCallLimit);
+        }
+        if maximum > Self::MAX_STORE_CALLS {
+            return Err(EvaluationLimitsError::StoreCallLimitTooLarge {
+                maximum: Self::MAX_STORE_CALLS,
+            });
+        }
+        self.max_store_calls = maximum;
+        Ok(self)
+    }
+
+    /// Sets the maximum number of expression and tuple evaluation steps.
+    pub fn with_max_work_units(mut self, maximum: usize) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroWorkLimit);
+        }
+        if maximum > Self::MAX_WORK_UNITS {
+            return Err(EvaluationLimitsError::WorkLimitTooLarge {
+                maximum: Self::MAX_WORK_UNITS,
+            });
+        }
+        self.max_work_units = maximum;
+        Ok(self)
+    }
+
+    /// Returns the relation traversal depth budget.
+    pub const fn max_relation_depth(self) -> usize {
+        self.max_relation_depth
+    }
+
+    /// Returns the relationship-store page read budget.
+    pub const fn max_store_calls(self) -> usize {
+        self.max_store_calls
+    }
+
+    /// Returns the expression and tuple work budget.
+    pub const fn max_work_units(self) -> usize {
+        self.max_work_units
     }
 }
 
@@ -398,14 +482,31 @@ impl Default for EvaluationLimits {
     fn default() -> Self {
         Self {
             max_tuples_scanned: Self::DEFAULT_MAX_TUPLES_SCANNED,
+            max_relation_depth: Self::DEFAULT_MAX_RELATION_DEPTH,
+            max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
+            max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvaluationLimitsError {
+    /// The tuple scan limit must be nonzero.
     ZeroTupleLimit,
+    /// The tuple scan limit exceeds the runtime maximum.
     TupleLimitTooLarge { maximum: usize },
+    /// The relation depth limit must be nonzero.
+    ZeroRelationDepth,
+    /// The relation depth limit exceeds the runtime maximum.
+    RelationDepthTooLarge { maximum: usize },
+    /// The store call limit must be nonzero.
+    ZeroStoreCallLimit,
+    /// The store call limit exceeds the runtime maximum.
+    StoreCallLimitTooLarge { maximum: usize },
+    /// The work-unit limit must be nonzero.
+    ZeroWorkLimit,
+    /// The work-unit limit exceeds the runtime maximum.
+    WorkLimitTooLarge { maximum: usize },
 }
 
 impl std::fmt::Display for EvaluationLimitsError {
@@ -414,6 +515,18 @@ impl std::fmt::Display for EvaluationLimitsError {
             Self::ZeroTupleLimit => write!(f, "tuple scan limit must be greater than zero"),
             Self::TupleLimitTooLarge { maximum } => {
                 write!(f, "tuple scan limit must not exceed {maximum}")
+            }
+            Self::ZeroRelationDepth => write!(f, "relation depth limit must be greater than zero"),
+            Self::RelationDepthTooLarge { maximum } => {
+                write!(f, "relation depth limit must not exceed {maximum}")
+            }
+            Self::ZeroStoreCallLimit => write!(f, "store call limit must be greater than zero"),
+            Self::StoreCallLimitTooLarge { maximum } => {
+                write!(f, "store call limit must not exceed {maximum}")
+            }
+            Self::ZeroWorkLimit => write!(f, "work limit must be greater than zero"),
+            Self::WorkLimitTooLarge { maximum } => {
+                write!(f, "work limit must not exceed {maximum}")
             }
         }
     }
@@ -433,6 +546,24 @@ pub enum AuthorizationError {
     InvalidTuple(&'static str),
     EvaluationLimitExceeded {
         maximum_tuples: usize,
+    },
+    /// Relation traversal exceeded the configured depth bound.
+    RelationDepthExceeded {
+        maximum_depth: usize,
+    },
+    /// Relationship-store pagination exceeded the configured call bound.
+    StoreCallLimitExceeded {
+        maximum_calls: usize,
+    },
+    /// Expression or tuple processing exceeded the configured work bound.
+    WorkLimitExceeded {
+        maximum_work_units: usize,
+    },
+    /// A relation was encountered again before its current evaluation completed.
+    TupleGraphCycle {
+        object_type: String,
+        object_id: String,
+        relation: String,
     },
     Store(super::store::StoreError),
 }
@@ -465,6 +596,26 @@ impl std::fmt::Display for AuthorizationError {
             Self::EvaluationLimitExceeded { maximum_tuples } => write!(
                 f,
                 "authorization check exceeded its limit of {maximum_tuples} relationship tuples"
+            ),
+            Self::RelationDepthExceeded { maximum_depth } => write!(
+                f,
+                "authorization check exceeded its relation depth limit of {maximum_depth}"
+            ),
+            Self::StoreCallLimitExceeded { maximum_calls } => write!(
+                f,
+                "authorization check exceeded its store call limit of {maximum_calls}"
+            ),
+            Self::WorkLimitExceeded { maximum_work_units } => write!(
+                f,
+                "authorization check exceeded its work limit of {maximum_work_units} units"
+            ),
+            Self::TupleGraphCycle {
+                object_type,
+                object_id,
+                relation,
+            } => write!(
+                f,
+                "relationship traversal revisited {object_type}:{object_id}#{relation}"
             ),
             Self::Store(error) => write!(f, "relationship store failed: {error}"),
         }

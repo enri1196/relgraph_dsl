@@ -11,6 +11,7 @@ pub use authz::{
     ConditionContext, ConditionName, ConstructionError, EntityId, EvaluationLimits,
     EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
     InMemoryRelationshipStore, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
-    RelationshipReadSession, RelationshipStore, RelationshipTuple, RuntimeCapability, StoreError,
-    StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound,
+    RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
+    RuntimeCapability, StoreError, StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject,
+    TypeName, Unbound,
 };

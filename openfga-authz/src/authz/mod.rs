@@ -12,8 +12,9 @@ pub use request::{
     TenantId, TypeName,
 };
 pub use store::{
-    ConditionContext, InMemoryReadSession, InMemoryRelationshipStore, RelationshipReadSession,
-    RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind, StoreFuture, TupleSubject,
+    ConditionContext, InMemoryReadSession, InMemoryRelationshipStore, RelationshipPage,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind,
+    StoreFuture, TupleSubject,
 };
 
 use std::fmt;
