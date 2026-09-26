@@ -53,8 +53,43 @@ impl<S> Clone for Bound<S> {
 #[must_use = "constructing an authorization model has no effect until it is used"]
 pub struct FgaAuthz<State = Unbound> {
     pub(crate) compiled: Arc<CompiledModel>,
+    model_identity: ModelIdentity,
     state: State,
 }
+
+/// Opaque identity shared by clones of one compiled authorization model.
+///
+/// This identifies a compiled model instance within the running process. It is
+/// useful for tying request authorization metadata to the model that produced
+/// it; it is not a persistent model version or a security credential.
+#[derive(Clone)]
+pub struct ModelIdentity(Arc<()>);
+
+impl ModelIdentity {
+    /// Creates an identity token for a newly compiled model instance.
+    fn new() -> Self {
+        Self(Arc::new(()))
+    }
+
+    /// Returns whether both values identify the same compiled model instance.
+    pub fn identifies_same_model(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ModelIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelIdentity").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ModelIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.identifies_same_model(other)
+    }
+}
+
+impl Eq for ModelIdentity {}
 
 impl FgaAuthz<Unbound> {
     /// Parses, semantically validates, checks runtime capabilities, and compiles
@@ -64,6 +99,7 @@ impl FgaAuthz<Unbound> {
         let compiled = CompiledModel::compile(schema)?;
         Ok(Self {
             compiled: Arc::new(compiled),
+            model_identity: ModelIdentity::new(),
             state: Unbound,
         })
     }
@@ -76,6 +112,7 @@ impl FgaAuthz<Unbound> {
     ) -> FgaAuthz<Bound<S>> {
         FgaAuthz {
             compiled: self.compiled,
+            model_identity: self.model_identity,
             state: Bound {
                 store: Arc::new(store),
                 limits,
@@ -88,6 +125,11 @@ impl<State> FgaAuthz<State> {
     /// Returns the validated syntax tree used to build this model.
     pub fn schema(&self) -> &openfga_dsl::Schema {
         self.compiled.schema()
+    }
+
+    /// Returns an opaque identity shared by clones of this compiled model.
+    pub fn model_identity(&self) -> ModelIdentity {
+        self.model_identity.clone()
     }
 }
 
@@ -111,6 +153,7 @@ impl<State: Clone> Clone for FgaAuthz<State> {
     fn clone(&self) -> Self {
         Self {
             compiled: Arc::clone(&self.compiled),
+            model_identity: self.model_identity.clone(),
             state: self.state.clone(),
         }
     }

@@ -221,7 +221,7 @@ Acceptance/tests: missing object type/relation and undeclared context bindings f
 
 Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo check --workspace --all-targets`, `cargo test -p openfga-authz --all-targets` (45 tests), and `cargo test --workspace --all-targets` (all package and parser/conformance tests passed).
 
-### Task 6 — [TODO] Derive and register Axum middleware
+### Task 6 — [DONE] Derive and register Axum middleware
 
 Dependencies: Task 5.
 
@@ -230,6 +230,12 @@ Files: `openfga-authz/Cargo.toml`, `openfga-authz/src/lib.rs`, `openfga-authz/sr
 Implement `authz.middleware(policy)`, Tower layer/service, named path extraction, trusted principal extension resolution, HTTP mapping, and `Authorized` extension. Integrate with application router state without requiring the application to replace its state type.
 
 Acceptance/tests: `Router::oneshot` verifies allow, deny, unauthenticated, bad input, and store outage; handler call counter remains zero on rejection; body is preserved; authentication executes first; custom state and nested routers work; GET/HEAD, POST, OPTIONS, unmatched paths, and method mismatches have explicit tested behavior; only deliberately protected routes are gated.
+
+Implementation: `openfga-authz` exposes the optional `axum` feature with exact dependencies `axum = 0.8.9` and `tower = 0.5.3`. The bound authorization object validates each fixed route policy at registration and returns a cloneable Tower layer/service. The service extracts named Axum path captures from request parts, resolves trusted principal and tenant extensions plus configured context, checks the model, and inserts an `Authorized` extension only on allow. It maps denial to 403, missing principal to 401, invalid request-bound input to 400, store/resource limits to 503, and trusted-state/internal failures to 500. `Authorized` carries the checked subject/object/relation and an opaque model-instance identity shared by model clones.
+
+Axum's [`route_layer` and middleware documentation](https://docs.rs/axum/0.8.9/axum/middleware/) describes matched-route behavior and layer ordering. The integration tests verify unmatched paths remain 404, method mismatches remain 405 even without an authentication extension, and an outer authentication middleware runs before authorization.
+
+Verified with `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo check --workspace --all-targets --features openfga-authz/axum`, and `cargo test --workspace --all-targets --features openfga-authz/axum` (including all 8 Axum integration tests and existing parser/runtime tests); `git diff --check` passed.
 
 ### Task 7 — [TODO] Establish semantic compatibility and isolation evidence
 

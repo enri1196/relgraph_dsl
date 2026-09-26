@@ -3,8 +3,17 @@ name = "openfga-authz"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+axum = ["dep:axum", "dep:tower"]
+
 [dependencies]
 openfga_dsl = { path = ".." }
 cel-core = "=0.5.1"
 http = "1"
 serde_json = "1"
+axum = { version = "=0.8.9", optional = true }
+tower = { version = "=0.5.3", features = ["util"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

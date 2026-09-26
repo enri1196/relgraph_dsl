@@ -6,6 +6,8 @@
 
 mod authz;
 
+pub use authz::ModelIdentity;
+
 pub use authz::policy::{
     AssignmentRequirement, AsyncContextResolver, AuthorizationRequirements,
     ConditionParameterRequirement, ConditionRequirement, ContextBinding, ContextResolverFuture,
@@ -23,3 +25,5 @@ pub use authz::{
     RuntimeCapability, StoreError, StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject,
     TypeName, Unbound,
 };
+#[cfg(feature = "axum")]
+pub mod axum_authz;
