@@ -47,6 +47,7 @@ pub enum ValidationIssue {
     InvalidParameterType,
     /// A manually constructed direct assignment has no targets.
     EmptyDirectAssignment,
+    InvalidComposition,
     /// An extension declaration has no base type to extend in the model.
     UnknownExtensionType,
     /// A module extends the same type more than once.
@@ -73,6 +74,7 @@ impl ValidationIssue {
             Self::UnknownComputedRelation => "UnknownComputedRelation",
             Self::InvalidParameterType => "InvalidParameterType",
             Self::EmptyDirectAssignment => "EmptyDirectAssignment",
+            Self::InvalidComposition => "InvalidComposition",
             Self::UnknownExtensionType => "UnknownExtensionType",
             Self::DuplicateExtension => "DuplicateExtension",
         }
@@ -86,6 +88,31 @@ impl ValidationIssue {
 /// versions are preserved and reported here. Errors are sorted by source
 /// position, issue code, and message so callers receive deterministic output.
 pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
+    validate_schema_with_context(schema, false, None, &[])
+}
+
+/// Provenance aligned with the assembled schema's declarations.
+#[derive(Clone, Copy)]
+pub(crate) struct ValidationOrigins<'a> {
+    pub type_origins: &'a [SourceLocation],
+    pub relation_origins: &'a [Vec<SourceLocation>],
+    pub condition_origins: &'a [SourceLocation],
+}
+
+pub(crate) fn validate_schema_with_origins(
+    schema: &Schema,
+    origins: ValidationOrigins<'_>,
+    manifest_paths: &[std::path::PathBuf],
+) -> Result<(), Vec<ValidationError>> {
+    validate_schema_with_context(schema, true, Some(origins), manifest_paths)
+}
+
+fn validate_schema_with_context(
+    schema: &Schema,
+    modular: bool,
+    origins: Option<ValidationOrigins<'_>>,
+    manifest_paths: &[std::path::PathBuf],
+) -> Result<(), Vec<ValidationError>> {
     if let SchemaHeader::Module { name } = &schema.header {
         return Err(vec![ValidationError {
             issue: ValidationIssue::ModuleRequiresComposition,
@@ -97,25 +124,38 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
 
     let mut validator = Validator::default();
     if let SchemaHeader::ModelSchema { version } = &schema.header {
-        if version != "1.1" && version != "1.2" {
+        let supported = if modular {
+            version == "1.2"
+        } else {
+            version == "1.1" || version == "1.2"
+        };
+        if !supported {
             validator.push(
                 ValidationIssue::UnsupportedSchemaVersion,
                 location(schema.header_span.as_ref()),
                 Vec::new(),
-                format!("standalone schema version '{version}' is unsupported"),
+                format!(
+                    "{} schema version '{version}' is unsupported",
+                    if modular { "modular" } else { "standalone" }
+                ),
             );
         }
     }
 
     let mut type_symbols: HashMap<String, &TypeDefinition> = HashMap::new();
+    let mut type_locations: HashMap<String, SourceLocation> = HashMap::new();
     let mut base_type_count = 0usize;
     let mut relation_declarations: HashMap<(String, String), SourceLocation> = HashMap::new();
 
-    for type_definition in &schema.type_definitions {
+    for (type_index, type_definition) in schema.type_definitions.iter().enumerate() {
+        let type_location = origin_location(
+            origins.and_then(|origins| origins.type_origins.get(type_index)),
+            type_definition.span.as_ref(),
+        );
         if type_definition.is_extended {
             validator.push(
                 ValidationIssue::ExtensionOutsideModule,
-                location(type_definition.span.as_ref()),
+                type_location.clone(),
                 Vec::new(),
                 format!(
                     "type '{}' is extended outside a module document",
@@ -127,28 +167,40 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
             if let Some(first) = type_symbols.get(&type_definition.name) {
                 validator.push(
                     ValidationIssue::DuplicateType,
-                    location(type_definition.span.as_ref()),
-                    vec![location(first.span.as_ref())],
+                    type_location,
+                    vec![
+                        type_locations
+                            .get(&type_definition.name)
+                            .cloned()
+                            .unwrap_or_else(|| location(first.span.as_ref())),
+                    ],
                     format!("type '{}' is declared more than once", type_definition.name),
                 );
             } else {
                 type_symbols.insert(type_definition.name.clone(), type_definition);
+                type_locations.insert(type_definition.name.clone(), type_location);
             }
         }
 
         // Relation uniqueness is local structural validation, so it also
         // reports repeated names across base and extension declarations.
-        for relation in &type_definition.relations {
+        for (relation_index, relation) in type_definition.relations.iter().enumerate() {
+            let relation_location = origin_location(
+                origins
+                    .and_then(|origins| origins.relation_origins.get(type_index))
+                    .and_then(|relations| relations.get(relation_index)),
+                relation.span.as_ref(),
+            );
             let key = (type_definition.name.clone(), relation.name.clone());
             if let Some(first) = relation_declarations.get(&key) {
                 validator.errors.push(duplicate_relation_error(
                     &type_definition.name,
                     &relation.name,
-                    location(relation.span.as_ref()),
+                    relation_location,
                     first.clone(),
                 ));
             } else {
-                relation_declarations.insert(key, location(relation.span.as_ref()));
+                relation_declarations.insert(key, relation_location);
             }
         }
     }
@@ -158,7 +210,10 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
             ValidationIssue::EmptyModel,
             location(schema.header_span.as_ref()),
             Vec::new(),
-            "standalone model has no base type declarations".to_string(),
+            format!(
+                "{} model has no base type declarations",
+                if modular { "composed" } else { "standalone" }
+            ),
         );
     }
 
@@ -174,25 +229,43 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
         .collect::<HashMap<_, _>>();
 
     let mut condition_symbols: HashMap<String, &ConditionDefinition> = HashMap::new();
-    for condition in &schema.condition_definitions {
+    let mut condition_locations: HashMap<String, SourceLocation> = HashMap::new();
+    for (condition_index, condition) in schema.condition_definitions.iter().enumerate() {
+        let condition_location = origin_location(
+            origins.and_then(|origins| origins.condition_origins.get(condition_index)),
+            condition.span.as_ref(),
+        );
         if let Some(first) = condition_symbols.get(&condition.name) {
             validator.push(
                 ValidationIssue::DuplicateCondition,
-                location(condition.span.as_ref()),
-                vec![location(first.span.as_ref())],
+                condition_location,
+                vec![
+                    condition_locations
+                        .get(&condition.name)
+                        .cloned()
+                        .unwrap_or_else(|| location(first.span.as_ref())),
+                ],
                 format!("condition '{}' is declared more than once", condition.name),
             );
         } else {
             condition_symbols.insert(condition.name.clone(), condition);
+            condition_locations.insert(condition.name.clone(), condition_location.clone());
         }
 
         let mut parameter_symbols: HashMap<&str, &crate::ast::ConditionParameter> = HashMap::new();
         for parameter in &condition.parameters {
+            let parameter_location = origin_location(
+                origins.and_then(|origins| origins.condition_origins.get(condition_index)),
+                parameter.span.as_ref(),
+            );
             if let Some(first) = parameter_symbols.get(parameter.name.as_str()) {
                 validator.push(
                     ValidationIssue::DuplicateParameter,
-                    location(parameter.span.as_ref()),
-                    vec![location(first.span.as_ref())],
+                    parameter_location.clone(),
+                    vec![origin_location(
+                        origins.and_then(|origins| origins.condition_origins.get(condition_index)),
+                        first.span.as_ref(),
+                    )],
                     format!(
                         "condition '{}' repeats parameter '{}'",
                         condition.name, parameter.name
@@ -205,7 +278,7 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
             if !is_supported_parameter_type(&parameter.param_type) {
                 validator.push(
                     ValidationIssue::InvalidParameterType,
-                    location(parameter.span.as_ref()),
+                    parameter_location,
                     Vec::new(),
                     format!(
                         "condition '{}' parameter '{}' has unsupported type '{}'",
@@ -220,24 +293,42 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
 
     // Empty direct assignments are an AST invariant check. It applies even to
     // manually constructed trees and does not depend on symbol resolution.
-    for type_definition in &schema.type_definitions {
-        for relation in &type_definition.relations {
-            validator.check_empty_assignments(&relation.definition.expression, relation);
+    for (type_index, type_definition) in schema.type_definitions.iter().enumerate() {
+        for (relation_index, relation) in type_definition.relations.iter().enumerate() {
+            let relation_location = origin_location(
+                origins
+                    .and_then(|origins| origins.relation_origins.get(type_index))
+                    .and_then(|relations| relations.get(relation_index)),
+                relation.span.as_ref(),
+            );
+            validator.check_empty_assignments(
+                &relation.definition.expression,
+                relation,
+                &relation_location,
+            );
         }
     }
 
     // Extensions have already been diagnosed and are deliberately omitted
     // from standalone symbols and dependent reference checks.
-    for type_definition in schema
+    for (type_index, type_definition) in schema
         .type_definitions
         .iter()
-        .filter(|definition| !definition.is_extended)
+        .enumerate()
+        .filter(|(_, definition)| !definition.is_extended)
     {
-        for relation in &type_definition.relations {
+        for (relation_index, relation) in type_definition.relations.iter().enumerate() {
+            let relation_location = origin_location(
+                origins
+                    .and_then(|origins| origins.relation_origins.get(type_index))
+                    .and_then(|relations| relations.get(relation_index)),
+                relation.span.as_ref(),
+            );
             validator.check_expression(
                 &relation.definition.expression,
                 type_definition.name.as_str(),
                 relation,
+                &relation_location,
                 &type_symbols,
                 &relation_symbols,
                 &condition_symbols,
@@ -245,7 +336,21 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
         }
     }
 
-    validator.finish()
+    let result = validator.finish();
+    if !modular {
+        return result;
+    }
+
+    result.map_err(|mut errors| {
+        errors.sort_by(|left, right| {
+            manifest_index(&left.location, manifest_paths)
+                .cmp(&manifest_index(&right.location, manifest_paths))
+                .then_with(|| span_start(&left.location).cmp(&span_start(&right.location)))
+                .then_with(|| left.issue.code().cmp(right.issue.code()))
+                .then_with(|| left.message.cmp(&right.message))
+        });
+        errors
+    })
 }
 
 #[derive(Default)]
@@ -269,11 +374,16 @@ impl Validator {
         });
     }
 
-    fn check_empty_assignments(&mut self, expression: &RelationExpression, relation: &Relation) {
+    fn check_empty_assignments(
+        &mut self,
+        expression: &RelationExpression,
+        relation: &Relation,
+        relation_location: &SourceLocation,
+    ) {
         match expression {
             RelationExpression::DirectAssignment(targets) if targets.is_empty() => self.push(
                 ValidationIssue::EmptyDirectAssignment,
-                location(relation.span.as_ref()),
+                relation_location.clone(),
                 Vec::new(),
                 format!(
                     "relation '{}' has an empty direct assignment",
@@ -285,8 +395,8 @@ impl Validator {
             RelationExpression::Union(left, right)
             | RelationExpression::Intersection(left, right)
             | RelationExpression::Difference(left, right) => {
-                self.check_empty_assignments(left, relation);
-                self.check_empty_assignments(right, relation);
+                self.check_empty_assignments(left, relation, relation_location);
+                self.check_empty_assignments(right, relation, relation_location);
             }
         }
     }
@@ -297,6 +407,7 @@ impl Validator {
         expression: &RelationExpression,
         owner_type: &str,
         owner_relation: &Relation,
+        owner_location: &SourceLocation,
         type_symbols: &HashMap<String, &TypeDefinition>,
         relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
         condition_symbols: &HashMap<String, &ConditionDefinition>,
@@ -307,7 +418,7 @@ impl Validator {
                     if !type_symbols.contains_key(&target.target_type) {
                         self.push(
                             ValidationIssue::UnknownType,
-                            location(owner_relation.span.as_ref()),
+                            owner_location.clone(),
                             Vec::new(),
                             format!(
                                 "relation '{}' refers to unknown type '{}'",
@@ -325,7 +436,7 @@ impl Validator {
                         if !relation_exists {
                             self.push(
                                 ValidationIssue::UnknownRelation,
-                                location(owner_relation.span.as_ref()),
+                                owner_location.clone(),
                                 Vec::new(),
                                 format!(
                                     "relation '{}' refers to missing relation '{}' on type '{}'",
@@ -340,7 +451,7 @@ impl Validator {
                     {
                         self.push(
                             ValidationIssue::UnknownCondition,
-                            location(owner_relation.span.as_ref()),
+                            owner_location.clone(),
                             Vec::new(),
                             format!(
                                 "relation '{}' refers to unknown condition '{}'",
@@ -357,7 +468,7 @@ impl Validator {
                 if !exists {
                     self.push(
                         ValidationIssue::UnknownRelation,
-                        location(owner_relation.span.as_ref()),
+                        owner_location.clone(),
                         Vec::new(),
                         format!("type '{}' has no computed relation '{}'", owner_type, name),
                     );
@@ -373,6 +484,7 @@ impl Validator {
                 tupleset_relation,
                 type_symbols,
                 relation_symbols,
+                owner_location,
             ),
             RelationExpression::Union(left, right)
             | RelationExpression::Intersection(left, right)
@@ -381,6 +493,7 @@ impl Validator {
                     left,
                     owner_type,
                     owner_relation,
+                    owner_location,
                     type_symbols,
                     relation_symbols,
                     condition_symbols,
@@ -389,6 +502,7 @@ impl Validator {
                     right,
                     owner_type,
                     owner_relation,
+                    owner_location,
                     type_symbols,
                     relation_symbols,
                     condition_symbols,
@@ -405,6 +519,7 @@ impl Validator {
         tupleset_relation: &str,
         type_symbols: &HashMap<String, &TypeDefinition>,
         relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
+        owner_location: &SourceLocation,
     ) {
         let Some(tupleset) = relation_symbols
             .get(owner_type)
@@ -412,7 +527,7 @@ impl Validator {
         else {
             self.push(
                 ValidationIssue::UnknownTuplesetRelation,
-                location(owner_relation.span.as_ref()),
+                owner_location.clone(),
                 Vec::new(),
                 format!(
                     "relation '{}' refers to missing tupleset relation '{}'",
@@ -423,7 +538,7 @@ impl Validator {
         };
 
         let RelationExpression::DirectAssignment(targets) = &tupleset.definition.expression else {
-            self.invalid_tupleset(owner_relation, tupleset_relation);
+            self.invalid_tupleset(tupleset_relation, owner_location);
             return;
         };
         if targets.is_empty()
@@ -431,7 +546,7 @@ impl Validator {
                 .iter()
                 .any(|target| target.relation_or_wildcard.is_some())
         {
-            self.invalid_tupleset(owner_relation, tupleset_relation);
+            self.invalid_tupleset(tupleset_relation, owner_location);
             return;
         }
 
@@ -453,7 +568,7 @@ impl Validator {
         if !unresolved_target && !target_defines_computed_relation {
             self.push(
                 ValidationIssue::UnknownComputedRelation,
-                location(owner_relation.span.as_ref()),
+                owner_location.clone(),
                 Vec::new(),
                 format!(
                     "no target type of tupleset relation '{}' defines computed relation '{}'",
@@ -463,10 +578,10 @@ impl Validator {
         }
     }
 
-    fn invalid_tupleset(&mut self, relation: &Relation, tupleset_relation: &str) {
+    fn invalid_tupleset(&mut self, tupleset_relation: &str, owner_location: &SourceLocation) {
         self.push(
             ValidationIssue::InvalidTuplesetRelation,
-            location(relation.span.as_ref()),
+            owner_location.clone(),
             Vec::new(),
             format!(
                 "tupleset relation '{}' must be a nonempty direct assignment of plain types",
@@ -500,6 +615,25 @@ fn location(span: Option<&SourceSpan>) -> SourceLocation {
         module: None,
         span: span.cloned(),
     }
+}
+
+fn origin_location(origin: Option<&SourceLocation>, span: Option<&SourceSpan>) -> SourceLocation {
+    match origin {
+        Some(origin) => SourceLocation {
+            file: origin.file.clone(),
+            module: origin.module.clone(),
+            span: span.cloned(),
+        },
+        None => location(span),
+    }
+}
+
+fn manifest_index(location: &SourceLocation, manifest_paths: &[std::path::PathBuf]) -> usize {
+    location
+        .file
+        .as_ref()
+        .and_then(|file| manifest_paths.iter().position(|path| path == file))
+        .unwrap_or(0)
 }
 
 /// Builds the shared duplicate-relation diagnostic used by standalone validation and modular composition.

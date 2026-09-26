@@ -1,0 +1,5 @@
+module second
+
+type note
+  relations
+    define third: [missing_x]

@@ -1,0 +1,5 @@
+module shared
+
+type team
+  relations
+    define member: [user]

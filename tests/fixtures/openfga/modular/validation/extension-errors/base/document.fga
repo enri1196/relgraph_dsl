@@ -1,0 +1,7 @@
+module shared
+
+type document
+  relations
+    define viewer: [user]
+
+type user

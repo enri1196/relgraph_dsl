@@ -1,0 +1,5 @@
+module shared
+
+type user
+
+condition can_view(allowed: bool, allowed: string) { allowed }

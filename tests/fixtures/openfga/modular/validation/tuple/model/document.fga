@@ -1,0 +1,6 @@
+module shared
+
+type document
+  relations
+    define parent: [folder]
+    define viewer: viewer from parent

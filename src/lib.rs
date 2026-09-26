@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod validation;
 
 pub mod modular;
+pub use modular::validate_modular_model;
 
 pub use manifest::{ManifestError, ManifestErrorCode, ModelManifest, parse_model_manifest};
 pub use modular::{

@@ -1,0 +1,6 @@
+module shared
+
+type document
+  relations
+    define viewer: [user with can_view]
+    define group_member: [team#member]

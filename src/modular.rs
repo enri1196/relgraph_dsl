@@ -381,6 +381,71 @@ pub fn assemble_modular_model(
 }
 
 /// Loads the manifest and each listed module once, in manifest order, then assembles them.
+/// Validates the public assembled schema and its source provenance.
+///
+/// The model is recomposed from its retained manifest and module documents
+/// first, so callers cannot bypass structural checks by mutating public fields.
+pub fn validate_modular_model(model: &ModularModel) -> Result<(), Vec<ValidationError>> {
+    let recomposed = match assemble_modular_model(model.manifest.clone(), model.modules.clone()) {
+        Ok(recomposed) => recomposed,
+        Err(ModularModelError::Composition { errors }) => {
+            let mut result = vec![invalid_composition(
+                "retained modules have structural composition errors",
+            )];
+            result.extend(errors);
+            return Err(result);
+        }
+        Err(error) => {
+            return Err(vec![invalid_composition(format!(
+                "retained manifest and modules cannot be recomposed: {error}"
+            ))]);
+        }
+    };
+
+    let mut failed_invariants = Vec::new();
+    if model.schema != recomposed.schema {
+        failed_invariants.push("assembled schema differs from recomposition");
+    }
+    if model.type_origins != recomposed.type_origins {
+        failed_invariants.push("type origins differ from recomposition");
+    }
+    if model.relation_origins != recomposed.relation_origins {
+        failed_invariants.push("relation origins differ from recomposition");
+    }
+    if model.condition_origins != recomposed.condition_origins {
+        failed_invariants.push("condition origins differ from recomposition");
+    }
+    if !failed_invariants.is_empty() {
+        return Err(vec![invalid_composition(format!(
+            "public modular model invariant failed: {}",
+            failed_invariants.join("; ")
+        ))]);
+    }
+
+    crate::validation::validate_schema_with_origins(
+        &model.schema,
+        crate::validation::ValidationOrigins {
+            type_origins: &model.type_origins,
+            relation_origins: &model.relation_origins,
+            condition_origins: &model.condition_origins,
+        },
+        &model.manifest.contents,
+    )
+}
+
+fn invalid_composition(message: impl Into<String>) -> ValidationError {
+    ValidationError {
+        issue: ValidationIssue::InvalidComposition,
+        location: SourceLocation {
+            file: None,
+            module: None,
+            span: None,
+        },
+        related: Vec::new(),
+        message: message.into(),
+    }
+}
+
 pub fn load_modular_model(manifest_path: &Path) -> Result<ModularModel, ModularModelError> {
     load_modular_model_with_reader(manifest_path, |path| fs::read_to_string(path))
 }

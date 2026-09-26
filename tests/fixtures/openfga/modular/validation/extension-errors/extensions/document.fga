@@ -1,0 +1,7 @@
+module shared
+
+extend type document
+  relations
+    define broken_type: [ghost with missing_condition]
+    define broken_relation: [document#missing_relation]
+    define broken_computed: missing_computed_relation

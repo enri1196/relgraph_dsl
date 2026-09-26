@@ -392,7 +392,7 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 - `cargo test --all-targets --locked` passed: 2 modular loader unit tests, 12 modular integration tests, 10 manifest tests, 21 parser tests, 8 validation tests, 1 conformance test, and the demo target.
 - `git diff --check` passed.
 
-### Task 9 — Cross-file validation and provenance [TODO]
+### Task 9 — Cross-file validation and provenance [DONE]
 
 **Depends on:** Task 8.
 
@@ -404,7 +404,14 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 
 **Gate:** Valid composed fixtures pass; invalid cases fail named rules at correct origins; formatting and all-target tests pass.
 
-**Completion evidence:** pending.
+**Completion evidence:**
+
+- Added `validate_modular_model` with recomposition checks for the public assembled schema and all origin vectors; synthetic `InvalidComposition` diagnostics precede structural recomposition errors. Reused §5 semantic checks with manifest-indexed file/module/span provenance and exact modular schema `1.2` policy.
+- Updated `src/validation.rs`, `src/modular.rs`, and `src/lib.rs`; added `tests/modular_validation.rs` and semantic fixtures under `tests/fixtures/openfga/modular/validation/`.
+- Added eight integration tests covering cross-file type/relation/condition resolution, extension-provided tuple-to-userset relations, duplicate conditions/parameters, extension reference errors, repeated module names, standalone/modular version boundaries, public schema/provenance mutation, and deterministic multi-file ordering.
+- `cargo fmt --all -- --check` passed.
+- `cargo test --all-targets --locked` passed: 2 modular unit tests, 1 conformance test, 10 manifest tests, 12 modular tests, 8 modular validation tests, 21 parser tests, 8 standalone validation tests, and the demo target.
+- `git diff --check` passed.
 
 ### Task 10 — Differential audit and published boundary [TODO]
 

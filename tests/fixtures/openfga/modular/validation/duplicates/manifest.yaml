@@ -1,0 +1,4 @@
+schema: '1.2'
+contents:
+  - parameters.fga
+  - condition.fga

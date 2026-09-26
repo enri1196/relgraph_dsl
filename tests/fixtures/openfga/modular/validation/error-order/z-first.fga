@@ -1,0 +1,6 @@
+module first
+
+type document
+  relations
+    define first: [missing_z with no_condition]
+    define second: [missing_y]

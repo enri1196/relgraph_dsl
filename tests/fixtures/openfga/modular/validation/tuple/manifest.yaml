@@ -1,0 +1,6 @@
+schema: '1.2'
+contents:
+  - extensions/folder.fga
+  - model/document.fga
+  - model/folder.fga
+  - model/user.fga

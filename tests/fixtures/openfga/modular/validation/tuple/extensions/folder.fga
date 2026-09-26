@@ -1,0 +1,5 @@
+module shared
+
+extend type folder
+  relations
+    define viewer: [user]
