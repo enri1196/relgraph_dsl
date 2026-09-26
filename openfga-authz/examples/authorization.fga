@@ -1,0 +1,14 @@
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define viewer: [user]
+    define time_limited_viewer: [user with valid_grant]
+    define can_view: viewer or time_limited_viewer
+
+condition valid_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
+  current_time < grant_time + grant_duration
+}

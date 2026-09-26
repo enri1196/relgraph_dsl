@@ -15,5 +15,10 @@ serde_json = "1"
 axum = { version = "=0.8.9", optional = true }
 tower = { version = "=0.5.3", features = ["util"], optional = true }
 
+[[example]]
+name = "axum_authz"
+required-features = ["axum"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+time = { version = "0.3", features = ["formatting"] }

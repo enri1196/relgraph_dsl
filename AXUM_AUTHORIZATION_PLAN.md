@@ -1,6 +1,6 @@
 # OpenFGA authorization for Axum
 
-Status: in progress; Tasks 1–7 are complete and Task 8 is TODO.
+Status: complete; Tasks 1–8 are done.
 
 ## 1. Goal and architecture decision
 
@@ -249,7 +249,7 @@ Implementation: `openfga-authz/tools/openfga-differential.py` starts a temporary
 
 Acceptance/tests: direct/group/public/inherited access, compound rules, condition types, context precedence, missing context, and branch errors agree within the declared profile; mismatches block a compatibility claim. Concurrent checks isolate principals, tenants, and condition context; revocation is reflected by the next independent store session; store failures and cancellation/timeouts never run handlers. Tower readiness and cancellation regressions are covered. The pinned server run passed all 17 fixture cases. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo check --workspace --all-targets --features openfga-authz/axum`, `cargo test --workspace --all-targets --features openfga-authz/axum`, `python3 openfga-authz/tools/openfga-differential.py` (17 cases), and `git diff --check`.
 
-### Task 8 — [TODO] Publish a runnable example and complete feature validation
+### Task 8 — [DONE] Publish a runnable example and complete feature validation
 
 Dependencies: Task 7.
 
@@ -258,6 +258,25 @@ Files: `openfga-authz/examples/axum_authz.rs`, `openfga-authz/examples/authoriza
 Provide a complete example beginning with `FgaAuthz::new`, explicit tuple insertion, authentication, derived middleware, and protected Axum routes. Show both a normal viewer check and a conditional grant with server-provided current time. Document input mappings, tuple ownership, errors, limits, and unsupported recursive/CEL features.
 
 Acceptance/tests: example compiles and documented requests demonstrate allow and deny; `openfga_dsl` parser-only, `openfga-authz` core runtime, and `openfga-authz` with `axum` compile and pass their appropriate tests; rustdoc examples compile. Run `cargo fmt --check`, package/feature-specific `cargo check` and `cargo test`, and `cargo test --workspace --all-targets --all-features`. Run existing conformance tooling only when parser behavior is changed; record exact checks and results before marking the plan complete.
+
+Implementation: `openfga-authz/examples/authorization.fga` defines an unconditional `viewer` relationship, a `time_limited_viewer` relationship using `valid_grant`, and `can_view` as their union. `openfga-authz/examples/axum_authz.rs` constructs the model, inserts Anne's direct viewer tuple and Bob's tuple with stored grant time/duration, maps fixed demo bearer tokens to trusted principal/tenant extensions, supplies server UTC `current_time`, and protects a named document path with derived Axum middleware. `openfga-authz/README.md` documents the example, mappings, tuple ownership, HTTP errors, default work limits, and supported CEL and recursion boundaries. The example uses the `time` crate for RFC3339 current-time values and is gated by the `axum` feature.
+
+Validation passed:
+
+- `cargo fmt --check`
+- `cargo check -p openfga_dsl --all-targets`
+- `cargo test -p openfga_dsl --all-targets` (62 tests)
+- `cargo check -p openfga-authz --all-targets`
+- `cargo test -p openfga-authz --all-targets` (48 tests)
+- `cargo check -p openfga-authz --all-targets --features axum`
+- `cargo test -p openfga-authz --all-targets --features axum` (57 tests, including the example target)
+- `cargo check -p openfga-authz --example axum_authz --features axum`
+- `cargo test --workspace --doc --all-features` (4 parser doctests passed; the authz crate has no inline doctests)
+- `cargo test --all-targets --all-features`
+- `cargo test --workspace --all-targets --all-features` (119 tests passed across both crates)
+- `git diff --check`
+
+The runnable example returned `200` for Anne's direct viewer grant and Bob's unexpired conditional grant, `403` for Anne without a tuple on `document:99`, and `401` without a bearer token. Parser implementation was unchanged, so the external differential script was not rerun; the parser conformance test passed as part of the all-targets suites.
 
 ## 8. Completion criteria
 
