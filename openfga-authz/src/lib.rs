@@ -8,8 +8,8 @@ mod authz;
 
 pub use authz::{
     AuthorizationDecision, AuthorizationError, Bound, CapabilityDiagnostic, CheckRequest,
-    ConditionContext, ConditionName, ConstructionError, EntityId, EvaluationLimits,
-    EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
+    ConditionContext, ConditionContextSource, ConditionName, ConstructionError, EntityId,
+    EvaluationLimits, EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
     InMemoryRelationshipStore, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
     RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
     RuntimeCapability, StoreError, StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject,

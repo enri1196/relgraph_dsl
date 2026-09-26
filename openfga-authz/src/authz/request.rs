@@ -92,6 +92,12 @@ pub enum ConstructionError {
     Validation(Vec<ValidationError>),
     /// The definition contains runtime constructs outside the initial profile.
     UnsupportedCapabilities(Vec<CapabilityDiagnostic>),
+    /// A condition failed CEL parsing, static type checking, or profile validation.
+    ConditionCompilation {
+        condition: String,
+        span: Option<SourceSpan>,
+        message: String,
+    },
 }
 
 impl fmt::Display for ConstructionError {
@@ -115,6 +121,12 @@ impl fmt::Display for ConstructionError {
                 }
                 Ok(())
             }
+            Self::ConditionCompilation {
+                condition, message, ..
+            } => write!(
+                f,
+                "condition '{condition}' could not be compiled: {message}"
+            ),
         }
     }
 }
@@ -123,7 +135,9 @@ impl Error for ConstructionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Parse(error) => Some(error),
-            Self::Validation(_) | Self::UnsupportedCapabilities(_) => None,
+            Self::Validation(_)
+            | Self::UnsupportedCapabilities(_)
+            | Self::ConditionCompilation { .. } => None,
         }
     }
 }
@@ -314,6 +328,24 @@ pub struct CheckRequest {
     context: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// Identifies which authorization context supplied a condition parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionContextSource {
+    /// A value persisted with the relationship tuple.
+    StoredTuple,
+    /// A value supplied for this individual check.
+    Request,
+}
+
+impl fmt::Display for ConditionContextSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::StoredTuple => "stored tuple",
+            Self::Request => "request",
+        })
+    }
+}
+
 impl CheckRequest {
     pub fn new(
         tenant: TenantId,
@@ -374,6 +406,7 @@ pub struct EvaluationLimits {
     max_relation_depth: usize,
     max_store_calls: usize,
     max_work_units: usize,
+    max_condition_cost: usize,
 }
 
 impl EvaluationLimits {
@@ -393,6 +426,10 @@ impl EvaluationLimits {
     pub const DEFAULT_MAX_WORK_UNITS: usize = 100_000;
     /// Largest work-unit limit accepted by the runtime.
     pub const MAX_WORK_UNITS: usize = 1_000_000;
+    /// Default aggregate CEL condition cost budget for one check.
+    pub const DEFAULT_MAX_CONDITION_COST: usize = 100;
+    /// Largest CEL condition cost budget accepted by the runtime.
+    pub const MAX_CONDITION_COST: usize = 100_000;
 
     /// Creates limits with the supplied tuple budget and defaults for other bounds.
     pub fn new(max_tuples_scanned: usize) -> Result<Self, EvaluationLimitsError> {
@@ -409,6 +446,7 @@ impl EvaluationLimits {
             max_relation_depth: Self::DEFAULT_MAX_RELATION_DEPTH,
             max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
+            max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
         })
     }
 
@@ -462,6 +500,23 @@ impl EvaluationLimits {
         Ok(self)
     }
 
+    /// Sets the aggregate CEL condition cost budget for one check.
+    pub fn with_max_condition_cost(
+        mut self,
+        maximum: usize,
+    ) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroConditionCost);
+        }
+        if maximum > Self::MAX_CONDITION_COST {
+            return Err(EvaluationLimitsError::ConditionCostTooLarge {
+                maximum: Self::MAX_CONDITION_COST,
+            });
+        }
+        self.max_condition_cost = maximum;
+        Ok(self)
+    }
+
     /// Returns the relation traversal depth budget.
     pub const fn max_relation_depth(self) -> usize {
         self.max_relation_depth
@@ -476,6 +531,11 @@ impl EvaluationLimits {
     pub const fn max_work_units(self) -> usize {
         self.max_work_units
     }
+
+    /// Returns the aggregate CEL condition cost budget for one check.
+    pub const fn max_condition_cost(self) -> usize {
+        self.max_condition_cost
+    }
 }
 
 impl Default for EvaluationLimits {
@@ -485,6 +545,7 @@ impl Default for EvaluationLimits {
             max_relation_depth: Self::DEFAULT_MAX_RELATION_DEPTH,
             max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
+            max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
         }
     }
 }
@@ -507,6 +568,10 @@ pub enum EvaluationLimitsError {
     ZeroWorkLimit,
     /// The work-unit limit exceeds the runtime maximum.
     WorkLimitTooLarge { maximum: usize },
+    /// The CEL condition cost budget must be nonzero.
+    ZeroConditionCost,
+    /// The CEL condition cost budget exceeds the runtime maximum.
+    ConditionCostTooLarge { maximum: usize },
 }
 
 impl std::fmt::Display for EvaluationLimitsError {
@@ -527,6 +592,10 @@ impl std::fmt::Display for EvaluationLimitsError {
             Self::ZeroWorkLimit => write!(f, "work limit must be greater than zero"),
             Self::WorkLimitTooLarge { maximum } => {
                 write!(f, "work limit must not exceed {maximum}")
+            }
+            Self::ZeroConditionCost => write!(f, "condition cost limit must be greater than zero"),
+            Self::ConditionCostTooLarge { maximum } => {
+                write!(f, "condition cost limit must not exceed {maximum}")
             }
         }
     }
@@ -566,6 +635,34 @@ pub enum AuthorizationError {
         relation: String,
     },
     Store(super::store::StoreError),
+    /// A required parameter was absent from both the tuple and check contexts.
+    MissingConditionContext {
+        condition: String,
+        parameter: String,
+    },
+    /// A supplied context value did not match the declared condition type.
+    InvalidConditionContext {
+        condition: String,
+        parameter: String,
+        expected: String,
+        source: ConditionContextSource,
+    },
+    /// Persisted or request context supplied a parameter not declared in CEL.
+    UndeclaredConditionContext {
+        condition: String,
+        parameter: String,
+        source: ConditionContextSource,
+    },
+    /// CEL evaluation failed or produced a value other than bool.
+    ConditionEvaluationFailed {
+        condition: String,
+        message: String,
+    },
+    /// The check's aggregate CEL cost estimate exceeded its configured budget.
+    ConditionCostLimitExceeded {
+        maximum_cost: usize,
+        estimated_cost: usize,
+    },
 }
 
 impl std::fmt::Display for AuthorizationError {
@@ -618,6 +715,43 @@ impl std::fmt::Display for AuthorizationError {
                 "relationship traversal revisited {object_type}:{object_id}#{relation}"
             ),
             Self::Store(error) => write!(f, "relationship store failed: {error}"),
+            Self::MissingConditionContext {
+                condition,
+                parameter,
+            } => write!(
+                f,
+                "condition '{condition}' requires context parameter '{parameter}'"
+            ),
+            Self::InvalidConditionContext {
+                condition,
+                parameter,
+                expected,
+                source,
+            } => write!(
+                f,
+                "{source} context parameter '{parameter}' for condition '{condition}' must be {expected}"
+            ),
+            Self::UndeclaredConditionContext {
+                condition,
+                parameter,
+                source,
+            } => write!(
+                f,
+                "{source} context parameter '{parameter}' is not declared by condition '{condition}'"
+            ),
+            Self::ConditionEvaluationFailed { condition, message } => {
+                write!(
+                    f,
+                    "condition '{condition}' failed during CEL evaluation: {message}"
+                )
+            }
+            Self::ConditionCostLimitExceeded {
+                maximum_cost,
+                estimated_cost,
+            } => write!(
+                f,
+                "condition evaluation cost {estimated_cost} exceeds the remaining budget {maximum_cost}"
+            ),
         }
     }
 }

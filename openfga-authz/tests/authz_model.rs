@@ -76,19 +76,13 @@ fn rejects_relation_dependency_cycles_even_when_the_parser_accepts_them() {
 }
 
 #[test]
-fn accepts_typed_wildcards_but_rejects_conditions_until_task_four() {
+fn accepts_typed_wildcards_and_compiled_conditions() {
     let wildcard =
         "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user:*]\n";
     let _model = FgaAuthz::new(wildcard).unwrap();
 
     let conditional = "model\nschema 1.2\ntype user\ntype document\n  relations\n    define viewer: [user with active]\ncondition active(now: timestamp) { now < timestamp(\"2030-01-01T00:00:00Z\") }\n";
-    let error = FgaAuthz::new(conditional).unwrap_err();
-    assert!(matches!(
-        error,
-        ConstructionError::UnsupportedCapabilities(diagnostics)
-            if diagnostics.iter().any(|diagnostic| diagnostic.capability == RuntimeCapability::ConditionalRelationship)
-                && diagnostics.iter().any(|diagnostic| diagnostic.capability == RuntimeCapability::ConditionDefinitions)
-    ));
+    let _model = FgaAuthz::new(conditional).unwrap();
 }
 
 #[test]

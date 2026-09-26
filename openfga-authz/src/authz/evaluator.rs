@@ -14,6 +14,16 @@ use std::pin::Pin;
 
 type EvalFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AuthorizationError>> + Send + 'a>>;
 
+fn condition_matches(target: &RelationTarget, tuple: &RelationshipTuple) -> bool {
+    match (&target.condition, tuple.condition()) {
+        (None, None) => true,
+        (Some(openfga_dsl::RelationCondition::Named(expected)), Some(context)) => {
+            expected == context.name().as_str()
+        }
+        _ => false,
+    }
+}
+
 /// Evaluates one structured check against one tenant-scoped store snapshot.
 pub(crate) async fn check<S: RelationshipStore>(
     compiled: &CompiledModel,
@@ -77,6 +87,7 @@ struct Evaluator<'a, S> {
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
+    condition_cost_used: usize,
 }
 
 impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
@@ -97,6 +108,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
+            condition_cost_used: 0,
         }
     }
 
@@ -231,9 +243,9 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let mut first_error = None;
             for tuple in &tuples {
                 self.validate_tuple(tuple, &object, &relation)?;
-                self.validate_assignment_subject(tuple.subject(), &targets)?;
+                self.validate_assignment_subject(tuple, &targets)?;
 
-                let result = match tuple.subject() {
+                let membership = match tuple.subject() {
                     TupleSubject::Direct(tuple_subject) => Ok(tuple_subject.type_name()
                         == self.request.subject().type_name()
                         && tuple_subject.id() == self.request.subject().id()),
@@ -244,6 +256,10 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         self.evaluate_relation(object.clone(), relation.clone(), depth + 1)
                             .await
                     }
+                };
+                let result = match membership {
+                    Ok(true) => self.evaluate_tuple_condition(tuple),
+                    other => other,
                 };
                 match result {
                     Ok(true) => allowed = true,
@@ -313,7 +329,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 let compatible = targets.iter().any(|target| {
                     target.target_type == subject_type
                         && target.relation_or_wildcard.is_none()
-                        && target.condition.is_none()
+                        && condition_matches(target, tuple)
                 });
                 if !compatible {
                     return Err(AuthorizationError::InvalidTuple(
@@ -325,9 +341,13 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     tuple_subject.id().as_str().to_owned(),
                 )
                 .map_err(|_| AuthorizationError::InvalidTuple("invalid tupleset subject"))?;
-                let result = self
+                let membership = self
                     .evaluate_relation(target_object, computed_relation.clone(), depth + 1)
                     .await;
+                let result = match membership {
+                    Ok(true) => self.evaluate_tuple_condition(tuple),
+                    other => other,
+                };
                 match result {
                     Ok(true) => allowed = true,
                     Ok(false) => {}
@@ -351,10 +371,10 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     /// Confirms that a tuple subject is one of the model's declared targets.
     fn validate_assignment_subject(
         &self,
-        subject: &TupleSubject,
+        tuple: &RelationshipTuple,
         targets: &[RelationTarget],
     ) -> Result<(), AuthorizationError> {
-        let (subject_type, restriction) = match subject {
+        let (subject_type, restriction) = match tuple.subject() {
             TupleSubject::Direct(subject) => (subject.type_name().as_str(), None),
             TupleSubject::Userset { object, relation } => {
                 (object.type_name().as_str(), Some(relation.as_str()))
@@ -377,7 +397,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         if targets.iter().any(|target| {
             target.target_type == subject_type
                 && target.relation_or_wildcard.as_deref() == restriction
-                && target.condition.is_none()
+                && condition_matches(target, tuple)
         }) {
             Ok(())
         } else {
@@ -404,12 +424,40 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 "tuple does not match the requested object and relation",
             ));
         }
-        if tuple.condition().is_some() {
-            return Err(AuthorizationError::InvalidTuple(
-                "conditional tuples are not supported by this runtime profile",
-            ));
+        if let Some(context) = tuple.condition() {
+            let condition = self.compiled.condition(context.name().as_str()).ok_or(
+                AuthorizationError::InvalidTuple(
+                    "tuple condition is absent from the authorization model",
+                ),
+            )?;
+            condition.validate_stored_context(context.values())?;
         }
         Ok(())
+    }
+
+    fn evaluate_tuple_condition(
+        &mut self,
+        tuple: &RelationshipTuple,
+    ) -> Result<bool, AuthorizationError> {
+        let Some(context) = tuple.condition() else {
+            return Ok(true);
+        };
+        let condition = self.compiled.condition(context.name().as_str()).ok_or(
+            AuthorizationError::InvalidTuple(
+                "tuple condition is absent from the authorization model",
+            ),
+        )?;
+        let remaining_cost = self
+            .limits
+            .max_condition_cost()
+            .saturating_sub(self.condition_cost_used);
+        let evaluation = condition.evaluate(
+            Some(context.values()),
+            self.request.context(),
+            remaining_cost,
+        )?;
+        self.condition_cost_used = self.condition_cost_used.saturating_add(evaluation.cost);
+        Ok(evaluation.allowed)
     }
 
     /// Reads every page while enforcing the per-check tuple and call budgets.

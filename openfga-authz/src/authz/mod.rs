@@ -1,15 +1,16 @@
 //! Authorization model construction and lifecycle state types.
 
+mod conditions;
 mod evaluator;
 mod model;
 mod request;
 mod store;
 
 pub use request::{
-    AuthorizationDecision, AuthorizationError, CapabilityDiagnostic, CheckRequest, ConditionName,
-    ConstructionError, EntityId, EvaluationLimits, EvaluationLimitsError, IdentifierError,
-    ObjectRef, RelationExpressionKind, RelationLocation, RelationName, RuntimeCapability, Subject,
-    TenantId, TypeName,
+    AuthorizationDecision, AuthorizationError, CapabilityDiagnostic, CheckRequest,
+    ConditionContextSource, ConditionName, ConstructionError, EntityId, EvaluationLimits,
+    EvaluationLimitsError, IdentifierError, ObjectRef, RelationExpressionKind, RelationLocation,
+    RelationName, RuntimeCapability, Subject, TenantId, TypeName,
 };
 pub use store::{
     ConditionContext, InMemoryReadSession, InMemoryRelationshipStore, RelationshipPage,

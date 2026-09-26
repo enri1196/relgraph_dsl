@@ -192,7 +192,7 @@ Implement computed usersets, group membership, typed wildcards, tuple-to-userset
 
 Acceptance/tests: positive and negative cases cover all six expression forms; nested group membership; inherited document access; unrelated wildcard type denies; subtraction errors never grant; boolean error handling is branch-order invariant; tuple graph cycles and exhausted limits return errors safely. A runtime cycle regression test constructs an internal cyclic graph directly because public construction rejects recursive model dependencies. Conditional rules remain rejected until Task 4. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
-### Task 4 — [TODO] Compile conditions and validate schema-driven context
+### Task 4 — [DONE] Compile conditions and validate schema-driven context
 
 Dependencies: Task 3.
 
@@ -200,7 +200,11 @@ Files: `openfga-authz/Cargo.toml`, `openfga-authz/src/authz/{model,conditions,re
 
 Choose and record a CEL dependency and supported capability profile. Compile/type-check condition programs at construction; implement typed values, lazy context resolution, tuple/request merge, and evaluation budgets. Expand runtime acceptance only for implemented types and functions.
 
+The runtime pins `cel-core = 0.5.1` and compiles/type-checks each named condition during model construction. Its supported declaration types are `bool`, `int`, `uint`, `double`, `string`, `duration`, `timestamp`, and one-level `list<T>` / `map<T>` containers over those scalar types (map keys are strings). Durations use CEL/OpenFGA duration strings and timestamps use RFC3339. The accepted expression profile includes boolean/numeric/string comparisons and arithmetic, field and index access, `has`, `size`, `contains`, `startsWith`, `endsWith`, `matches`, and the standard scalar/time conversions `int`, `uint`, `double`, `string`, `bytes`, `duration`, and `timestamp`. Bytes, `any`, IP addresses, nested containers, custom/message types, extension functions, and comprehension macros are rejected at construction. The evaluator lazily resolves only parameters referenced by a condition; persisted tuple values take precedence over request context, which may fill missing values but cannot replace them. A per-check deterministic local cost estimate is enforced (default limit 100, configurable up to 100,000); this limit is an explicit local resource budget and is not claimed to reproduce OpenFGA server CEL cost accounting.
+
 Acceptance/tests: invalid CEL or undeclared variables fail construction; valid scalar/container/time values evaluate correctly; wrong types and missing relevant values produce typed errors; stored grant metadata cannot be overridden; an unconditional allow branch survives an unrelated missing condition input; expired conditional grant denies; evaluation cost limits are enforced.
+
+Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
 ### Task 5 — [TODO] Derive route policies from the compiled schema
 

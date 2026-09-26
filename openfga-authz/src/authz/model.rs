@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use openfga_dsl::{RelationCondition, RelationExpression, RelationTarget, Schema, validate_schema};
 
+use super::conditions::{self, CompiledCondition};
 use super::request::{
     CapabilityDiagnostic, ConstructionError, RelationLocation, RuntimeCapability,
 };
@@ -15,6 +16,7 @@ pub(crate) struct CompiledModel {
     type_index: HashMap<String, usize>,
     relation_index: HashMap<(usize, String), usize>,
     relation_count: usize,
+    conditions: HashMap<String, CompiledCondition>,
 }
 
 impl CompiledModel {
@@ -29,6 +31,8 @@ impl CompiledModel {
                 capability_errors,
             ));
         }
+
+        let conditions = conditions::compile_all(&schema)?;
 
         let mut type_index = HashMap::with_capacity(schema.type_definitions.len());
         let mut relation_index = HashMap::new();
@@ -47,6 +51,7 @@ impl CompiledModel {
             type_index,
             relation_index,
             relation_count,
+            conditions,
         })
     }
 
@@ -78,23 +83,16 @@ impl CompiledModel {
             .get(&(type_id, relation.to_owned()))
             .copied()
     }
+
+    /// Resolves a model condition by its declared name.
+    pub(crate) fn condition(&self, name: &str) -> Option<&CompiledCondition> {
+        self.conditions.get(name)
+    }
 }
 
 /// Collects all model constructs that exceed the initial runtime profile.
 fn unsupported_capabilities(schema: &Schema) -> Vec<CapabilityDiagnostic> {
     let mut diagnostics = Vec::new();
-
-    for condition in &schema.condition_definitions {
-        diagnostics.push(CapabilityDiagnostic {
-            capability: RuntimeCapability::ConditionDefinitions,
-            relation: None,
-            span: condition.span.clone(),
-            message: format!(
-                "condition '{}' is declared, but condition programs are not yet compiled",
-                condition.name
-            ),
-        });
-    }
 
     for type_definition in &schema.type_definitions {
         for relation in &type_definition.relations {
@@ -145,12 +143,7 @@ fn inspect_target(
     diagnostics: &mut Vec<CapabilityDiagnostic>,
 ) {
     match target.condition {
-        Some(RelationCondition::Named(_)) => diagnostics.push(CapabilityDiagnostic {
-            capability: RuntimeCapability::ConditionalRelationship,
-            relation: Some(location.clone()),
-            span: span.clone(),
-            message: "conditioned relationship restrictions are not supported yet".into(),
-        }),
+        Some(RelationCondition::Named(_)) => {}
         Some(RelationCondition::InlineExpression) => diagnostics.push(CapabilityDiagnostic {
             capability: RuntimeCapability::InlineConditionExpression,
             relation: Some(location.clone()),
@@ -433,6 +426,7 @@ mod tests {
             type_index,
             relation_index,
             relation_count,
+            conditions: HashMap::new(),
         };
         let store = InMemoryRelationshipStore::new();
         let tenant = TenantId::new("tenant-a").unwrap();
