@@ -1,6 +1,6 @@
 # OpenFGA authorization for Axum
 
-Status: in progress; Tasks 1–5 are complete and Tasks 6–8 are TODO.
+Status: in progress; Tasks 1–7 are complete and Task 8 is TODO.
 
 ## 1. Goal and architecture decision
 
@@ -201,7 +201,7 @@ Files: `openfga-authz/Cargo.toml`, `openfga-authz/src/authz/{model,conditions,re
 
 Choose and record a CEL dependency and supported capability profile. Compile/type-check condition programs at construction; implement typed values, lazy context resolution, tuple/request merge, and evaluation budgets. Expand runtime acceptance only for implemented types and functions.
 
-The runtime pins `cel-core = 0.5.1` and compiles/type-checks each named condition during model construction. Its supported declaration types are `bool`, `int`, `uint`, `double`, `string`, `duration`, `timestamp`, and one-level `list<T>` / `map<T>` containers over those scalar types (map keys are strings). Durations use CEL/OpenFGA duration strings and timestamps use RFC3339. The accepted expression profile includes boolean/numeric/string comparisons and arithmetic, field and index access, `has`, `size`, `contains`, `startsWith`, `endsWith`, `matches`, and the standard scalar/time conversions `int`, `uint`, `double`, `string`, `bytes`, `duration`, and `timestamp`. Bytes, `any`, IP addresses, nested containers, custom/message types, extension functions, and comprehension macros are rejected at construction. The evaluator lazily resolves only parameters referenced by a condition; persisted tuple values take precedence over request context, which may fill missing values but cannot replace them. A per-check deterministic local cost estimate is enforced (default limit 100, configurable up to 100,000); this limit is an explicit local resource budget and is not claimed to reproduce OpenFGA server CEL cost accounting.
+The runtime pins `cel-core = 0.5.1` and compiles/type-checks each named condition during model construction. Its supported declaration types are `bool`, `int`, `uint`, `double`, `string`, `duration`, `timestamp`, and one-level `list<T>` / `map<T>` containers over those scalar types (map keys are strings). Durations use CEL/OpenFGA duration strings and timestamps use RFC3339. The accepted expression profile includes boolean/numeric/string comparisons and arithmetic, field and index access, `has`, `size`, `startsWith`, `endsWith`, `matches`, and the standard scalar/time conversions `int`, `uint`, `double`, `string`, `bytes`, `duration`, and `timestamp`. `list.contains(value)` is rejected by the pinned `cel-core = 0.5.1` compiler and is outside the supported profile. Bytes, `any`, IP addresses, nested containers, custom/message types, extension functions, and comprehension macros are rejected at construction. The evaluator lazily resolves only parameters referenced by a condition; persisted tuple values take precedence over request context, which may fill missing values but cannot replace them. A per-check deterministic local cost estimate is enforced (default limit 100, configurable up to 100,000); this limit is an explicit local resource budget and is not claimed to reproduce OpenFGA server CEL cost accounting.
 
 Acceptance/tests: invalid CEL or undeclared variables fail construction; valid scalar/container/time values evaluate correctly; wrong types and missing relevant values produce typed errors; stored grant metadata cannot be overridden; an unconditional allow branch survives an unrelated missing condition input; expired conditional grant denies; evaluation cost limits are enforced.
 
@@ -237,7 +237,7 @@ Axum's [`route_layer` and middleware documentation](https://docs.rs/axum/0.8.9/a
 
 Verified with `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo check --workspace --all-targets --features openfga-authz/axum`, and `cargo test --workspace --all-targets --features openfga-authz/axum` (including all 8 Axum integration tests and existing parser/runtime tests); `git diff --check` passed.
 
-### Task 7 — [TODO] Establish semantic compatibility and isolation evidence
+### Task 7 — [DONE] Establish semantic compatibility and isolation evidence
 
 Dependencies: Task 6.
 
@@ -245,7 +245,9 @@ Files: `openfga-authz/tests/authz_compatibility.rs`, `openfga-authz/tests/fixtur
 
 Create a reproducible differential harness against a pinned OpenFGA server for the supported runtime profile. Record server version, models, tuples, contexts, expected decisions/errors, and known unsupported features. Keep ordinary Cargo tests offline by checking in fixtures. Grammar conformance alone is not evaluator conformance.
 
-Acceptance/tests: direct/group/public/inherited access, compound rules, condition types, context precedence, missing context, and branch errors agree within the declared profile; mismatches block a compatibility claim. Concurrent checks isolate principals, tenants, and condition context; revocation is reflected by the next independent store session; failures/timeouts never run handlers. Include Tower readiness and cancellation regressions.
+Implementation: `openfga-authz/tools/openfga-differential.py` starts a temporary OpenFGA `v1.21.0` container with memory storage, verifies release commit `ab557c5592670c899de35297e7aa067015f06502`, and runs the JSON API models and tuples in `openfga-authz/tests/fixtures/authz/`. The `.fga` companions provide the local runtime models. Fixtures record decisions/errors and context inputs; the fixture README documents the offline and differential commands, image digest, local condition-cost override, and compatibility boundary. Task 7 exposed that `cel-core = 0.5.1` rejects `list.contains(value)` despite the earlier plan wording; the supported CEL profile above now excludes it.
+
+Acceptance/tests: direct/group/public/inherited access, compound rules, condition types, context precedence, missing context, and branch errors agree within the declared profile; mismatches block a compatibility claim. Concurrent checks isolate principals, tenants, and condition context; revocation is reflected by the next independent store session; store failures and cancellation/timeouts never run handlers. Tower readiness and cancellation regressions are covered. The pinned server run passed all 17 fixture cases. Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo check --workspace --all-targets --features openfga-authz/axum`, `cargo test --workspace --all-targets --features openfga-authz/axum`, `python3 openfga-authz/tools/openfga-differential.py` (17 cases), and `git diff --check`.
 
 ### Task 8 — [TODO] Publish a runnable example and complete feature validation
 

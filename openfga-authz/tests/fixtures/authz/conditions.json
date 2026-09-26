@@ -1,0 +1,124 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "model_file": "conditions.fga",
+  "local_max_condition_cost": 512,
+  "model": {
+    "schema_version": "1.1",
+    "type_definitions": [
+      { "type": "user" },
+      {
+        "type": "document",
+        "relations": { "viewer": { "this": {} } },
+        "metadata": {
+          "relations": {
+            "viewer": {
+              "directly_related_user_types": [
+                { "type": "user", "condition": "full_context" }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "conditions": {
+      "full_context": {
+        "name": "full_context",
+        "expression": "enabled && count > 0 && limit > 0u && ratio > 0.0 && name.startsWith(\"open\") && grant > duration(\"1s\") && now > timestamp(\"2020-01-01T00:00:00Z\") && size(tags) > 0 && labels[\"tier\"] == \"gold\"",
+        "parameters": {
+          "enabled": { "type_name": "TYPE_NAME_BOOL" },
+          "count": { "type_name": "TYPE_NAME_INT" },
+          "limit": { "type_name": "TYPE_NAME_UINT" },
+          "ratio": { "type_name": "TYPE_NAME_DOUBLE" },
+          "name": { "type_name": "TYPE_NAME_STRING" },
+          "grant": { "type_name": "TYPE_NAME_DURATION" },
+          "now": { "type_name": "TYPE_NAME_TIMESTAMP" },
+          "tags": {
+            "type_name": "TYPE_NAME_LIST",
+            "generic_types": [{ "type_name": "TYPE_NAME_STRING" }]
+          },
+          "labels": {
+            "type_name": "TYPE_NAME_MAP",
+            "generic_types": [{ "type_name": "TYPE_NAME_STRING" }]
+          }
+        }
+      }
+    }
+  },
+  "tenant": "tenant-a",
+  "tuples": [
+    {
+      "user": "user:anne",
+      "relation": "viewer",
+      "object": "document:typed",
+      "condition": {
+        "name": "full_context",
+        "context": {
+          "enabled": true,
+          "count": 2,
+          "grant": "5m",
+          "tags": ["admin"],
+          "labels": { "tier": "gold" }
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "condition-supported-scalar-and-collection-types",
+      "request": {
+        "user": "user:anne",
+        "relation": "viewer",
+        "object": "document:typed",
+        "context": {
+          "limit": 3,
+          "ratio": 2.5,
+          "name": "openfga",
+          "now": "2025-06-01T00:00:00Z"
+        }
+      },
+      "expected": { "local": "allow", "server": "allow" }
+    },
+    {
+      "id": "persisted-condition-context-takes-precedence",
+      "request": {
+        "user": "user:anne",
+        "relation": "viewer",
+        "object": "document:typed",
+        "context": {
+          "enabled": false,
+          "count": 0,
+          "grant": "1s",
+          "tags": [],
+          "labels": { "tier": "silver" },
+          "limit": 3,
+          "ratio": 2.5,
+          "name": "openfga",
+          "now": "2025-06-01T00:00:00Z"
+        }
+      },
+      "expected": { "local": "allow", "server": "allow" }
+    },
+    {
+      "id": "missing-required-request-context-is-an-error",
+      "request": {
+        "user": "user:anne",
+        "relation": "viewer",
+        "object": "document:typed",
+        "context": {
+          "limit": 3,
+          "ratio": 2.5,
+          "name": "openfga"
+        }
+      },
+      "expected": {
+        "local_error": "MissingConditionContext",
+        "server_error_contains": "context"
+      }
+    }
+  ]
+}

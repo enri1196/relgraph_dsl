@@ -1,0 +1,16 @@
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define direct: [user]
+    define conditional: [user with needs_flag]
+    define may_view: direct or conditional
+    define must_view: direct and conditional
+    define except_conditional: direct but not conditional
+
+condition needs_flag(flag: bool) {
+  flag
+}

@@ -1,0 +1,12 @@
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define viewer: [user with full_context]
+
+condition full_context(enabled: bool, count: int, limit: uint, ratio: double, name: string, grant: duration, now: timestamp, tags: list<string>, labels: map<string>) {
+  enabled && count > 0 && limit > 0u && ratio > 0.0 && name.startsWith("open") && grant > duration("1s") && now > timestamp("2020-01-01T00:00:00Z") && size(tags) > 0 && labels["tier"] == "gold"
+}

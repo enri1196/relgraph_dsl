@@ -1,0 +1,125 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "model_file": "relationships.fga",
+  "model": {
+    "schema_version": "1.1",
+    "type_definitions": [
+      { "type": "user" },
+      {
+        "type": "group",
+        "relations": { "member": { "this": {} } },
+        "metadata": {
+          "relations": {
+            "member": { "directly_related_user_types": [{ "type": "user" }] }
+          }
+        }
+      },
+      {
+        "type": "folder",
+        "relations": { "viewer": { "this": {} } },
+        "metadata": {
+          "relations": {
+            "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+          }
+        }
+      },
+      {
+        "type": "document",
+        "relations": {
+          "owner": { "this": {} },
+          "editor": {
+            "union": {
+              "child": [
+                { "this": {} },
+                { "computedUserset": { "object": "", "relation": "owner" } }
+              ]
+            }
+          },
+          "direct_viewer": { "this": {} },
+          "group_viewer": { "this": {} },
+          "public_viewer": { "this": {} },
+          "parent": { "this": {} },
+          "viewer": {
+            "union": {
+              "child": [
+                { "this": {} },
+                { "computedUserset": { "object": "", "relation": "editor" } },
+                {
+                  "tupleToUserset": {
+                    "tupleset": { "object": "", "relation": "parent" },
+                    "computedUserset": { "object": "", "relation": "viewer" }
+                  }
+                }
+              ]
+            }
+          },
+          "all_viewer": {
+            "intersection": {
+              "child": [
+                { "computedUserset": { "object": "", "relation": "group_viewer" } },
+                { "computedUserset": { "object": "", "relation": "direct_viewer" } }
+              ]
+            }
+          },
+          "blocked": { "this": {} },
+          "visible": {
+            "difference": {
+              "base": { "this": {} },
+              "subtract": { "computedUserset": { "object": "", "relation": "blocked" } }
+            }
+          }
+        },
+        "metadata": {
+          "relations": {
+            "owner": { "directly_related_user_types": [{ "type": "user" }] },
+            "editor": { "directly_related_user_types": [{ "type": "user" }] },
+            "direct_viewer": { "directly_related_user_types": [{ "type": "user" }] },
+            "group_viewer": {
+              "directly_related_user_types": [{ "type": "group", "relation": "member" }]
+            },
+            "public_viewer": {
+              "directly_related_user_types": [{ "type": "user", "wildcard": {} }]
+            },
+            "parent": { "directly_related_user_types": [{ "type": "folder" }] },
+            "viewer": { "directly_related_user_types": [{ "type": "user" }] },
+            "blocked": { "directly_related_user_types": [{ "type": "user" }] },
+            "visible": { "directly_related_user_types": [{ "type": "user" }] }
+          }
+        }
+      }
+    ]
+  },
+  "tenant": "tenant-a",
+  "tuples": [
+    { "user": "user:anne", "relation": "direct_viewer", "object": "document:direct" },
+    { "user": "user:anne", "relation": "member", "object": "group:engineering" },
+    { "user": "group:engineering#member", "relation": "group_viewer", "object": "document:group" },
+    { "user": "user:*", "relation": "public_viewer", "object": "document:public" },
+    { "user": "user:anne", "relation": "owner", "object": "document:owned" },
+    { "user": "user:anne", "relation": "viewer", "object": "folder:section" },
+    { "user": "folder:section", "relation": "parent", "object": "document:child" },
+    { "user": "user:anne", "relation": "direct_viewer", "object": "document:both" },
+    { "user": "group:engineering#member", "relation": "group_viewer", "object": "document:both" },
+    { "user": "user:anne", "relation": "direct_viewer", "object": "document:intersection-missing" },
+    { "user": "user:anne", "relation": "visible", "object": "document:unblocked" },
+    { "user": "user:anne", "relation": "visible", "object": "document:blocked" },
+    { "user": "user:anne", "relation": "blocked", "object": "document:blocked" }
+  ],
+  "cases": [
+    { "id": "direct-user-allow", "request": { "user": "user:anne", "relation": "direct_viewer", "object": "document:direct" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "direct-user-deny", "request": { "user": "user:bob", "relation": "direct_viewer", "object": "document:missing" }, "expected": { "local": "deny", "server": "deny" } },
+    { "id": "group-userset", "request": { "user": "user:anne", "relation": "group_viewer", "object": "document:group" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "typed-public-wildcard", "request": { "user": "user:bob", "relation": "public_viewer", "object": "document:public" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "computed-userset-union", "request": { "user": "user:anne", "relation": "viewer", "object": "document:owned" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "tuple-to-userset-inheritance", "request": { "user": "user:anne", "relation": "viewer", "object": "document:child" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "intersection-allows", "request": { "user": "user:anne", "relation": "all_viewer", "object": "document:both" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "intersection-denies", "request": { "user": "user:anne", "relation": "all_viewer", "object": "document:intersection-missing" }, "expected": { "local": "deny", "server": "deny" } },
+    { "id": "difference-allows", "request": { "user": "user:anne", "relation": "visible", "object": "document:unblocked" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "difference-denies", "request": { "user": "user:anne", "relation": "visible", "object": "document:blocked" }, "expected": { "local": "deny", "server": "deny" } }
+  ]
+}

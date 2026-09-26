@@ -1,0 +1,77 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "model_file": "branch_errors.fga",
+  "model": {
+    "schema_version": "1.1",
+    "type_definitions": [
+      { "type": "user" },
+      {
+        "type": "document",
+        "relations": {
+          "direct": { "this": {} },
+          "conditional": { "this": {} },
+          "may_view": {
+            "union": {
+              "child": [
+                { "computedUserset": { "object": "", "relation": "direct" } },
+                { "computedUserset": { "object": "", "relation": "conditional" } }
+              ]
+            }
+          },
+          "must_view": {
+            "intersection": {
+              "child": [
+                { "computedUserset": { "object": "", "relation": "direct" } },
+                { "computedUserset": { "object": "", "relation": "conditional" } }
+              ]
+            }
+          },
+          "except_conditional": {
+            "difference": {
+              "base": { "computedUserset": { "object": "", "relation": "direct" } },
+              "subtract": { "computedUserset": { "object": "", "relation": "conditional" } }
+            }
+          }
+        },
+        "metadata": {
+          "relations": {
+            "direct": { "directly_related_user_types": [{ "type": "user" }] },
+            "conditional": {
+              "directly_related_user_types": [
+                { "type": "user", "condition": "needs_flag" }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "conditions": {
+      "needs_flag": {
+        "name": "needs_flag",
+        "expression": "flag",
+        "parameters": { "flag": { "type_name": "TYPE_NAME_BOOL" } }
+      }
+    }
+  },
+  "tenant": "tenant-a",
+  "tuples": [
+    { "user": "user:anne", "relation": "direct", "object": "document:union-error" },
+    { "user": "user:anne", "relation": "conditional", "object": "document:union-error", "condition": { "name": "needs_flag", "context": {} } },
+    { "user": "user:anne", "relation": "conditional", "object": "document:union-only-error", "condition": { "name": "needs_flag", "context": {} } },
+    { "user": "user:anne", "relation": "direct", "object": "document:intersection-error" },
+    { "user": "user:anne", "relation": "conditional", "object": "document:intersection-error", "condition": { "name": "needs_flag", "context": {} } },
+    { "user": "user:anne", "relation": "direct", "object": "document:difference-error" },
+    { "user": "user:anne", "relation": "conditional", "object": "document:difference-error", "condition": { "name": "needs_flag", "context": {} } }
+  ],
+  "cases": [
+    { "id": "union-allow-survives-irrelevant-branch-error", "request": { "user": "user:anne", "relation": "may_view", "object": "document:union-error" }, "expected": { "local": "allow", "server": "allow" } },
+    { "id": "union-error-without-an-allow", "request": { "user": "user:anne", "relation": "may_view", "object": "document:union-only-error" }, "expected": { "local_error": "MissingConditionContext", "server_error_contains": "context" } },
+    { "id": "intersection-error-prevents-allow", "request": { "user": "user:anne", "relation": "must_view", "object": "document:intersection-error" }, "expected": { "local_error": "MissingConditionContext", "server_error_contains": "context" } },
+    { "id": "difference-error-prevents-allow", "request": { "user": "user:anne", "relation": "except_conditional", "object": "document:difference-error" }, "expected": { "local_error": "MissingConditionContext", "server_error_contains": "context" } }
+  ]
+}

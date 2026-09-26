@@ -440,3 +440,170 @@ fn route_policy_references_are_validated_when_middleware_is_built() {
     );
     assert!(result.is_err());
 }
+
+#[derive(Clone)]
+struct FixedObjectId;
+
+impl openfga_authz::RequestPartsExtractor<openfga_authz::EntityId> for FixedObjectId {
+    fn extract(
+        &self,
+        _parts: &http::request::Parts,
+    ) -> Result<openfga_authz::EntityId, openfga_authz::PolicyInputError> {
+        Ok(openfga_authz::EntityId::new("42").unwrap())
+    }
+}
+
+#[derive(Clone)]
+struct PendingStore {
+    dropped_read: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct PendingSession {
+    dropped_read: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct PendingTupleRead {
+    dropped_read: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct PendingTupleListRead {
+    dropped_read: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::future::Future for PendingTupleRead {
+    type Output = Result<openfga_authz::RelationshipPage, openfga_authz::StoreError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for PendingTupleRead {
+    fn drop(&mut self) {
+        self.dropped_read
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl std::future::Future for PendingTupleListRead {
+    type Output = Result<Vec<openfga_authz::RelationshipTuple>, openfga_authz::StoreError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for PendingTupleListRead {
+    fn drop(&mut self) {
+        self.dropped_read
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl openfga_authz::RelationshipStore for PendingStore {
+    type ReadSession = PendingSession;
+
+    fn begin_read<'a>(
+        &'a self,
+        _tenant: &'a TenantId,
+    ) -> openfga_authz::StoreFuture<'a, Result<Self::ReadSession, openfga_authz::StoreError>> {
+        Box::pin(async move {
+            Ok(PendingSession {
+                dropped_read: Arc::clone(&self.dropped_read),
+            })
+        })
+    }
+}
+
+impl openfga_authz::RelationshipReadSession for PendingSession {
+    fn tuples<'a>(
+        &'a self,
+        _object: &'a ObjectRef,
+        _relation: &'a RelationName,
+        _maximum: usize,
+    ) -> openfga_authz::StoreFuture<
+        'a,
+        Result<Vec<openfga_authz::RelationshipTuple>, openfga_authz::StoreError>,
+    > {
+        Box::pin(PendingTupleListRead {
+            dropped_read: Arc::clone(&self.dropped_read),
+        })
+    }
+
+    fn tuples_page<'a>(
+        &'a self,
+        _object: &'a ObjectRef,
+        _relation: &'a RelationName,
+        _cursor: Option<usize>,
+        _maximum: usize,
+    ) -> openfga_authz::StoreFuture<
+        'a,
+        Result<openfga_authz::RelationshipPage, openfga_authz::StoreError>,
+    > {
+        Box::pin(PendingTupleRead {
+            dropped_read: Arc::clone(&self.dropped_read),
+        })
+    }
+}
+
+#[tokio::test]
+async fn tower_readiness_is_immediate_and_cancelling_authorization_never_runs_handler() {
+    use tower::{Layer, Service, ServiceExt};
+
+    let dropped_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = PendingStore {
+        dropped_read: Arc::clone(&dropped_read),
+    };
+    let authz = FgaAuthz::new(MODEL)
+        .unwrap()
+        .with_store(store, EvaluationLimits::default());
+    let policy = RoutePolicy::new("document", "viewer")
+        .principal(PrincipalSource::extension::<PrincipalExtension>())
+        .tenant(TenantSource::extension::<TenantExtension>())
+        .object_id(ObjectIdSource::from_request_parts(
+            "fixed_document_id",
+            FixedObjectId,
+        ));
+    let layer = authz.middleware(policy).unwrap();
+    let handler_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler_counter = Arc::clone(&handler_calls);
+    let inner = tower::service_fn(move |_request: Request<Body>| {
+        let handler_counter = Arc::clone(&handler_counter);
+        async move {
+            handler_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+        }
+    });
+    let mut service = layer.layer(inner);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), service.ready())
+        .await
+        .expect("authorization service readiness should not wait for a request")
+        .expect("authorization service should be ready");
+
+    let mut request = Request::new(Body::empty());
+    request
+        .extensions_mut()
+        .insert(PrincipalExtension(Subject::new("user", "anne").unwrap()));
+    request
+        .extensions_mut()
+        .insert(TenantExtension(TenantId::new("tenant-a").unwrap()));
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(25), service.call(request)).await;
+
+    assert!(
+        result.is_err(),
+        "the pending store read should be cancelled by the timeout"
+    );
+    assert!(
+        dropped_read.load(std::sync::atomic::Ordering::SeqCst),
+        "the in-flight store future should be dropped"
+    );
+    assert_eq!(handler_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
