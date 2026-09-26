@@ -31,3 +31,7 @@ grammar-derived pending the Task 10 pinned-runner audit.
 
 The pinned grammar and reference checksums are in `upstream/`. Maintainer tooling
 that executes the fixtures against the pinned grammar is in `../../../../tools/conformance/`.
+
+Manifest YAML examples, including order preservation, aliases, and lexical path
+normalization, are under `manifest/`; error codes, fields, and precedence are
+asserted by `tests/manifest.rs`.

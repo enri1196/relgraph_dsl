@@ -351,7 +351,7 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 - `cargo test --all-targets --locked` passed: 1 conformance test, all 21 parser tests, all 8 validation tests, and the demo target.
 - `git diff --check` passed.
 
-### Task 7 — Deterministic manifest parsing [TODO]
+### Task 7 — Deterministic manifest parsing [DONE]
 
 **Depends on:** Task 6.
 
@@ -363,7 +363,13 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 
 **Gate:** Exact normalized order and first-error expectations; formatting and all-target tests pass.
 
-**Completion evidence:** pending.
+**Completion evidence:**
+
+- Added runtime `serde` and `serde_yaml = "0.9.34"`, exported the manifest API, and implemented ordered custom YAML deserialization that preserves duplicate keys and scalar types. The parser enforces document/tag/root/key/version/content/path rules without filesystem access.
+- Added `tests/manifest.rs` with code, field, and precedence assertions, plus ordered, alias, and normalized-path examples under `tests/fixtures/openfga/manifest/`.
+- `cargo fmt --all -- --check` passed.
+- `cargo test --all-targets --locked` passed: 1 conformance test, 10 manifest tests, 21 parser tests, 8 validation tests, and the demo target.
+- `git diff --check` passed.
 
 ### Task 8 — Pure assembly and filesystem loading [TODO]
 
