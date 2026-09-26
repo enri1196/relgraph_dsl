@@ -1,0 +1,10 @@
+model
+schema 1.2
+type document
+  relations
+    define viewer: [group#member with allowed]
+type group
+  relations
+    define member: [user]
+type user
+condition allowed(id: string) { true }

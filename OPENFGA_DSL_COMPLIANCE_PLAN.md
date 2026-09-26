@@ -330,7 +330,7 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 
 **Completion evidence:** pending.
 
-### Task 6 — Bounded standalone validation [TODO]
+### Task 6 — Bounded standalone validation [DONE]
 
 **Depends on:** Task 5.
 
@@ -342,7 +342,14 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 
 **Gate:** Every issue has code/location assertions; formatting and all-target tests pass.
 
-**Completion evidence:** pending.
+**Completion evidence:**
+
+- Added `src/validation.rs` with standalone schema/version checks, first-declaration symbol tables, duplicate diagnostics with related locations, ordered reference validation, tuple-to-userset constraints, parameter-type checks, and manually constructed empty-assignment checks. Module documents return only `ModuleRequiresComposition`; extension declarations are excluded from standalone symbols and dependent checks.
+- Added `SourceLocation` and `ValidationError` with stable issue codes, `Display`, and `Error`; exported the validation module, `ValidationIssue`, `validate_schema`, and new diagnostic types from the crate root.
+- Added `tests/validation.rs` and semantic fixtures for forward references, cyclic relations within the bounded validation boundary, deterministic multi-error ordering, cascade suppression, all tuple-to-userset cases, duplicate related spans, unsupported versions, standalone extensions, and manual AST invariants.
+- `cargo fmt --all -- --check` passed.
+- `cargo test --all-targets --locked` passed: 1 conformance test, all 21 parser tests, all 8 validation tests, and the demo target.
+- `git diff --check` passed.
 
 ### Task 7 — Deterministic manifest parsing [TODO]
 

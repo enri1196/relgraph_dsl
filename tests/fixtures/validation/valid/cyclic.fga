@@ -1,0 +1,6 @@
+model
+schema 1.2
+type document
+  relations
+    define first: second
+    define second: first

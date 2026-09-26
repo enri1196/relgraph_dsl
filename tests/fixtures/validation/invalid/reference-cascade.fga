@@ -1,0 +1,8 @@
+model
+schema 3.0
+type document
+  relations
+    define lookup: [missing#absent with absent_condition]
+    define compute: missing_relation
+    define via: view from missing_tupleset
+    define other: [unknown_target]
