@@ -24,5 +24,10 @@ Task 4 adds a grammar-derived restriction fixture covering named and inline
 conditions (`$expression`) alongside unconditioned targets. Rejected missing
 and malformed condition forms are covered by parser regressions.
 
+Task 5 adds the full simple/container parameter-type matrix, invalid parameter
+forms, the condition-lexer newline boundary, and CEL fixtures for source-byte
+preservation and first-visible-`}` termination. These fixtures remain
+grammar-derived pending the Task 10 pinned-runner audit.
+
 The pinned grammar and reference checksums are in `upstream/`. Maintainer tooling
 that executes the fixtures against the pinned grammar is in `../../../../tools/conformance/`.

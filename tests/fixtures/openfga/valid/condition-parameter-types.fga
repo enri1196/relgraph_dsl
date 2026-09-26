@@ -1,0 +1,3 @@
+model
+schema 1.2
+condition check(bool_value: bool, string_value: string, int_value: int, uint_value: uint, double_value: double, duration_value: duration, timestamp_value: timestamp, ipaddress_value: ipaddress, list_bool: list<bool>, list_string: list<string>, list_int: list<int>, list_uint: list<uint>, list_double: list<double>, list_duration: list<duration>, list_timestamp: list<timestamp>, list_ipaddress: list<ipaddress>, map_bool: map<bool>, map_string: map<string>, map_int: map<int>, map_uint: map<uint>, map_double: map<double>, map_duration: map<duration>, map_timestamp: map<timestamp>, map_ipaddress: map<ipaddress>) { true }

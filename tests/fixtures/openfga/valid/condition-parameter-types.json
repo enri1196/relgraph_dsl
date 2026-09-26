@@ -1,0 +1,9 @@
+{
+  "id": "condition-parameter-types",
+  "owner_task": "task-5",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4",
+  "production": "conditionDef, conditionParam, conditionParamType",
+  "expected_parse": "accept",
+  "evidence": "grammar-derived",
+  "notes": "Covers all eight simple parameter types and all sixteen list/map combinations."
+}

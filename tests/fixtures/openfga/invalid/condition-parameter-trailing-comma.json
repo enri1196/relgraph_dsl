@@ -1,0 +1,12 @@
+{
+  "id": "condition-parameter-trailing-comma",
+  "owner_task": "task-5",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4",
+  "production": "conditionDef",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "A trailing comma cannot be followed by an empty condition parameter.",
+  "error_code": "UnexpectedToken",
+  "span_start": 44,
+  "span_end": 45
+}

@@ -1,0 +1,4 @@
+model
+schema 1.2
+condition check(
+  value: int) { true }

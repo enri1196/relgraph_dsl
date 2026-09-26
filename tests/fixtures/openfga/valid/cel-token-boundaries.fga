@@ -1,0 +1,4 @@
+model
+schema 1.2
+condition boundaries(value: string) {  value == "}" && r'}' && b"}" && R'''x}y''' && B"""z}""" // } comment
+ }

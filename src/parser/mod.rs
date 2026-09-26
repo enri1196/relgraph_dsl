@@ -1,3 +1,4 @@
+mod cel;
 mod common;
 mod condition;
 mod lexer;

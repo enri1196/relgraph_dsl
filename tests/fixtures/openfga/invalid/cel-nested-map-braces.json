@@ -1,0 +1,12 @@
+{
+  "id": "cel-nested-map-braces",
+  "owner_task": "task-5",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4",
+  "production": "conditionExpression, RBRACE",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "Condition bodies end at the first visible RBRACE token rather than balancing nested map braces.",
+  "error_code": "UnexpectedToken",
+  "span_start": 70,
+  "span_end": 71
+}

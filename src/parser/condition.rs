@@ -1,5 +1,6 @@
 use nom::{error::Error, error::ErrorKind};
 
+use super::cel::capture_expression;
 use super::common::{Res, TokenInput, expect_kind, skip_layout, span_from_consumed};
 use super::lexer::TokenKind;
 use crate::ast::{ConditionDefinition, ConditionParameter, ParameterType};
@@ -86,30 +87,12 @@ pub(super) fn parse_condition_definition<'a>(
     let (input, _) = skip_layout(input)?;
     let (input, open_brace) = expect_kind(input, TokenKind::LBrace)?;
 
-    let Some(close_index) = input
-        .iter()
-        .position(|token| token.kind == TokenKind::RBrace)
-    else {
-        return Err(nom::Err::Error(Error::new(
-            input.take_from(input.len()),
-            ErrorKind::Eof,
-        )));
-    };
-    let close_brace = input
-        .get(close_index)
-        .expect("position returned an in-range index");
-    let body_start = open_brace.span.end;
-    let body_end = close_brace.span.start;
-    let input_after_close = input.take_from(close_index + 1);
-    let expression = source
-        .get(body_start..body_end)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let (input_after_close, (expression, close_brace_span)) =
+        capture_expression(input, source, &open_brace)?;
 
     let span = SourceSpan {
         start: condition_token.span.start,
-        end: close_brace.span.end,
+        end: close_brace_span.end,
     };
     Ok((
         input_after_close,

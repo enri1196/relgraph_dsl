@@ -175,7 +175,7 @@ fn parses_condition_parameter_types_and_expression() {
 
     let condition: &ConditionDefinition = &schema.condition_definitions[0];
     assert_eq!(condition.name, "valid");
-    assert_eq!(condition.expression, "ids.size() > 0");
+    assert_eq!(condition.expression, " ids.size() > 0 ");
     assert_eq!(
         condition.parameters[0].param_type,
         ParameterType::Generic {
@@ -196,6 +196,121 @@ fn parses_condition_parameter_types_and_expression() {
             start: "model\nschema 1.1\ncondition valid(".len(),
             end: "model\nschema 1.1\ncondition valid(ids: list<string>".len(),
         })
+    );
+}
+
+#[test]
+fn parses_all_supported_condition_parameter_types() {
+    let simple_types = [
+        "bool",
+        "string",
+        "int",
+        "uint",
+        "double",
+        "duration",
+        "timestamp",
+        "ipaddress",
+    ];
+    let container_types = ["list", "map"];
+
+    for value_type in simple_types {
+        let input = format!("model\nschema 1.1\ncondition check(value: {value_type}) {{ }}");
+        let schema = parse_fga_schema(&input).expect("supported simple parameter type");
+        assert_eq!(schema.condition_definitions[0].parameters.len(), 1);
+        assert_eq!(
+            schema.condition_definitions[0].parameters[0].param_type,
+            ParameterType::Simple(value_type.into())
+        );
+    }
+
+    for container in container_types {
+        for value_type in simple_types {
+            let input = format!(
+                "model\nschema 1.1\ncondition check(value: {container}<{value_type}>) {{ }}"
+            );
+            let schema = parse_fga_schema(&input).expect("supported container parameter type");
+            assert_eq!(
+                schema.condition_definitions[0].parameters[0].param_type,
+                ParameterType::Generic {
+                    container: container.into(),
+                    inner: value_type.into(),
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_unsupported_condition_parameter_forms() {
+    for parameters in [
+        "",
+        "value: int,",
+        "value: integer",
+        "value: any",
+        "value: float",
+        "value: bytes",
+        "value: list",
+        "value: map<string, int>",
+        "value: list<list<int>>",
+        "value: list< string >",
+    ] {
+        let input = format!("model\nschema 1.1\ncondition check({parameters}) {{ true }}");
+        assert!(
+            parse_fga_schema(&input).is_err(),
+            "parameter form should be rejected: {parameters:?}"
+        );
+    }
+}
+
+#[test]
+fn preserves_cel_body_bytes_and_stops_at_first_visible_brace() {
+    let input = r##"model
+schema 1.1
+condition check(value: string) {  value == "}" && r'}' && b"}" && R'''x}y''' && B"""z}""" // } comment
+ }
+"##;
+    let schema = parse_fga_schema(input).expect("braces in CEL tokens do not close the body");
+    assert_eq!(
+        schema.condition_definitions[0].expression,
+        r##"  value == "}" && r'}' && b"}" && R'''x}y''' && B"""z}""" // } comment
+ "##
+    );
+
+    let empty = parse_fga_schema("model\nschema 1.1\ncondition empty(value: int) {  \n\t}\n")
+        .expect("empty CEL body is valid syntax");
+    assert_eq!(empty.condition_definitions[0].expression, "  \n\t");
+
+    let nested_map =
+        "model\nschema 1.1\ncondition nested(value: int) { {\"outer\": {\"inner\": 1}} }";
+    assert!(parse_fga_schema(nested_map).is_err());
+
+    let escapes = r##"model
+schema 1.1
+condition escaped(value: string) { value == "quote: \" brace: } newline: \n unicode: \u0041" }
+condition raw(value: string) { r"raw } text" }
+condition unvalidated(value: int) { definitely not valid CEL ??? }
+"##;
+    let escaped = parse_fga_schema(escapes).expect("valid token forms and arbitrary CEL semantics");
+    assert_eq!(escaped.condition_definitions.len(), 3);
+    assert_eq!(
+        escaped.condition_definitions[0].expression,
+        r##" value == "quote: \" brace: } newline: \n unicode: \u0041" "##
+    );
+    assert_eq!(
+        escaped.condition_definitions[1].expression,
+        " r\"raw } text\" "
+    );
+
+    let missing_close = "model\nschema 1.1\ncondition missing(value: int) { true";
+    assert_eq!(
+        parse_fga_schema(missing_close).unwrap_err().code,
+        openfga_dsl::diagnostics::ParseErrorCode::UnexpectedEof
+    );
+    let unterminated_string =
+        "model\nschema 1.1\ncondition invalid(value: string) { \"unterminated }";
+    assert_eq!(
+        parse_fga_schema(unterminated_string).unwrap_err().code,
+        openfga_dsl::diagnostics::ParseErrorCode::InvalidToken
     );
 }
 

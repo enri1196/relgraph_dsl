@@ -1,0 +1,12 @@
+{
+  "id": "condition-newline-in-parameters",
+  "owner_task": "task-5",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4",
+  "production": "CONDITION_DEF, NEWLINE",
+  "expected_parse": "reject",
+  "evidence": "grammar-derived",
+  "notes": "The pinned condition lexer mode defines no NEWLINE token, so physical newlines in parameters are lexical errors.",
+  "error_code": "InvalidToken",
+  "span_start": 33,
+  "span_end": 34
+}

@@ -1,0 +1,3 @@
+model
+schema 1.2
+condition nested(value: int) { {"outer": {"inner": 1}} }
