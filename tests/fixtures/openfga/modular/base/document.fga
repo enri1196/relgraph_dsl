@@ -1,0 +1,7 @@
+module shared
+
+type document
+  relations
+    define viewer: [user]
+
+condition can_view(x: bool) { x }

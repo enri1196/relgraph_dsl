@@ -1,0 +1,5 @@
+module shared
+
+type user
+
+condition can_edit(x: bool) { x }

@@ -1,0 +1,5 @@
+module shared
+
+extend type document
+  relations
+    define editor: [user]

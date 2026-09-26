@@ -35,3 +35,7 @@ that executes the fixtures against the pinned grammar is in `../../../../tools/c
 Manifest YAML examples, including order preservation, aliases, and lexical path
 normalization, are under `manifest/`; error codes, fields, and precedence are
 asserted by `tests/manifest.rs`.
+
+The `modular/` example places an extension before its base and reuses the same
+module name across files. Task 8 assembles it in manifest order while preserving
+base type order, relation order, condition order, and source origins.

@@ -440,7 +440,7 @@ impl<'de> Visitor<'de> for YamlNodeVisitor {
 }
 
 /// Normalizes a slash-separated relative path without consulting the filesystem.
-fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static str> {
+pub(crate) fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static str> {
     if path.contains('\0') {
         return Err("module paths cannot contain NUL");
     }
@@ -472,4 +472,67 @@ fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static str> {
     }
 
     Ok(PathBuf::from(components.join("/")))
+}
+
+/// Validates a constructed manifest value without parsing or serializing YAML.
+pub(crate) fn validate_manifest_value(manifest: &ModelManifest) -> Result<(), ManifestError> {
+    if !is_numeric_schema_version(&manifest.schema) {
+        return Err(manifest_error(
+            ManifestErrorCode::InvalidSchemaVersion,
+            Some("schema".to_string()),
+            format!(
+                "schema version '{}' must match ASCII major.minor digits",
+                manifest.schema
+            ),
+        ));
+    }
+
+    if manifest.contents.is_empty() {
+        return Err(manifest_error(
+            ManifestErrorCode::EmptyContents,
+            Some("contents".to_string()),
+            "field 'contents' must contain at least one module path".to_string(),
+        ));
+    }
+
+    let mut seen = HashSet::with_capacity(manifest.contents.len());
+    for (index, path) in manifest.contents.iter().enumerate() {
+        let field = format!("contents[{index}]");
+        let Some(path_text) = path.to_str() else {
+            return Err(manifest_error(
+                ManifestErrorCode::InvalidPath,
+                Some(field),
+                "module paths must be valid UTF-8 slash-separated paths".to_string(),
+            ));
+        };
+        let normalized = normalize_manifest_path(path_text).map_err(|message| {
+            manifest_error(
+                ManifestErrorCode::InvalidPath,
+                Some(field.clone()),
+                message.to_string(),
+            )
+        })?;
+        if normalized.to_str() != Some(path_text) {
+            return Err(manifest_error(
+                ManifestErrorCode::InvalidPath,
+                Some(field),
+                format!(
+                    "module path '{}' is not lexically normalized",
+                    path.display()
+                ),
+            ));
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(manifest_error(
+                ManifestErrorCode::DuplicatePath,
+                Some(format!("contents[{index}]")),
+                format!(
+                    "module path '{}' duplicates an earlier normalized path",
+                    normalized.display()
+                ),
+            ));
+        }
+    }
+
+    Ok(())
 }

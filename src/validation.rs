@@ -47,6 +47,10 @@ pub enum ValidationIssue {
     InvalidParameterType,
     /// A manually constructed direct assignment has no targets.
     EmptyDirectAssignment,
+    /// An extension declaration has no base type to extend in the model.
+    UnknownExtensionType,
+    /// A module extends the same type more than once.
+    DuplicateExtension,
 }
 
 impl ValidationIssue {
@@ -69,6 +73,8 @@ impl ValidationIssue {
             Self::UnknownComputedRelation => "UnknownComputedRelation",
             Self::InvalidParameterType => "InvalidParameterType",
             Self::EmptyDirectAssignment => "EmptyDirectAssignment",
+            Self::UnknownExtensionType => "UnknownExtensionType",
+            Self::DuplicateExtension => "DuplicateExtension",
         }
     }
 }
@@ -135,15 +141,12 @@ pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
         for relation in &type_definition.relations {
             let key = (type_definition.name.clone(), relation.name.clone());
             if let Some(first) = relation_declarations.get(&key) {
-                validator.push(
-                    ValidationIssue::DuplicateRelation,
+                validator.errors.push(duplicate_relation_error(
+                    &type_definition.name,
+                    &relation.name,
                     location(relation.span.as_ref()),
-                    vec![first.clone()],
-                    format!(
-                        "type '{}' declares relation '{}' more than once",
-                        type_definition.name, relation.name
-                    ),
-                );
+                    first.clone(),
+                ));
             } else {
                 relation_declarations.insert(key, location(relation.span.as_ref()));
             }
@@ -496,6 +499,21 @@ fn location(span: Option<&SourceSpan>) -> SourceLocation {
         file: None,
         module: None,
         span: span.cloned(),
+    }
+}
+
+/// Builds the shared duplicate-relation diagnostic used by standalone validation and modular composition.
+pub(crate) fn duplicate_relation_error(
+    type_name: &str,
+    relation_name: &str,
+    location: SourceLocation,
+    first: SourceLocation,
+) -> ValidationError {
+    ValidationError {
+        issue: ValidationIssue::DuplicateRelation,
+        location,
+        related: vec![first],
+        message: format!("type '{type_name}' declares relation '{relation_name}' more than once"),
     }
 }
 

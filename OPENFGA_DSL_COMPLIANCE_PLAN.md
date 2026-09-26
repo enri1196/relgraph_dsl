@@ -383,7 +383,14 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 
 **Gate:** No partial success on conflicts; both source identities in structural errors; formatting and all-target tests pass.
 
-**Completion evidence:** pending.
+**Completion evidence:**
+
+- Added `src/modular.rs` with path-free manifest validation, exact module-input matching, module-header checks, deterministic structural diagnostics, base-first assembly, extension relation merging, source origins, and synchronous manifest-relative loading. The loader uses a private injected reader for deterministic read-order and I/O-error coverage; no semantic validation runs automatically.
+- Added `UnknownExtensionType` and `DuplicateExtension` issue codes, and shared duplicate-relation diagnostic construction with standalone validation. Exported the modular API from the crate root and added `tempfile` for loader tests.
+- Added `tests/modular.rs` and modular fixtures covering extension-before-base assembly, repeated module names, declaration/origin order, duplicate base/relation/extension errors, missing and ambiguous bases, empty extensions, invalid manual manifests, input mismatches, non-module documents, missing/invalid-UTF-8/parse-failing files, read-once behavior, and validation boundaries.
+- `cargo fmt --all -- --check` passed.
+- `cargo test --all-targets --locked` passed: 2 modular loader unit tests, 12 modular integration tests, 10 manifest tests, 21 parser tests, 8 validation tests, 1 conformance test, and the demo target.
+- `git diff --check` passed.
 
 ### Task 9 — Cross-file validation and provenance [TODO]
 
