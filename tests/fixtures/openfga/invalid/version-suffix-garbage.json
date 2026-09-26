@@ -4,7 +4,7 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L7-L7",
   "production": "schemaVersion",
   "expected_parse": "reject",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "A valid numeric prefix followed by identifier suffix garbage does not complete the document.",
   "error_code": "UnexpectedToken",
   "span_start": 16,

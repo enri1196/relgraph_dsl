@@ -213,7 +213,13 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
     }
 }
 
-/// Parses one OpenFGA DSL document into its syntax tree.
+/// Parses one OpenFGA DSL document into its syntax tree without static validation.
+///
+/// Numeric `major.minor` versions are preserved as written and checked later by
+/// [`crate::validate_schema`] or [`crate::validate_modular_model`]. Condition
+/// bodies preserve their bytes and stop at the first visible `}` token. Errors
+/// use typed codes and spans into the original input; callers migrating from the
+/// pre-1.0 `String` error should inspect [`ParseError::code`] and `ParseError::span`.
 pub fn parse_fga_schema(input: &str) -> Result<Schema, ParseError> {
     let tokens = lex(input)?;
     let visible_tokens: Vec<Token> = tokens

@@ -4,7 +4,7 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L16-L16",
   "production": "relationDeclaration",
   "expected_parse": "reject",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "DEFINE and relationName require horizontal WHITESPACE; NEWLINE is not interchangeable.",
   "error_code": "UnexpectedToken",
   "span_start": 53,

@@ -1,0 +1,18 @@
+model
+schema 1.2
+
+type document
+relations
+  define viewer: [user]
+
+condition lexical_tokens(flag: bool, text: string, count: int, value: uint) {
+  flag == true && flag != false || flag in [1, 0x2, 3u, 0x4U, 4.5, .5, 6e+1]
+    && ("simple" != r"raw" || 'single' == r'single')
+    && b"bytes" == B'raw-bytes'
+    && text == """triple
+quote""" // hidden CEL line comment
+    && count <= 5 && count >= 1 && count < 8 && count > -1
+    && count + 2 * 3 / 4 % 2 == 1 && !flag && null == null
+    && text.field?.value != ""
+    && {count: 1
+}

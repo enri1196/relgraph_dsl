@@ -75,7 +75,7 @@ fn assembles_extension_before_base_and_tracks_ordered_origins() {
             .collect::<Vec<_>>(),
         ["document", "user"]
     );
-    assert_eq!(model.schema.type_definitions[0].is_extended, false);
+    assert!(!model.schema.type_definitions[0].is_extended);
     assert_eq!(
         model.schema.type_definitions[0]
             .relations
@@ -420,7 +420,7 @@ fn rejects_non_module_documents_during_assembly() {
     assert!(matches!(
         error,
         ModularModelError::NonModuleDocument { entry: 0, path }
-            if path == PathBuf::from("model.fga")
+            if path.as_path() == std::path::Path::new("model.fga")
     ));
 }
 
@@ -461,7 +461,7 @@ fn loads_modules_and_reports_io_utf8_parse_and_header_errors_with_context() {
     assert!(matches!(
         parse_error,
         ModularModelError::Parse { entry: 0, path, .. }
-            if path == PathBuf::from("module.fga")
+            if path.as_path() == std::path::Path::new("module.fga")
     ));
 
     fs::write(directory.path().join("module.fga"), "model\n  schema 1.2\n").unwrap();
@@ -469,7 +469,7 @@ fn loads_modules_and_reports_io_utf8_parse_and_header_errors_with_context() {
     assert!(matches!(
         header_error,
         ModularModelError::NonModuleDocument { entry: 0, path }
-            if path == PathBuf::from("module.fga")
+            if path.as_path() == std::path::Path::new("module.fga")
     ));
 
     fs::write(

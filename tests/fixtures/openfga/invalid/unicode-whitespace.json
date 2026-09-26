@@ -4,7 +4,7 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4#L107-L108,L144-L145",
   "production": "WHITESPACE, NEWLINE",
   "expected_parse": "reject",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "An em-space is not in the pinned lexer whitespace set.",
   "error_code": "InvalidToken",
   "span_start": 12,

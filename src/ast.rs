@@ -1,4 +1,8 @@
 //! Public syntax tree types for parsed OpenFGA schemas.
+//!
+//! Parsed declaration spans are half-open UTF-8 byte offsets into the original
+//! document. The parser preserves condition-expression source bytes but does not
+//! parse or validate CEL semantics. Manually built syntax trees may omit spans.
 
 use crate::diagnostics::SourceSpan;
 

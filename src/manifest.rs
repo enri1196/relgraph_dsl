@@ -96,6 +96,18 @@ impl fmt::Display for ManifestError {
 impl Error for ManifestError {}
 
 /// Parses one manifest YAML document and applies the crate's manifest policies.
+///
+/// This function performs no filesystem I/O. It requires exactly one mapping
+/// with only `schema` and `contents` keys; `schema` must be a YAML string
+/// matching ASCII `major.minor`, and `contents` must be a nonempty list of
+/// strings. Relative slash-separated paths are normalized lexically before
+/// storage. Absolute paths, backslashes, drive prefixes, NUL, and paths that
+/// traverse above the root are rejected. Spaces and non-`.fga` suffixes are
+/// preserved. A well-formed unsupported version is returned for later modular
+/// validation.
+///
+/// Comments and resolved aliases are accepted. Explicit tags, merge keys,
+/// unknown or duplicate fields, and multiple YAML documents are rejected.
 pub fn parse_model_manifest(input: &str) -> Result<ModelManifest, ManifestError> {
     let mut documents = Vec::new();
     for document in YamlDeserializer::from_str(input) {

@@ -166,6 +166,32 @@ impl Error for ModularModelError {
 }
 
 /// Assembles parsed module documents without filesystem access or semantic validation.
+///
+/// The supplied module paths and order must match the manifest exactly. Assembly
+/// combines base types and extension relations and records source origins, but
+/// does not check schema versions, ordinary references, CEL, or static validation
+/// rules. Call [`validate_modular_model`] separately when those checks are needed.
+///
+/// ```
+/// use openfga_dsl::{
+///     ModelManifest, ModuleSource, assemble_modular_model, parse_fga_schema,
+///     validate_modular_model,
+/// };
+/// use std::path::PathBuf;
+///
+/// let manifest = ModelManifest {
+///     schema: "1.2".to_owned(),
+///     contents: vec![PathBuf::from("base.fga")],
+/// };
+/// let module = ModuleSource {
+///     path: PathBuf::from("base.fga"),
+///     schema: parse_fga_schema("module core\n\ntype user\n")
+///         .expect("module syntax is valid"),
+/// };
+/// let model = assemble_modular_model(manifest, vec![module])
+///     .expect("module structure is valid");
+/// validate_modular_model(&model).expect("model passes bounded validation");
+/// ```
 pub fn assemble_modular_model(
     manifest: ModelManifest,
     modules: Vec<ModuleSource>,
@@ -385,6 +411,11 @@ pub fn assemble_modular_model(
 ///
 /// The model is recomposed from its retained manifest and module documents
 /// first, so callers cannot bypass structural checks by mutating public fields.
+/// Verifies the public composition invariants and applies modular static checks.
+///
+/// Modular models require the exact version `1.2`. Diagnostics retain manifest
+/// path, module name, and declaration spans. As with standalone validation, CEL
+/// is not compiled or evaluated and server-only limits are outside this API.
 pub fn validate_modular_model(model: &ModularModel) -> Result<(), Vec<ValidationError>> {
     let recomposed = match assemble_modular_model(model.manifest.clone(), model.modules.clone()) {
         Ok(recomposed) => recomposed,
@@ -446,6 +477,20 @@ fn invalid_composition(message: impl Into<String>) -> ValidationError {
     }
 }
 
+/// Synchronously reads a manifest and each listed module file once.
+///
+/// The manifest path is resolved from the process working directory; content
+/// paths are resolved against the manifest's parent. Loading does not discover
+/// files, use the network, or run static validation. After loading, call
+/// [`validate_modular_model`] explicitly.
+///
+/// ```no_run
+/// use openfga_dsl::{load_modular_model, validate_modular_model};
+///
+/// let model = load_modular_model(std::path::Path::new("model.yaml"))
+///     .expect("manifest and listed module files should load");
+/// validate_modular_model(&model).expect("model should pass bounded validation");
+/// ```
 pub fn load_modular_model(manifest_path: &Path) -> Result<ModularModel, ModularModelError> {
     load_modular_model_with_reader(manifest_path, |path| fs::read_to_string(path))
 }

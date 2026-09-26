@@ -413,7 +413,7 @@ In Task 10 run every syntax fixture through the runner and retain `upstream-resu
 - `cargo test --all-targets --locked` passed: 2 modular unit tests, 1 conformance test, 10 manifest tests, 12 modular tests, 8 modular validation tests, 21 parser tests, 8 standalone validation tests, and the demo target.
 - `git diff --check` passed.
 
-### Task 10 — Differential audit and published boundary [TODO]
+### Task 10 — Differential audit and published boundary [DONE]
 
 **Depends on:** Task 9.
 
@@ -434,4 +434,15 @@ cargo clippy --all-targets --locked -- -D warnings
 
 After dependencies are cached, run `cargo test --all-targets --locked --offline` to prove ordinary tests need no network or external parser installation. Every syntax fixture needs executed upstream evidence and matching acceptance. Tasks 1–9 need completion evidence; no ignored tests, unpaired fixtures, unresolved contracts, or full-server-compliance claims. If the upstream runner cannot execute, this task is blocked, not DONE.
 
-**Completion evidence:** pending.
+**Completion evidence:**
+
+- Added parser-production and lexer-token-family matrices to `tests/fixtures/openfga/README.md`, covering every pinned parser rule, condition lexer mode, and hidden CEL comment family. Documented the parameter-newline mismatch, first-`RBRACE` body boundary, and inline-condition server limitation.
+- Added the accepted `cel-token-families` syntax fixture. Executed the pinned ANTLR 4.13.2 runner with Java 17 for all 64 syntax fixtures and retained sorted results in `tests/fixtures/openfga/upstream-results.jsonl`: 26 accepted, 38 rejected, no missing/extra results, and no acceptance mismatches. Marked all 64 paired metadata records `upstream-executed` only after this run. The jar checksum matched the value recorded in `tools/conformance/README.md`.
+- Expanded crate and public-module documentation for parser/validator/loader responsibilities, intentional pre-1.0 API changes, UTF-8 byte spans, manifest YAML/path rules, bounded validation, and the documented syntax/server boundary. Added compiling parse-then-validate, manifest-only, pure-assembly, and filesystem `no_run` load-then-validate examples. Updated `examples/demo.rs` to parse and then validate.
+- Made behavior-preserving clippy cleanups in the tuple-to-userset checker, lexer literal helper, and modular test assertions/path comparisons.
+- `cargo fmt --check` passed.
+- `cargo test --all-targets --locked` passed: 2 unit tests, 60 integration/conformance tests, and the demo target.
+- `cargo test --doc --locked` passed: all 4 rustdoc examples compiled; only the filesystem loader example is `no_run`.
+- `cargo clippy --all-targets --locked -- -D warnings` passed.
+- `cargo test --all-targets --locked --offline` passed with the same suite and no network or parser installation.
+- `git diff --check` passed.

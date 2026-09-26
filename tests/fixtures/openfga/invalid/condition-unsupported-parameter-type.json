@@ -4,7 +4,7 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4",
   "production": "conditionParamType",
   "expected_parse": "reject",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "The type token must be one of the eight supported simple types.",
   "error_code": "UnexpectedToken",
   "span_start": 40,

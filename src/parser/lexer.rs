@@ -284,10 +284,11 @@ fn lex_default_token(input: &str) -> Option<(usize, TokenKind, bool)> {
 }
 
 fn literal_prefix_length(input: &str, literal: &str) -> usize {
-    input
-        .starts_with(literal)
-        .then_some(literal.len())
-        .unwrap_or(0)
+    if input.starts_with(literal) {
+        literal.len()
+    } else {
+        0
+    }
 }
 
 fn is_horizontal_space(byte: u8) -> bool {

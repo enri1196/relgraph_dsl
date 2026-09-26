@@ -1,0 +1,9 @@
+{
+  "id": "cel-token-families",
+  "owner_task": "task-10",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4",
+  "production": "conditionExpression, CONDITION_DEF, CEL_TRUE, CEL_FALSE, NUL, IN, EQUALS, NOT_EQUALS, LESS, LESS_EQUALS, GREATER, GREATER_EQUALS, LOGICAL_AND, LOGICAL_OR, LBRACKET, RPRACKET, LBRACE, RPAREN, DOT, MINUS, EXCLAM, QUESTIONMARK, PLUS, STAR, SLASH, PERCENT, NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, CEL_COMMENT",
+  "expected_parse": "accept",
+  "evidence": "upstream-executed",
+  "notes": "Exercises CEL token families and the condition-definition lexer mode. CEL semantics are intentionally not checked; the unclosed map opener demonstrates the syntax-only boundary."
+}

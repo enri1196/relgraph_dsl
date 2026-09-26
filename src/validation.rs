@@ -84,9 +84,17 @@ impl ValidationIssue {
 /// Validates a parsed standalone schema without parsing or mutating it.
 ///
 /// A module header returns only [`ValidationIssue::ModuleRequiresComposition`].
-/// Standalone model versions `1.1` and `1.2` are supported; other parsed
-/// versions are preserved and reported here. Errors are sorted by source
-/// position, issue code, and message so callers receive deterministic output.
+/// Applies the crate's bounded static checks to a standalone schema.
+///
+/// Supports exact schema versions `1.1` and `1.2`. Checks declaration
+/// uniqueness, supported parameter types, references, and tuple-to-userset
+/// structure, with deterministic diagnostic ordering. A module document returns
+/// `ModuleRequiresComposition` and must be checked with
+/// [`crate::validate_modular_model`].
+///
+/// This function does not compile, evaluate, or type-check CEL; check cycles or
+/// entrypoints; enforce server resource limits; or guarantee that a server will
+/// accept every syntactically valid construct, including `$expression`.
 pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
     validate_schema_with_context(schema, false, None, &[])
 }
@@ -353,6 +361,11 @@ fn validate_schema_with_context(
     })
 }
 
+struct TupleToUsersetNames<'a> {
+    computed_userset: &'a str,
+    tupleset_relation: &'a str,
+}
+
 #[derive(Default)]
 struct Validator {
     errors: Vec<ValidationError>,
@@ -480,8 +493,10 @@ impl Validator {
             } => self.check_tuple_to_userset(
                 owner_type,
                 owner_relation,
-                computed_userset,
-                tupleset_relation,
+                TupleToUsersetNames {
+                    computed_userset,
+                    tupleset_relation,
+                },
                 type_symbols,
                 relation_symbols,
                 owner_location,
@@ -515,12 +530,15 @@ impl Validator {
         &mut self,
         owner_type: &str,
         owner_relation: &Relation,
-        computed_userset: &str,
-        tupleset_relation: &str,
+        names: TupleToUsersetNames<'_>,
         type_symbols: &HashMap<String, &TypeDefinition>,
         relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
         owner_location: &SourceLocation,
     ) {
+        let TupleToUsersetNames {
+            computed_userset,
+            tupleset_relation,
+        } = names;
         let Some(tupleset) = relation_symbols
             .get(owner_type)
             .and_then(|relations| relations.get(tupleset_relation))

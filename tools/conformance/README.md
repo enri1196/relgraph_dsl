@@ -37,6 +37,21 @@ ANTLR_JAR=/tmp/antlr-4.13.2-complete.jar bash tools/conformance/run.sh
 The ANTLR 4.13.2 complete jar used for the Task 1 runner check has SHA-256
 `eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76`.
 
+## Task 10 differential audit
+
+The Task 10 run used Homebrew OpenJDK `17.0.20.1` and the ANTLR jar above
+(SHA-256 verified immediately before execution). Exact invocation:
+
+```sh
+PATH=/opt/homebrew/opt/openjdk@17/bin:$PATH ANTLR_JAR=/private/tmp/antlr-4.13.2-complete.jar bash tools/conformance/run.sh > tests/fixtures/openfga/upstream-results.jsonl
+```
+
+The runner generated the lexer and parser, compiled the Java runner, and
+executed all 64 syntax fixtures. Results contain 26 accepted fixtures and 38
+rejected fixtures; acceptance matched every paired metadata record. The
+generated classes and downloaded jar remained in temporary directories and
+are not Cargo dependencies.
+
 The runner creates a clean temporary generation directory on each invocation.
 The exact generation and compile steps used by `run.sh` are:
 

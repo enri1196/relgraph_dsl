@@ -4,8 +4,15 @@ use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A half-open UTF-8 byte range into the unmodified source document.
+///
+/// Parsed syntax nodes use spans that cover their first through last significant
+/// token, excluding preceding comments and trailing whitespace. Manually built
+/// AST nodes may have no span instead.
 pub struct SourceSpan {
+    /// Byte offset of the first covered source byte.
     pub start: usize,
+    /// Byte offset immediately after the covered source bytes.
     pub end: usize,
 }
 

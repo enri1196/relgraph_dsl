@@ -4,6 +4,6 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L19-L42",
   "production": "relationDefPartials",
   "expected_parse": "accept",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "Union and intersection chains are homogeneous and fold left; ungrouped difference has one operand."
 }

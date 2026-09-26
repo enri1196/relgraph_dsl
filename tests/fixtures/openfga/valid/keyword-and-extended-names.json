@@ -4,6 +4,6 @@
   "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4#L67-L69",
   "production": "extended_identifier",
   "expected_parse": "accept",
-  "evidence": "grammar-derived",
+  "evidence": "upstream-executed",
   "notes": "Extended names accept slash-separated names and the listed keyword tokens in identifier positions."
 }
