@@ -3,6 +3,7 @@
 mod conditions;
 mod evaluator;
 mod model;
+pub mod policy;
 mod request;
 mod store;
 

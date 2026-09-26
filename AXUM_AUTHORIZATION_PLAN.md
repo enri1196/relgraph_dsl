@@ -1,6 +1,6 @@
 # OpenFGA authorization for Axum
 
-Status: in progress; Tasks 1–3 are complete and Tasks 4–8 are TODO.
+Status: in progress; Tasks 1–5 are complete and Tasks 6–8 are TODO.
 
 ## 1. Goal and architecture decision
 
@@ -40,6 +40,7 @@ let authz = model.with_store(store, EvaluationLimits::default());
 let read_document = authz.middleware(
     RoutePolicy::new("document", "viewer")
         .principal(PrincipalSource::extension::<AuthenticatedPrincipal>())
+        .tenant(TenantSource::extension::<AuthenticatedPrincipal>())
         .object_id(ObjectIdSource::path("document_id"))
 )?;
 
@@ -206,7 +207,7 @@ Acceptance/tests: invalid CEL or undeclared variables fail construction; valid s
 
 Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo test -p openfga-authz --all-targets`, and `cargo test --workspace --all-targets`.
 
-### Task 5 — [TODO] Derive route policies from the compiled schema
+### Task 5 — [DONE] Derive route policies from the compiled schema
 
 Dependencies: Task 4.
 
@@ -214,7 +215,11 @@ Files: `openfga-authz/src/authz/policy.rs`, `openfga-authz/src/authz/{mod,model,
 
 Implement requirements descriptors and route policies with fixed object type/relation and explicit input providers. Resolve reachable relation/condition dependencies without flattening alternatives into a universal required-parameter list. Define synchronous request-parts extraction and an async custom resolver contract for application data.
 
+The public `requirements` descriptor preserves the full relation-expression tree and a keyed graph of computed userset, userset-subject, and tuple-to-userset dependencies. Direct-assignment conditions carry their condition identity and declared typed parameter signatures at the original alternative. Route policies fix the object type and relation, require trusted principal, tenant, and object-ID sources, and bind context providers by both condition and parameter. Provider declarations are checked at registration; request-parts providers resolve synchronously and custom application resolvers use an async future contract. Typed context values reject lossy integer-to-double conversions. Check requests now support per-condition request context, with stored tuple context taking precedence over scoped request values and the existing global fallback.
+
 Acceptance/tests: missing object type/relation and undeclared context bindings fail registration; provider type mismatches fail early; inherited/group access accepts applicable subjects; same parameter name with incompatible condition types requires separate bindings; clients cannot override fixed relation/type or trusted principal.
+
+Verified with `cargo fmt --all -- --check`, `cargo check -p openfga-authz --all-targets`, `cargo check --workspace --all-targets`, `cargo test -p openfga-authz --all-targets` (45 tests), and `cargo test --workspace --all-targets` (all package and parser/conformance tests passed).
 
 ### Task 6 — [TODO] Derive and register Axum middleware
 

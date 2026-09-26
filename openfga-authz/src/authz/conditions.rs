@@ -375,6 +375,7 @@ impl CompiledCondition {
     pub(crate) fn evaluate(
         &self,
         tuple_values: Option<&BTreeMap<String, JsonValue>>,
+        condition_request_values: Option<&BTreeMap<String, JsonValue>>,
         request_values: &BTreeMap<String, JsonValue>,
         available_cost: usize,
     ) -> Result<ConditionEvaluation, AuthorizationError> {
@@ -385,17 +386,21 @@ impl CompiledCondition {
                 .parameters
                 .get(name)
                 .expect("used CEL variable is declared in the condition schema");
-            let (value, source) =
-                if let Some(value) = tuple_values.and_then(|values| values.get(name)) {
-                    (value, ConditionContextSource::StoredTuple)
-                } else if let Some(value) = request_values.get(name) {
-                    (value, ConditionContextSource::Request)
-                } else {
-                    return Err(AuthorizationError::MissingConditionContext {
-                        condition: self.name.clone(),
-                        parameter: name.clone(),
-                    });
-                };
+            let (value, source) = if let Some(value) =
+                tuple_values.and_then(|values| values.get(name))
+            {
+                (value, ConditionContextSource::StoredTuple)
+            } else if let Some(value) = condition_request_values.and_then(|values| values.get(name))
+            {
+                (value, ConditionContextSource::Request)
+            } else if let Some(value) = request_values.get(name) {
+                (value, ConditionContextSource::Request)
+            } else {
+                return Err(AuthorizationError::MissingConditionContext {
+                    condition: self.name.clone(),
+                    parameter: name.clone(),
+                });
+            };
             let contribution = estimate_input_cost(value, parameter_type).map_err(|expected| {
                 AuthorizationError::InvalidConditionContext {
                     condition: self.name.clone(),

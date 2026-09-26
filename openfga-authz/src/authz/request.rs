@@ -326,6 +326,8 @@ pub struct CheckRequest {
     object: ObjectRef,
     relation: RelationName,
     context: std::collections::BTreeMap<String, serde_json::Value>,
+    condition_context:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// Identifies which authorization context supplied a condition parameter.
@@ -359,6 +361,7 @@ impl CheckRequest {
             object,
             relation,
             context: std::collections::BTreeMap::new(),
+            condition_context: std::collections::BTreeMap::new(),
         }
     }
 
@@ -367,6 +370,19 @@ impl CheckRequest {
         context: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Self {
         self.context = context;
+        self
+    }
+
+    /// Adds request context scoped to one named condition.
+    ///
+    /// Condition-scoped values take precedence over global request context for
+    /// that condition. Stored tuple context still takes precedence over both.
+    pub fn with_condition_context(
+        mut self,
+        condition: impl Into<String>,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.condition_context.insert(condition.into(), context);
         self
     }
 
@@ -388,6 +404,14 @@ impl CheckRequest {
 
     pub fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
         &self.context
+    }
+
+    /// Returns request context explicitly bound to one condition.
+    pub fn condition_context(
+        &self,
+        condition: &str,
+    ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
+        self.condition_context.get(condition)
     }
 }
 

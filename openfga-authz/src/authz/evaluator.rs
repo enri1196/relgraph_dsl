@@ -453,6 +453,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             .saturating_sub(self.condition_cost_used);
         let evaluation = condition.evaluate(
             Some(context.values()),
+            self.request.condition_context(context.name().as_str()),
             self.request.context(),
             remaining_cost,
         )?;

@@ -6,6 +6,14 @@
 
 mod authz;
 
+pub use authz::policy::{
+    AssignmentRequirement, AsyncContextResolver, AuthorizationRequirements,
+    ConditionParameterRequirement, ConditionRequirement, ContextBinding, ContextResolverFuture,
+    ContextValue, ContextValueProvider, ContextValueType, ObjectIdSource, PathParameters,
+    PolicyError, PolicyInputError, PrincipalIdentity, PrincipalSource, RelationKey,
+    RelationRequirements, RequestPartsExtractor, RequirementExpression, RoutePolicy,
+    TenantIdentity, TenantSource, ValidatedRoutePolicy,
+};
 pub use authz::{
     AuthorizationDecision, AuthorizationError, Bound, CapabilityDiagnostic, CheckRequest,
     ConditionContext, ConditionContextSource, ConditionName, ConstructionError, EntityId,
