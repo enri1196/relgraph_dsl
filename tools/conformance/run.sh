@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-UPSTREAM="$ROOT/tests/fixtures/openfga/upstream"
+DSL_ROOT="$ROOT/openfga-dsl"
+UPSTREAM="$DSL_ROOT/tests/fixtures/openfga/upstream"
 ANTLR_JAR="${ANTLR_JAR:-$ROOT/tools/conformance/antlr-4.13.2-complete.jar}"
 
 if [[ ! -f "$ANTLR_JAR" ]]; then
@@ -10,7 +11,7 @@ if [[ ! -f "$ANTLR_JAR" ]]; then
     exit 2
 fi
 if [[ "$#" -eq 0 ]]; then
-    set -- "$ROOT/tests/fixtures/openfga/valid" "$ROOT/tests/fixtures/openfga/invalid"
+    set -- "$DSL_ROOT/tests/fixtures/openfga/valid" "$DSL_ROOT/tests/fixtures/openfga/invalid"
 fi
 
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/openfga-antlr-4.13.2.XXXXXX")"

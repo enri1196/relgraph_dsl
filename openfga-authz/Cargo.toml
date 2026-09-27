@@ -8,7 +8,7 @@ default = []
 axum = ["dep:axum", "dep:tower"]
 
 [dependencies]
-openfga_dsl = { path = ".." }
+openfga_dsl = { path = "../openfga-dsl" }
 cel-core = "=0.5.1"
 http = "1"
 serde_json = "1"
