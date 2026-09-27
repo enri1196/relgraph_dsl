@@ -1,0 +1,16 @@
+[package]
+name = "openfga-authz-postgres"
+version = "0.1.0"
+edition = "2024"
+description = "PostgreSQL relationship storage for openfga-authz"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+openfga-authz = { path = "../openfga-authz", default-features = false }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+sqlx = { version = "=0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring"] }
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

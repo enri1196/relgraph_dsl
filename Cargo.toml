@@ -1,4 +1,4 @@
 [workspace]
-members = ["openfga-dsl", "openfga-authz"]
+members = ["openfga-dsl", "openfga-authz", "openfga-authz-postgres"]
 default-members = ["openfga-dsl", "openfga-authz"]
 resolver = "3"

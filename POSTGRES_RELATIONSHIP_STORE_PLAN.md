@@ -62,7 +62,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 
 **Verification:** focused store and authorization tests; `cargo check -p openfga-authz --all-targets`; `cargo fmt --check`.
 
-### Task 2 — Create the adapter crate and add schema/data mapping [TODO]
+### Task 2 — Create the adapter crate and add schema/data mapping [DONE]
 
 **Affected code:** workspace `Cargo.toml`, new `openfga-authz-postgres/Cargo.toml`, new `openfga-authz-postgres/src/lib.rs` and adapter modules, migration under `openfga-authz-postgres/migrations/`, crate exports, adapter documentation.
 
