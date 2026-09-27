@@ -87,7 +87,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 
 **Verification:** `cargo check -p openfga-authz`; `cargo check -p openfga-authz-postgres`; schema/mapping tests that do not require a live DB where feasible.
 
-### Task 3 — Implement consistent paged reads [TODO]
+### Task 3 — Implement consistent paged reads [DONE]
 
 **Affected code:** `openfga-authz-postgres` read store/session and the existing evaluator/store contract tests.
 

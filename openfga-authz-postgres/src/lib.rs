@@ -17,6 +17,8 @@ mod mapping;
 mod read;
 mod write;
 
+pub use read::PostgresReadSession;
+
 use sqlx::PgPool;
 
 /// SQL schema migration for the initial relationship-tuple table.
