@@ -1,6 +1,9 @@
 #[allow(dead_code)]
 mod common;
 
+#[path = "support/store_contract.rs"]
+mod store_contract;
+
 use common::{block_on, object, relation, subject, tenant};
 use openfga_authz::{
     ConditionContext, InMemoryRelationshipStore, RelationshipReadSession, RelationshipStore,
@@ -201,4 +204,11 @@ fn in_memory_write_trait_validates_tenant_and_preserves_exact_tuple_identity() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn shared_relationship_store_contracts_pass_for_the_in_memory_backend() {
+    block_on(store_contract::run_store_contracts(
+        InMemoryRelationshipStore::new(),
+    ));
 }

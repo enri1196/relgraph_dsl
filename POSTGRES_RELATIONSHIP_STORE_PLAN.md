@@ -131,7 +131,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 
 **Verification:** PostgreSQL integration tests for insert/read/remove, duplicate behavior, conditional and userset tuples, transaction visibility, and cross-tenant tuple identity.
 
-### Task 5 — Share store contract tests across implementations [TODO]
+### Task 5 — Share store contract tests across implementations [DONE]
 
 **Affected code:** `openfga-authz/tests/` and `openfga-authz-postgres/tests/` shared contract-test support.
 
@@ -152,6 +152,8 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 - No test or example silently starts a local database or depends on network access.
 
 **Verification:** focused default tests, explicitly invoked ignored PostgreSQL tests with a configured database, all-feature authz tests, workspace/doc tests, and formatting.
+
+**Validation note:** the live suite passed on PostgreSQL 13.23 with user approval as a compatibility run below the documented PostgreSQL 14+ minimum; the supported minimum remains 14+.
 
 ### Task 6 — Document setup and runnable usage [TODO]
 
