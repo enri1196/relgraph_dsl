@@ -111,7 +111,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 
 **Verification:** live PostgreSQL integration cases for single and multi-page reads, tenant isolation, snapshot consistency, malformed cursor, and DB failure propagation.
 
-### Task 4 — Implement tuple writes [TODO]
+### Task 4 — Implement tuple writes [DONE]
 
 **Affected code:** `openfga-authz-postgres` write implementation and migration/schema constraints.
 
