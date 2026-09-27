@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 openfga-authz = { path = "../openfga-authz", default-features = false }
 serde_json = { version = "1", features = ["float_roundtrip"] }
-sha2 = "0.10"
-sqlx = { version = "=0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring"] }
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring"] }
 tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
