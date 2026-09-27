@@ -470,6 +470,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         let maximum_tuples = self.limits.max_tuples_scanned();
         let mut tuples = Vec::new();
         let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
         loop {
             if self.store_calls >= self.limits.max_store_calls() {
                 return Err(AuthorizationError::StoreCallLimitExceeded {
@@ -484,21 +485,27 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             self.charge_work(1)?;
             let page = self
                 .session
-                .tuples_page(&object, &relation, cursor, remaining)
+                .tuples_page(&object, &relation, cursor.clone(), remaining)
                 .await
                 .map_err(|error| map_store_error(error, maximum_tuples))?;
             if page.tuples.len() > remaining {
                 return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
             }
+            let page_is_empty = page.tuples.is_empty();
             self.charge_work(page.tuples.len())?;
             self.tuples_scanned += page.tuples.len();
             tuples.extend(page.tuples);
             match page.next_cursor {
                 None => break,
                 Some(next_cursor) => {
-                    if next_cursor <= cursor.unwrap_or(0) {
+                    if page_is_empty {
                         return Err(AuthorizationError::InvalidTuple(
-                            "relationship page cursor did not advance",
+                            "relationship page continued without returning tuples",
+                        ));
+                    }
+                    if !seen_cursors.insert(next_cursor.clone()) {
+                        return Err(AuthorizationError::InvalidTuple(
+                            "relationship page cursor repeated",
                         ));
                     }
                     if self.tuples_scanned >= maximum_tuples {

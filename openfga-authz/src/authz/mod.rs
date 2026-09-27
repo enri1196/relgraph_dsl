@@ -15,8 +15,8 @@ pub use request::{
 };
 pub use store::{
     ConditionContext, InMemoryReadSession, InMemoryRelationshipStore, RelationshipPage,
-    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind,
-    StoreFuture, TupleSubject,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, RelationshipWriteStore,
+    StoreCursor, StoreError, StoreErrorKind, StoreFuture, TupleSubject,
 };
 
 use std::fmt;

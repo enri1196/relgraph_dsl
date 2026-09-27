@@ -2,10 +2,31 @@ use super::request::{ConditionName, ObjectRef, RelationName, Subject, TenantId, 
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// The boxed future type used by asynchronous relationship-store adapters.
 pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// An opaque continuation token returned by a relationship store.
+///
+/// Callers should pass this value back unchanged. Its bytes are not a security
+/// credential and callers must not interpret them. A cursor is valid only for
+/// the read session and object/relation query that produced it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StoreCursor(Vec<u8>);
+
+impl StoreCursor {
+    /// Creates an opaque cursor from backend-defined bytes.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the backend-defined cursor bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// Subject forms that may be stored in a relationship tuple.
 ///
@@ -179,15 +200,26 @@ pub trait RelationshipReadSession: Send {
     ///
     /// The default adapts bounded complete-read stores as a single page. Stores
     /// that support pagination should override this method. A page must contain
-    /// no more than `maximum` tuples; a continuation cursor must advance from
-    /// the supplied cursor and continue the same read-session snapshot.
+    /// no more than `maximum` tuples; pages must preserve stable tuple ordering
+    /// within this read-session snapshot. A continuation cursor is valid only
+    /// for this session and object/relation query, and a page with a continuation
+    /// must contain at least one tuple. This opaque cursor API is source-breaking
+    /// for paged store implementations that used numeric offsets.
     fn tuples_page<'a>(
         &'a self,
         object: &'a ObjectRef,
         relation: &'a RelationName,
-        cursor: Option<usize>,
+        cursor: Option<StoreCursor>,
         maximum: usize,
     ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
+        if maximum == 0 {
+            return Box::pin(async {
+                Err(StoreError::new(
+                    StoreErrorKind::IncompleteRead,
+                    "relationship page size must be greater than zero",
+                ))
+            });
+        }
         if cursor.is_some() {
             return Box::pin(async {
                 Err(StoreError::new(
@@ -212,7 +244,7 @@ pub struct RelationshipPage {
     /// Tuples returned by this page.
     pub tuples: Vec<RelationshipTuple>,
     /// Cursor for the next page from the same read-session snapshot.
-    pub next_cursor: Option<usize>,
+    pub next_cursor: Option<StoreCursor>,
 }
 
 /// An asynchronous relationship source. Each check opens one read session so
@@ -225,6 +257,27 @@ pub trait RelationshipStore: Send + Sync {
         &'a self,
         tenant: &'a TenantId,
     ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>>;
+}
+
+/// Optional tenant-scoped mutation capability for relationship stores.
+///
+/// Insertions are strict: inserting an exact duplicate tuple returns
+/// [`StoreErrorKind::CorruptData`]. Removals match the complete tuple, including
+/// condition context, and return `false` when no exact tuple exists.
+pub trait RelationshipWriteStore: Send + Sync {
+    /// Inserts one tuple for the supplied tenant.
+    fn insert_tuple<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        tuple: &'a RelationshipTuple,
+    ) -> StoreFuture<'a, Result<(), StoreError>>;
+
+    /// Removes one exact tuple for the supplied tenant.
+    fn remove_tuple<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        tuple: &'a RelationshipTuple,
+    ) -> StoreFuture<'a, Result<bool, StoreError>>;
 }
 
 /// An in-memory implementation intended for examples, tests, and small local
@@ -300,8 +353,10 @@ impl RelationshipStore for InMemoryRelationshipStore {
                     "in-memory relationship store lock was poisoned",
                 )
             })?;
+            let session_id = next_in_memory_session_id()?;
             Ok(InMemoryReadSession {
                 tenant,
+                session_id,
                 snapshot: Arc::clone(&snapshot),
             })
         })
@@ -310,6 +365,7 @@ impl RelationshipStore for InMemoryRelationshipStore {
 
 pub struct InMemoryReadSession {
     tenant: TenantId,
+    session_id: u64,
     snapshot: Arc<RelationshipSnapshot>,
 }
 
@@ -334,7 +390,7 @@ impl RelationshipReadSession for InMemoryReadSession {
         &'a self,
         object: &'a ObjectRef,
         relation: &'a RelationName,
-        cursor: Option<usize>,
+        cursor: Option<StoreCursor>,
         maximum: usize,
     ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
         Box::pin(async move {
@@ -346,7 +402,7 @@ impl RelationshipReadSession for InMemoryReadSession {
             }
             let key = (self.tenant.clone(), object.clone(), relation.clone());
             let tuples = self.snapshot.get(&key).map_or(&[][..], Vec::as_slice);
-            let start = cursor.unwrap_or(0);
+            let start = memory_cursor_offset(cursor, self.session_id, object, relation)?;
             if start > tuples.len() {
                 return Err(StoreError::new(
                     StoreErrorKind::IncompleteRead,
@@ -355,7 +411,19 @@ impl RelationshipReadSession for InMemoryReadSession {
             }
             let page_size = maximum.min(IN_MEMORY_PAGE_SIZE);
             let end = start.saturating_add(page_size).min(tuples.len());
-            let next_cursor = (end < tuples.len()).then_some(end);
+            let next_cursor = if end < tuples.len() {
+                let mut bytes = memory_cursor_context(self.session_id, object, relation)?;
+                let offset = u64::try_from(end).map_err(|_| {
+                    StoreError::new(
+                        StoreErrorKind::Internal,
+                        "in-memory relationship cursor offset cannot be represented",
+                    )
+                })?;
+                bytes.extend_from_slice(&offset.to_be_bytes());
+                Some(StoreCursor::from_bytes(bytes))
+            } else {
+                None
+            };
             Ok(RelationshipPage {
                 tuples: tuples[start..end].to_vec(),
                 next_cursor,
@@ -365,3 +433,107 @@ impl RelationshipReadSession for InMemoryReadSession {
 }
 
 const IN_MEMORY_PAGE_SIZE: usize = 128;
+
+static NEXT_IN_MEMORY_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_in_memory_session_id() -> Result<u64, StoreError> {
+    NEXT_IN_MEMORY_SESSION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .map_err(|_| {
+            StoreError::new(
+                StoreErrorKind::Internal,
+                "in-memory relationship session identifier space is exhausted",
+            )
+        })
+}
+
+fn memory_cursor_context(
+    session_id: u64,
+    object: &ObjectRef,
+    relation: &RelationName,
+) -> Result<Vec<u8>, StoreError> {
+    fn append_field(bytes: &mut Vec<u8>, value: &str) -> Result<(), StoreError> {
+        let length = u64::try_from(value.len()).map_err(|_| {
+            StoreError::new(
+                StoreErrorKind::Internal,
+                "in-memory relationship cursor field is too large",
+            )
+        })?;
+        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+        Ok(())
+    }
+
+    let mut bytes = b"openfga-authz/in-memory-cursor/v1".to_vec();
+    bytes.extend_from_slice(&session_id.to_be_bytes());
+    append_field(&mut bytes, object.type_name().as_str())?;
+    append_field(&mut bytes, object.id().as_str())?;
+    append_field(&mut bytes, relation.as_str())?;
+    Ok(bytes)
+}
+
+fn memory_cursor_offset(
+    cursor: Option<StoreCursor>,
+    session_id: u64,
+    object: &ObjectRef,
+    relation: &RelationName,
+) -> Result<usize, StoreError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let context = memory_cursor_context(session_id, object, relation)?;
+    let bytes = cursor.as_bytes();
+    if bytes.len() != context.len() + std::mem::size_of::<u64>() || !bytes.starts_with(&context) {
+        return Err(StoreError::new(
+            StoreErrorKind::IncompleteRead,
+            "relationship page cursor does not belong to this read-session query",
+        ));
+    }
+    let offset = u64::from_be_bytes(
+        bytes[context.len()..]
+            .try_into()
+            .expect("cursor length checked above"),
+    );
+    usize::try_from(offset).map_err(|_| {
+        StoreError::new(
+            StoreErrorKind::IncompleteRead,
+            "relationship page cursor offset cannot be represented",
+        )
+    })
+}
+
+impl RelationshipWriteStore for InMemoryRelationshipStore {
+    fn insert_tuple<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        tuple: &'a RelationshipTuple,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            if tuple.tenant() != tenant {
+                return Err(StoreError::new(
+                    StoreErrorKind::CorruptData,
+                    "relationship tuple tenant does not match write tenant",
+                ));
+            }
+            self.insert(tuple.clone())
+        })
+    }
+
+    fn remove_tuple<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        tuple: &'a RelationshipTuple,
+    ) -> StoreFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            if tuple.tenant() != tenant {
+                return Err(StoreError::new(
+                    StoreErrorKind::CorruptData,
+                    "relationship tuple tenant does not match write tenant",
+                ));
+            }
+            self.remove(tuple)
+        })
+    }
+}

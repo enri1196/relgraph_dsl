@@ -14,8 +14,8 @@ use openfga_authz::axum_authz::{Authorized, FgaAuthzLayer};
 use openfga_authz::{
     Bound, EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ModelIdentity, ObjectIdSource,
     ObjectRef, PrincipalIdentity, PrincipalSource, RelationName, RelationshipPage,
-    RelationshipReadSession, RelationshipStore, RelationshipTuple, RoutePolicy, StoreError,
-    StoreErrorKind, StoreFuture, Subject, TenantId, TenantIdentity, TenantSource,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, RoutePolicy, StoreCursor,
+    StoreError, StoreErrorKind, StoreFuture, Subject, TenantId, TenantIdentity, TenantSource,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -287,7 +287,7 @@ impl RelationshipReadSession for UnavailableReadSession {
         &'a self,
         _object: &'a ObjectRef,
         _relation: &'a RelationName,
-        _cursor: Option<usize>,
+        _cursor: Option<StoreCursor>,
         _maximum: usize,
     ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
         Box::pin(async {
@@ -540,7 +540,7 @@ impl openfga_authz::RelationshipReadSession for PendingSession {
         &'a self,
         _object: &'a ObjectRef,
         _relation: &'a RelationName,
-        _cursor: Option<usize>,
+        _cursor: Option<openfga_authz::StoreCursor>,
         _maximum: usize,
     ) -> openfga_authz::StoreFuture<
         'a,
