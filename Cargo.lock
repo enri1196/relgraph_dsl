@@ -967,42 +967,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openfga-authz"
-version = "0.1.0"
-dependencies = [
- "axum",
- "cel-core",
- "http",
- "openfga_dsl",
- "serde_json",
- "time",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "openfga-authz-postgres"
-version = "0.1.0"
-dependencies = [
- "openfga-authz",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tokio",
-]
-
-[[package]]
-name = "openfga_dsl"
-version = "0.1.0"
-dependencies = [
- "nom",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
-]
-
-[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1154,6 +1118,42 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "relgraph-authz"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cel-core",
+ "http",
+ "relgraph_dsl",
+ "serde_json",
+ "time",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "relgraph-authz-postgres"
+version = "0.1.0"
+dependencies = [
+ "relgraph-authz",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "relgraph_dsl"
+version = "0.1.0"
+dependencies = [
+ "nom",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+]
 
 [[package]]
 name = "ring"

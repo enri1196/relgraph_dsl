@@ -1,0 +1,24 @@
+[package]
+name = "relgraph-authz"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+axum = ["dep:axum", "dep:tower"]
+
+[dependencies]
+relgraph_dsl = { path = "../relgraph-dsl" }
+cel-core = "=0.5.1"
+http = "1"
+serde_json = "1"
+axum = { version = "=0.8.9", optional = true }
+tower = { version = "=0.5.3", features = ["util"], optional = true }
+
+[[example]]
+name = "axum_authz"
+required-features = ["axum"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+time = { version = "0.3", features = ["formatting"] }

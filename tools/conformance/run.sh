@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DSL_ROOT="$ROOT/openfga-dsl"
+DSL_ROOT="$ROOT/relgraph-dsl"
 UPSTREAM="$DSL_ROOT/tests/fixtures/openfga/upstream"
 ANTLR_JAR="${ANTLR_JAR:-$ROOT/tools/conformance/antlr-4.13.2-complete.jar}"
 

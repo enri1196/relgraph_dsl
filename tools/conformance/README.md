@@ -9,7 +9,7 @@ anything at runtime.
 ## Pinned source files
 
 The grammar and its upstream license are vendored in
-`openfga-dsl/tests/fixtures/openfga/upstream/` from:
+`relgraph-dsl/tests/fixtures/openfga/upstream/` from:
 
 - <https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGALexer.g4>
 - <https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/OpenFGAParser.g4>
@@ -43,7 +43,7 @@ The Task 10 run used Homebrew OpenJDK `17.0.20.1` and the ANTLR jar above
 (SHA-256 verified immediately before execution). Exact invocation:
 
 ```sh
-PATH=/opt/homebrew/opt/openjdk@17/bin:$PATH ANTLR_JAR=/private/tmp/antlr-4.13.2-complete.jar bash tools/conformance/run.sh > openfga-dsl/tests/fixtures/openfga/upstream-results.jsonl
+PATH=/opt/homebrew/opt/openjdk@17/bin:$PATH ANTLR_JAR=/private/tmp/antlr-4.13.2-complete.jar bash tools/conformance/run.sh > relgraph-dsl/tests/fixtures/openfga/upstream-results.jsonl
 ```
 
 The runner generated the lexer and parser, compiled the Java runner, and
@@ -59,7 +59,7 @@ The exact generation and compile steps used by `run.sh` are:
 java -jar "$ANTLR_JAR" -Dlanguage=Java -o "$OUT" OpenFGALexer.g4
 java -jar "$ANTLR_JAR" -Dlanguage=Java -lib "$OUT" -o "$OUT" OpenFGAParser.g4
 javac -cp "$ANTLR_JAR" -d "$OUT" "$OUT"/*.java tools/conformance/ConformanceRunner.java
-java -cp "$OUT:$ANTLR_JAR" ConformanceRunner openfga-dsl/tests/fixtures/openfga/valid openfga-dsl/tests/fixtures/openfga/invalid
+java -cp "$OUT:$ANTLR_JAR" ConformanceRunner relgraph-dsl/tests/fixtures/openfga/valid relgraph-dsl/tests/fixtures/openfga/invalid
 ```
 
 The commands run from the vendored grammar directory for generation and from
