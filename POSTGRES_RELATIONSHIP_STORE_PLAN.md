@@ -155,7 +155,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 
 **Validation note:** the live suite passed on PostgreSQL 13.23 with user approval as a compatibility run below the documented PostgreSQL 14+ minimum; the supported minimum remains 14+.
 
-### Task 6 — Document setup and runnable usage [TODO]
+### Task 6 — Document setup and runnable usage [DONE]
 
 **Affected code:** `openfga-authz/README.md`, new `openfga-authz-postgres/README.md` or crate rustdoc, optionally a small database-backed example.
 
@@ -164,7 +164,7 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 - Document adding `openfga-authz-postgres`, constructing a Tokio/SQLx pool, applying `MIGRATION_0001` once with an application migration ledger, and binding with `FgaAuthz::new(dsl)?.with_store(store.clone(), EvaluationLimits::default())`; demonstrate trait writes on the retained store handle and checks on the bound authorizer. Compile-check the snippet without connecting to a database.
 - Explain pool sizing/timeouts, snapshot lifetime (one authorization check), tenant isolation, and how DB errors map to authorization failures.
 - Document that database migrations are application-managed and that credentials/secrets must come from the application environment.
-- Require a trusted tenant source and restrict write handles to authorized application code: tenant predicates are data isolation, not caller authentication. Use separate DDL and runtime roles; document runtime SELECT/INSERT/DELETE and identity-sequence privileges, verified TLS for remote connections, and a trusted dedicated schema with no untrusted CREATE privilege. Do not add RLS or an HTTP management API in this feature.
+- Require a trusted tenant source and restrict write handles to authorized application code: tenant predicates are data isolation, not caller authentication. Use separate DDL and runtime roles; document runtime table-level SELECT/INSERT/DELETE, column-level UPDATE on `tuple_id` for the adapter's `SELECT ... FOR UPDATE` removal lock, and identity-sequence privileges; the lock privilege does not mean the adapter issues a data update; verified TLS for remote connections, and a trusted dedicated schema with no untrusted CREATE privilege. Do not add RLS or an HTTP management API in this feature.
 - Give concrete pool acquisition and PostgreSQL statement/idle-in-transaction timeout configuration, plus an application check deadline. Evaluation work limits alone do not bound wall-clock DB waits or idle snapshot lifetime. The supplied pool owns transport/security/timeouts; the adapter reads no environment variables. Document uncertain write outcomes after transport failure/cancellation and no automatic write retries.
 - Add an example only if it can be kept credential-free by default and does not introduce runtime setup requirements to ordinary tests.
 
@@ -173,7 +173,9 @@ Add a production-usable PostgreSQL-backed relationship store in a **separate wor
 - A user can follow the documented path from an empty PostgreSQL database to an authorization check without relying on undocumented APIs.
 - The in-memory quick-start remains usable with no additional features or services.
 
-**Verification:** run the documented package build and the documented integration invocation. A missing database blocks live verification, not the package build.
+**Verification:** `cargo test -p openfga-authz-postgres --doc` compile-checks the no-run PostgreSQL setup without connecting; `cargo test -p openfga-authz --doc` checks the in-memory quick start; `cargo fmt --all -- --check`; `cargo check -p openfga-authz-postgres --all-targets`; and the documented ignored integration invocation. A missing database blocks live verification, not the package build.
+
+**Evidence (2026-09-27):** added the app-managed, transactional migration-ledger example, separate DDL/runtime pools, verified TLS configuration, bounded SQL and check timeouts, tenant-bound tuple writes/checks, and operational/security guidance in the adapter README; added a dependency-free in-memory quick start to the core README. Both no-run rustdoc examples compile without opening a database connection. `cargo test --workspace --all-targets --all-features`, `cargo test --workspace --doc --all-features`, `cargo check -p openfga-authz-postgres --all-targets`, and `cargo check -p openfga-authz --all-targets --no-default-features` passed. The ignored PostgreSQL suite passed all 11 tests, and a rolled-back live role/schema probe verified table SELECT/INSERT/DELETE plus `UPDATE (tuple_id)` and identity-sequence `USAGE` can insert, lock, and remove a row.
 
 Final validation commands (there is no adapter feature toggle):
 

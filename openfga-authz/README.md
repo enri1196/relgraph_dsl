@@ -5,6 +5,66 @@ runtime. The application provides authentication, relationship tuples, and
 explicit mappings from request inputs to condition parameters. The optional
 `axum` feature adds a Tower middleware layer for protected routes.
 
+## In-memory quick start
+
+The core crate works without PostgreSQL, Axum, or another external service.
+Add `openfga-authz` and a Tokio runtime to the application, then bind an
+in-memory store to a compiled model:
+
+```toml
+[dependencies]
+openfga-authz = { version = "0.1", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+```rust,no_run
+use std::error::Error;
+
+use openfga_authz::{
+    CheckRequest, EvaluationLimits, FgaAuthz, InMemoryRelationshipStore,
+    ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
+};
+
+const MODEL: &str = r#"
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define viewer: [user]
+"#;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let tenant = TenantId::new("acme")?;
+    let subject = Subject::new("user", "anne")?;
+    let object = ObjectRef::new("document", "42")?;
+    let relation = RelationName::new("viewer")?;
+
+    let store = InMemoryRelationshipStore::new();
+    store.insert(RelationshipTuple::new(
+        tenant.clone(),
+        object.clone(),
+        relation.clone(),
+        subject.clone(),
+    ))?;
+
+    let authorizer = FgaAuthz::new(MODEL)?
+        .with_store(store, EvaluationLimits::default());
+    let request = CheckRequest::new(tenant, subject, object, relation);
+    let _decision = authorizer.check(request).await?;
+    Ok(())
+}
+```
+
+The in-memory store is suitable for tests, examples, and small local
+deployments. Use a durable adapter such as `openfga-authz-postgres` when
+relationships must be shared across application processes or survive restarts.
+The matching crate-level `no_run` example is compile-checked by
+`cargo test -p openfga-authz --doc` without running a Tokio runtime.
+
 ## Runnable Axum example
 
 Run the example with:
