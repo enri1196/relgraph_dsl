@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use http::request::Parts;
 use relgraph_dsl::{ConditionDefinition, ParameterType};
+
+use super::parameter_profile::{RuntimeParameterType, RuntimeScalarType};
 use serde_json::Value;
 
 use super::model::{CompiledExpression, CompiledModel, CompiledTargetRestriction};
@@ -65,30 +67,25 @@ pub enum ContextValueType {
 }
 
 impl ContextValueType {
-    fn from_parameter_type(value: &ParameterType) -> Option<Self> {
-        match value {
-            ParameterType::Simple(name) => Self::scalar(name),
-            ParameterType::Generic { container, inner } => {
-                let inner = Self::scalar(inner)?;
-                match container.as_str() {
-                    "list" => Some(Self::List(Box::new(inner))),
-                    "map" => Some(Self::Map(Box::new(inner))),
-                    _ => None,
-                }
-            }
-        }
-    }
+    pub(super) fn from_parameter_type(value: &ParameterType) -> Option<Self> {
+        let to_context_scalar = |scalar| match scalar {
+            RuntimeScalarType::Bool => Self::Bool,
+            RuntimeScalarType::Int => Self::Int,
+            RuntimeScalarType::Uint => Self::Uint,
+            RuntimeScalarType::Double => Self::Double,
+            RuntimeScalarType::String => Self::String,
+            RuntimeScalarType::Duration => Self::Duration,
+            RuntimeScalarType::Timestamp => Self::Timestamp,
+        };
 
-    fn scalar(name: &str) -> Option<Self> {
-        match name {
-            "bool" => Some(Self::Bool),
-            "int" => Some(Self::Int),
-            "uint" => Some(Self::Uint),
-            "double" => Some(Self::Double),
-            "string" => Some(Self::String),
-            "duration" => Some(Self::Duration),
-            "timestamp" => Some(Self::Timestamp),
-            _ => None,
+        match RuntimeParameterType::from_dsl(value)? {
+            RuntimeParameterType::Scalar(scalar) => Some(to_context_scalar(scalar)),
+            RuntimeParameterType::List(scalar) => {
+                Some(Self::List(Box::new(to_context_scalar(scalar))))
+            }
+            RuntimeParameterType::Map(scalar) => {
+                Some(Self::Map(Box::new(to_context_scalar(scalar))))
+            }
         }
     }
 

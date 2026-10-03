@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::parameter_profile::{RuntimeParameterType, RuntimeScalarType};
 use cel_core::types::{Expr, SpannedExpr};
 use cel_core::{CelType, Env, MapActivation, Program, Value};
 use relgraph_dsl::{ConditionDefinition, ParameterType, Schema};
@@ -494,31 +495,23 @@ fn supported_function(name: &str) -> bool {
     )
 }
 
-fn cel_type(parameter_type: &ParameterType) -> Option<CelType> {
-    match parameter_type {
-        ParameterType::Simple(name) => simple_cel_type(name),
-        ParameterType::Generic { container, inner } => {
-            let inner_type = simple_cel_type(inner)?;
-            match container.as_str() {
-                "list" => Some(CelType::list(inner_type)),
-                "map" => Some(CelType::map(CelType::String, inner_type)),
-                _ => None,
-            }
-        }
-    }
-}
+pub(super) fn cel_type(parameter_type: &ParameterType) -> Option<CelType> {
+    let runtime_type = RuntimeParameterType::from_dsl(parameter_type)?;
+    let to_cel_scalar = |scalar| match scalar {
+        RuntimeScalarType::Bool => CelType::Bool,
+        RuntimeScalarType::Int => CelType::Int,
+        RuntimeScalarType::Uint => CelType::UInt,
+        RuntimeScalarType::Double => CelType::Double,
+        RuntimeScalarType::String => CelType::String,
+        RuntimeScalarType::Duration => CelType::Duration,
+        RuntimeScalarType::Timestamp => CelType::Timestamp,
+    };
 
-fn simple_cel_type(name: &str) -> Option<CelType> {
-    match name {
-        "bool" => Some(CelType::Bool),
-        "int" => Some(CelType::Int),
-        "uint" => Some(CelType::UInt),
-        "double" => Some(CelType::Double),
-        "string" => Some(CelType::String),
-        "duration" => Some(CelType::Duration),
-        "timestamp" => Some(CelType::Timestamp),
-        _ => None,
-    }
+    Some(match runtime_type {
+        RuntimeParameterType::Scalar(scalar) => to_cel_scalar(scalar),
+        RuntimeParameterType::List(scalar) => CelType::list(to_cel_scalar(scalar)),
+        RuntimeParameterType::Map(scalar) => CelType::map(CelType::String, to_cel_scalar(scalar)),
+    })
 }
 
 impl CompiledCondition {

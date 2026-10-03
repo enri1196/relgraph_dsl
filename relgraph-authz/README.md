@@ -126,11 +126,49 @@ precedence over request context; request bindings can fill missing condition
 values but cannot replace stored grant values. The body is not read for
 authorization.
 
-Use `ContextBinding` for each condition and parameter whose value comes from
-trusted request or application state. Its `ContextValueProvider` declares the
-expected schema type at route registration. Registration rejects unknown
-relations, undeclared parameters, and provider type mismatches. Runtime values
-are checked again and lossy numeric conversions are rejected.
+For an ordinary route that checks a relation without request-sourced condition
+values, the minimum policy is just the principal, tenant, and path object ID:
+
+```rust
+struct AuthenticatedPrincipal(Subject);
+impl PrincipalIdentity for AuthenticatedPrincipal {
+    fn subject(&self) -> &Subject { &self.0 }
+}
+
+struct AuthenticatedTenant(TenantId);
+impl TenantIdentity for AuthenticatedTenant {
+    fn tenant_id(&self) -> &TenantId { &self.0 }
+}
+
+let viewer = authz.middleware(
+    RoutePolicy::new("document", "viewer")
+        .principal(PrincipalSource::extension::<AuthenticatedPrincipal>())
+        .tenant(TenantSource::extension::<AuthenticatedTenant>())
+        .object_id(ObjectIdSource::path("document_id")),
+)?;
+let app = Router::new()
+    .route("/documents/{document_id}", get(read_document))
+    .route_layer(viewer);
+```
+
+The runnable example has seven route/demo declarations: these two extension
+types and their two identity trait implementations, its authentication
+middleware, route handler, and `main`. Four declarations adapt the principal
+and tenant; `ObjectIdSource::path` reads Axum's named path capture without an
+application-defined path type. The existing authentication middleware inserts
+the two trusted extensions before authorization runs. If an application
+already defines compatible extension types and identity implementations, it
+only needs the policy chain.
+
+Add a `ContextBinding` only when a condition parameter must come from explicit
+request or application context. Tuple-stored condition values need no route
+binding. The bundled `can_view` demonstration binds `current_time` because its
+`valid_grant` condition needs the current time; its grant time and duration are
+already stored with the tuple. `ContextValueProvider::from_request_parts` and
+`from_async` are for custom synchronous extraction or asynchronous resolution
+of those request-context values. Registration checks the declared condition
+parameter type, and runtime values are checked again with lossy numeric
+conversions rejected.
 
 ## Errors and execution limits
 
