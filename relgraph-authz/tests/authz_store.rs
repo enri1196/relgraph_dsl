@@ -67,6 +67,108 @@ fn read_session_keeps_an_immutable_snapshot() {
 }
 
 #[test]
+fn snapshot_mutations_keep_held_readers_immutable_for_sync_and_async_writes() {
+    let store = InMemoryRelationshipStore::new();
+    let tenant = tenant("tenant-a");
+    let object = object("document", "42");
+    let relation = relation("viewer");
+    let first = RelationshipTuple::new(
+        tenant.clone(),
+        object.clone(),
+        relation.clone(),
+        subject("user", "anne"),
+    );
+    let second = RelationshipTuple::new(
+        tenant.clone(),
+        object.clone(),
+        relation.clone(),
+        subject("user", "grace"),
+    );
+    let missing = RelationshipTuple::new(
+        tenant.clone(),
+        object.clone(),
+        relation.clone(),
+        subject("user", "missing"),
+    );
+
+    let empty_snapshot = block_on(store.begin_read(&tenant)).unwrap();
+    store.insert(first.clone()).unwrap();
+    let after_insert = block_on(store.begin_read(&tenant)).unwrap();
+
+    assert_eq!(
+        store.insert(first.clone()).unwrap_err().kind(),
+        relgraph_authz::StoreErrorKind::CorruptData
+    );
+    assert!(!store.remove(&missing).unwrap());
+    assert!(
+        block_on(empty_snapshot.tuples(&object, &relation, 10))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        block_on(after_insert.tuples(&object, &relation, 10)).unwrap(),
+        vec![first.clone()]
+    );
+
+    assert!(store.remove(&first).unwrap());
+    assert_eq!(
+        block_on(after_insert.tuples(&object, &relation, 10)).unwrap(),
+        vec![first]
+    );
+    let after_remove = block_on(store.begin_read(&tenant)).unwrap();
+    assert!(
+        block_on(after_remove.tuples(&object, &relation, 10))
+            .unwrap()
+            .is_empty()
+    );
+
+    block_on(relgraph_authz::RelationshipWriteStore::insert_tuple(
+        &store, &tenant, &second,
+    ))
+    .unwrap();
+    assert!(
+        block_on(after_remove.tuples(&object, &relation, 10))
+            .unwrap()
+            .is_empty()
+    );
+    let after_async_insert = block_on(store.begin_read(&tenant)).unwrap();
+    assert_eq!(
+        block_on(after_async_insert.tuples(&object, &relation, 10)).unwrap(),
+        vec![second.clone()]
+    );
+    assert_eq!(
+        block_on(relgraph_authz::RelationshipWriteStore::insert_tuple(
+            &store, &tenant, &second,
+        ))
+        .unwrap_err()
+        .kind(),
+        relgraph_authz::StoreErrorKind::CorruptData
+    );
+    assert!(
+        !block_on(relgraph_authz::RelationshipWriteStore::remove_tuple(
+            &store, &tenant, &missing,
+        ))
+        .unwrap()
+    );
+    assert!(
+        block_on(relgraph_authz::RelationshipWriteStore::remove_tuple(
+            &store, &tenant, &second,
+        ))
+        .unwrap()
+    );
+    assert_eq!(
+        block_on(after_async_insert.tuples(&object, &relation, 10)).unwrap(),
+        vec![second]
+    );
+    let after_async_remove = block_on(store.begin_read(&tenant)).unwrap();
+    assert!(
+        block_on(after_async_remove.tuples(&object, &relation, 10))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn in_memory_store_reports_tuple_limit_exhaustion() {
     let store = InMemoryRelationshipStore::new();
     let tenant = tenant("tenant-a");

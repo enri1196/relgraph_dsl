@@ -403,16 +403,19 @@ impl InMemoryRelationshipStore {
                 "in-memory relationship store lock was poisoned",
             )
         })?;
-        let mut next = (**current).clone();
-        let values = next.entry(key).or_default();
-        if values.contains(&tuple) {
+        if current
+            .get(&key)
+            .is_some_and(|values| values.contains(&tuple))
+        {
             return Err(StoreError::new(
                 StoreErrorKind::CorruptData,
                 "duplicate relationship tuple",
             ));
         }
-        values.push(tuple);
-        *current = Arc::new(next);
+        Arc::make_mut(&mut *current)
+            .entry(key)
+            .or_default()
+            .push(tuple);
         Ok(())
     }
 
@@ -425,19 +428,18 @@ impl InMemoryRelationshipStore {
                 "in-memory relationship store lock was poisoned",
             )
         })?;
-        let Some(existing) = current.get(&key) else {
+        let Some(index) = current
+            .get(&key)
+            .and_then(|existing| existing.iter().position(|candidate| candidate == tuple))
+        else {
             return Ok(false);
         };
-        let Some(index) = existing.iter().position(|candidate| candidate == tuple) else {
-            return Ok(false);
-        };
-        let mut next = (**current).clone();
-        let values = next.get_mut(&key).expect("key checked above");
+        let snapshot = Arc::make_mut(&mut *current);
+        let values = snapshot.get_mut(&key).expect("key checked above");
         values.remove(index);
         if values.is_empty() {
-            next.remove(&key);
+            snapshot.remove(&key);
         }
-        *current = Arc::new(next);
         Ok(true)
     }
 }
