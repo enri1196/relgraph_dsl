@@ -58,26 +58,26 @@ fn assembles_extension_before_base_and_tracks_ordered_origins() {
     ];
 
     let model = assemble_modular_model(manifest, modules).unwrap();
-    assert_eq!(model.modules.len(), 3);
+    assert_eq!(model.modules().len(), 3);
     assert_eq!(
-        model.schema.header,
+        model.schema().header,
         SchemaHeader::ModelSchema {
             version: "1.2".to_string()
         }
     );
-    assert_eq!(model.schema.header_span, None);
+    assert_eq!(model.schema().header_span, None);
     assert_eq!(
         model
-            .schema
+            .schema()
             .type_definitions
             .iter()
             .map(|definition| definition.name.as_str())
             .collect::<Vec<_>>(),
         ["document", "user"]
     );
-    assert!(!model.schema.type_definitions[0].is_extended);
+    assert!(!model.schema().type_definitions[0].is_extended);
     assert_eq!(
-        model.schema.type_definitions[0]
+        model.schema().type_definitions[0]
             .relations
             .iter()
             .map(|relation| relation.name.as_str())
@@ -86,7 +86,7 @@ fn assembles_extension_before_base_and_tracks_ordered_origins() {
     );
     assert_eq!(
         model
-            .schema
+            .schema()
             .condition_definitions
             .iter()
             .map(|condition| condition.name.as_str())
@@ -94,23 +94,23 @@ fn assembles_extension_before_base_and_tracks_ordered_origins() {
         ["can_view", "can_edit"]
     );
 
-    assert_eq!(model.type_origins.len(), 2);
-    assert_location_file(&model.type_origins[0], "base/document.fga");
-    assert_location_file(&model.type_origins[1], "base/user.fga");
-    assert_eq!(model.relation_origins.len(), 2);
-    assert_eq!(model.relation_origins[0].len(), 2);
-    assert_location_file(&model.relation_origins[0][0], "base/document.fga");
-    assert_location_file(&model.relation_origins[0][1], "extensions/document.fga");
-    assert_eq!(model.condition_origins.len(), 2);
-    assert_location_file(&model.condition_origins[0], "base/document.fga");
-    assert_location_file(&model.condition_origins[1], "base/user.fga");
+    assert_eq!(model.type_origins().len(), 2);
+    assert_location_file(&model.type_origins()[0], "base/document.fga");
+    assert_location_file(&model.type_origins()[1], "base/user.fga");
+    assert_eq!(model.relation_origins().len(), 2);
+    assert_eq!(model.relation_origins()[0].len(), 2);
+    assert_location_file(&model.relation_origins()[0][0], "base/document.fga");
+    assert_location_file(&model.relation_origins()[0][1], "extensions/document.fga");
+    assert_eq!(model.condition_origins().len(), 2);
+    assert_location_file(&model.condition_origins()[0], "base/document.fga");
+    assert_location_file(&model.condition_origins()[1], "base/user.fga");
     assert_eq!(
-        model.type_origins[0].span,
-        model.modules[1].schema.type_definitions[0].span
+        model.type_origins()[0].span,
+        model.modules()[1].schema.type_definitions[0].span
     );
     assert_eq!(
-        model.relation_origins[0][1].span,
-        model.modules[0].schema.type_definitions[0].relations[0].span
+        model.relation_origins()[0][1].span,
+        model.modules()[0].schema.type_definitions[0].relations[0].span
     );
 }
 
@@ -126,20 +126,20 @@ fn allows_empty_extensions_repeated_module_names_and_skips_semantic_validation()
     let model = assemble_modular_model(manifest(&["extension.fga", "base.fga"], "9.7"), modules)
         .expect("composition does not apply version or reference validation");
     assert_eq!(
-        model.schema.header,
+        model.schema().header,
         SchemaHeader::ModelSchema {
             version: "9.7".to_string()
         }
     );
-    assert_eq!(model.schema.type_definitions[0].relations.len(), 1);
+    assert_eq!(model.schema().type_definitions[0].relations.len(), 1);
     assert_eq!(
-        model.modules[0].schema.header,
+        model.modules()[0].schema.header,
         SchemaHeader::Module {
             name: "shared".to_string()
         }
     );
     assert_eq!(
-        model.modules[1].schema.header,
+        model.modules()[1].schema.header,
         SchemaHeader::Module {
             name: "shared".to_string()
         }
@@ -231,7 +231,7 @@ fn reports_same_file_duplicate_extensions_but_allows_them_across_files() {
         ],
     )
     .unwrap();
-    assert_eq!(model.schema.type_definitions.len(), 1);
+    assert_eq!(model.schema().type_definitions.len(), 1);
 }
 
 #[test]
@@ -478,6 +478,6 @@ fn loads_modules_and_reports_io_utf8_parse_and_header_errors_with_context() {
     )
     .unwrap();
     let model = load_modular_model(&manifest_path).unwrap();
-    assert_eq!(model.modules.len(), 1);
-    assert_eq!(model.modules[0].path, PathBuf::from("module.fga"));
+    assert_eq!(model.modules().len(), 1);
+    assert_eq!(model.modules()[0].path, PathBuf::from("module.fga"));
 }

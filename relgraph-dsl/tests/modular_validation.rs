@@ -1,7 +1,6 @@
 use relgraph_dsl::{
-    ModelManifest, ModularModel, ModuleSource, ValidationError, ValidationIssue,
-    assemble_modular_model, parse_fga_schema, parse_model_manifest, validate_modular_model,
-    validate_schema,
+    ModelManifest, ModularModel, ModuleSource, ValidationError, assemble_modular_model,
+    parse_fga_schema, parse_model_manifest, validate_modular_model, validate_schema,
 };
 use std::path::PathBuf;
 
@@ -45,7 +44,7 @@ fn codes(errors: &[ValidationError]) -> Vec<&'static str> {
 fn resolves_cross_file_types_relations_conditions_and_repeated_module_names() {
     let model = cross_file_model();
 
-    assert!(model.modules.iter().all(|module| matches!(
+    assert!(model.modules().iter().all(|module| matches!(
         &module.schema.header,
         relgraph_dsl::SchemaHeader::Module { name } if name == "shared"
     )));
@@ -197,46 +196,31 @@ fn assemble_modular_manifest(schema: &str) -> ModularModel {
 }
 
 #[test]
-fn rejects_mutated_public_schema_and_each_origin_vector() {
-    let mut altered_schema = cross_file_model();
-    altered_schema.schema.type_definitions[0].name = "tampered".to_string();
-    let errors = validate_modular_model(&altered_schema).expect_err("schema must match modules");
-    assert_eq!(codes(&errors), ["InvalidComposition"]);
-    assert_eq!(errors[0].location.file, None);
-    assert_eq!(errors[0].location.module, None);
-    assert_eq!(errors[0].location.span, None);
-    assert!(errors[0].message.contains("assembled schema"));
+fn exposes_composed_schema_and_aligned_origins() {
+    let model = cross_file_model();
+    validate_modular_model(&model).expect("assembled model is valid");
 
-    for mutation in 0..3 {
-        let mut model = cross_file_model();
-        match mutation {
-            0 => model.type_origins[0].file = Some(PathBuf::from("tampered.fga")),
-            1 => model.relation_origins[0][0].module = Some("tampered".to_string()),
-            2 => model.condition_origins[0].span = None,
-            _ => unreachable!(),
-        }
-        let errors = validate_modular_model(&model).expect_err("origins must match modules");
-        assert_eq!(codes(&errors), ["InvalidComposition"]);
-        assert!(errors[0].message.contains("origins"));
-    }
-}
-
-#[test]
-fn synthetic_invalid_composition_precedes_recomposition_conflicts() {
-    let mut model = cross_file_model();
-    let duplicate = model.modules[0].schema.type_definitions[0].clone();
-    model.modules[0].schema.type_definitions.push(duplicate);
-
-    let errors = validate_modular_model(&model).expect_err("mutated inputs conflict");
-    assert_eq!(errors[0].issue, ValidationIssue::InvalidComposition);
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.issue == ValidationIssue::DuplicateType)
+    assert_eq!(model.manifest().contents.len(), model.modules().len());
+    assert_eq!(
+        model.schema().type_definitions.len(),
+        model.type_origins().len()
     );
-    assert_eq!(errors[0].location.file, None);
-    assert_eq!(errors[0].location.module, None);
-    assert_eq!(errors[0].location.span, None);
+    assert_eq!(
+        model.schema().type_definitions.len(),
+        model.relation_origins().len()
+    );
+    assert_eq!(
+        model.schema().condition_definitions.len(),
+        model.condition_origins().len()
+    );
+    for (definition, origins) in model
+        .schema()
+        .type_definitions
+        .iter()
+        .zip(model.relation_origins())
+    {
+        assert_eq!(definition.relations.len(), origins.len());
+    }
 }
 
 #[test]

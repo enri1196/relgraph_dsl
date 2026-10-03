@@ -29,17 +29,49 @@ pub struct ModuleSource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModularModel {
     /// Parsed and validated manifest value used to compose this model.
-    pub manifest: ModelManifest,
+    manifest: ModelManifest,
     /// Original module declarations in manifest order.
-    pub modules: Vec<ModuleSource>,
+    modules: Vec<ModuleSource>,
     /// Assembled schema with base types and extension relations merged.
-    pub schema: Schema,
+    schema: Schema,
     /// Origins aligned with [`Schema::type_definitions`].
-    pub type_origins: Vec<SourceLocation>,
+    type_origins: Vec<SourceLocation>,
     /// Origins aligned with each type's relations.
-    pub relation_origins: Vec<Vec<SourceLocation>>,
+    relation_origins: Vec<Vec<SourceLocation>>,
     /// Origins aligned with [`Schema::condition_definitions`].
-    pub condition_origins: Vec<SourceLocation>,
+    condition_origins: Vec<SourceLocation>,
+}
+
+impl ModularModel {
+    /// Returns the manifest used to assemble this model.
+    pub fn manifest(&self) -> &ModelManifest {
+        &self.manifest
+    }
+
+    /// Returns the parsed module declarations in manifest order.
+    pub fn modules(&self) -> &[ModuleSource] {
+        &self.modules
+    }
+
+    /// Returns the composed schema with base types and extension relations merged.
+    pub fn schema(&self) -> &Schema {
+        &self.schema
+    }
+
+    /// Returns origins aligned with [`Schema::type_definitions`].
+    pub fn type_origins(&self) -> &[SourceLocation] {
+        &self.type_origins
+    }
+
+    /// Returns origins aligned with each type's relations.
+    pub fn relation_origins(&self) -> &[Vec<SourceLocation>] {
+        &self.relation_origins
+    }
+
+    /// Returns origins aligned with [`Schema::condition_definitions`].
+    pub fn condition_origins(&self) -> &[SourceLocation] {
+        &self.condition_origins
+    }
 }
 
 /// Errors returned while assembling or loading a modular model.
@@ -417,42 +449,6 @@ pub fn assemble_modular_model(
 /// path, module name, and declaration spans. As with standalone validation, CEL
 /// is not compiled or evaluated and server-only limits are outside this API.
 pub fn validate_modular_model(model: &ModularModel) -> Result<(), Vec<ValidationError>> {
-    let recomposed = match assemble_modular_model(model.manifest.clone(), model.modules.clone()) {
-        Ok(recomposed) => recomposed,
-        Err(ModularModelError::Composition { errors }) => {
-            let mut result = vec![invalid_composition(
-                "retained modules have structural composition errors",
-            )];
-            result.extend(errors);
-            return Err(result);
-        }
-        Err(error) => {
-            return Err(vec![invalid_composition(format!(
-                "retained manifest and modules cannot be recomposed: {error}"
-            ))]);
-        }
-    };
-
-    let mut failed_invariants = Vec::new();
-    if model.schema != recomposed.schema {
-        failed_invariants.push("assembled schema differs from recomposition");
-    }
-    if model.type_origins != recomposed.type_origins {
-        failed_invariants.push("type origins differ from recomposition");
-    }
-    if model.relation_origins != recomposed.relation_origins {
-        failed_invariants.push("relation origins differ from recomposition");
-    }
-    if model.condition_origins != recomposed.condition_origins {
-        failed_invariants.push("condition origins differ from recomposition");
-    }
-    if !failed_invariants.is_empty() {
-        return Err(vec![invalid_composition(format!(
-            "public modular model invariant failed: {}",
-            failed_invariants.join("; ")
-        ))]);
-    }
-
     crate::validation::validate_schema_with_origins(
         &model.schema,
         crate::validation::ValidationOrigins {
@@ -462,19 +458,6 @@ pub fn validate_modular_model(model: &ModularModel) -> Result<(), Vec<Validation
         },
         &model.manifest.contents,
     )
-}
-
-fn invalid_composition(message: impl Into<String>) -> ValidationError {
-    ValidationError {
-        issue: ValidationIssue::InvalidComposition,
-        location: SourceLocation {
-            file: None,
-            module: None,
-            span: None,
-        },
-        related: Vec::new(),
-        message: message.into(),
-    }
 }
 
 /// Synchronously reads a manifest and each listed module file once.
