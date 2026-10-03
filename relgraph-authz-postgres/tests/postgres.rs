@@ -12,7 +12,7 @@ use relgraph_authz::{
 };
 use relgraph_authz_postgres::{MIGRATION_0001, PostgresRelationshipStore};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{PgPool, QueryBuilder};
+use sqlx::{AssertSqlSafe, PgPool};
 
 #[path = "../../relgraph-authz/tests/support/store_contract.rs"]
 mod store_contract;
@@ -98,8 +98,9 @@ impl TestDatabase {
         }
 
         let name = next_database_name();
-        let create_sql = format!("CREATE DATABASE \"{name}\"");
-        if sqlx::query(&create_sql)
+        let quoted_name = quote_identifier(&name)?;
+        let create_sql = format!("CREATE DATABASE {quoted_name}");
+        if sqlx::query(AssertSqlSafe(create_sql))
             .execute(&maintenance_pool)
             .await
             .is_err()
@@ -192,16 +193,25 @@ impl TestDatabase {
         self.admin_database_pool.close().await;
         let database_drop = drop_generated_database(&self.maintenance_pool, &self.name).await;
         let mut role_cleanup_failed = false;
+        let quoted_database = quote_identifier(&self.name)
+            .expect("generated database name is a valid PostgreSQL identifier");
         for role in roles {
+            let quoted_role = match quote_identifier(&role) {
+                Ok(role) => role,
+                Err(_) => {
+                    role_cleanup_failed = true;
+                    continue;
+                }
+            };
             if database_drop.is_err() {
-                let revoke = format!(
-                    "REVOKE CONNECT ON DATABASE \"{}\" FROM \"{role}\"",
-                    self.name
-                );
-                let _ = sqlx::query(&revoke).execute(&self.maintenance_pool).await;
+                let revoke =
+                    format!("REVOKE CONNECT ON DATABASE {quoted_database} FROM {quoted_role}");
+                let _ = sqlx::query(AssertSqlSafe(revoke))
+                    .execute(&self.maintenance_pool)
+                    .await;
             }
-            let drop_role = format!("DROP ROLE \"{role}\"");
-            if sqlx::query(&drop_role)
+            let drop_role = format!("DROP ROLE {quoted_role}");
+            if sqlx::query(AssertSqlSafe(drop_role))
                 .execute(&self.maintenance_pool)
                 .await
                 .is_err()
@@ -242,30 +252,52 @@ fn next_database_name() -> String {
         .expect("system clock is after the Unix epoch")
         .as_nanos();
     let sequence = NEXT_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
-    let name = format!(
-        "relgraph_authz_test_{}_{}_{}",
-        std::process::id(),
-        nanos,
-        sequence
-    );
+    let name = format!("rgt_{}_{}_{}", std::process::id(), nanos, sequence);
     assert!(
         name.bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
     );
+    assert!(
+        name.len() <= 63,
+        "generated database name exceeds PostgreSQL's identifier limit"
+    );
     name
 }
 
+fn quote_identifier(identifier: &str) -> Result<String, &'static str> {
+    if identifier.is_empty() || identifier.len() > 63 || identifier.as_bytes().contains(&0) {
+        return Err("invalid PostgreSQL identifier");
+    }
+    Ok(format!("\"{}\"", identifier.replace('"', "\"\"")))
+}
+
+fn quote_test_password(password: &str) -> Result<String, &'static str> {
+    if password.is_empty()
+        || !password
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("invalid generated test password");
+    }
+    Ok(format!("'{password}'"))
+}
+
 async fn drop_generated_database(pool: &PgPool, database_name: &str) -> Result<(), &'static str> {
-    let statement = format!("DROP DATABASE \"{database_name}\"");
-    if sqlx::query(&statement).execute(pool).await.is_ok() {
+    let quoted_name = quote_identifier(database_name)?;
+    let statement = format!("DROP DATABASE {quoted_name}");
+    if sqlx::query(AssertSqlSafe(statement))
+        .execute(pool)
+        .await
+        .is_ok()
+    {
         return Ok(());
     }
 
     // A cancelled query can leave a server session briefly attached while
     // SQLx finishes rollback-on-drop cleanup. The name is generated locally;
     // FORCE can therefore disconnect only this test's disposable database.
-    let force_statement = format!("DROP DATABASE \"{database_name}\" WITH (FORCE)");
-    sqlx::query(&force_statement)
+    let force_statement = format!("DROP DATABASE {quoted_name} WITH (FORCE)");
+    sqlx::query(AssertSqlSafe(force_statement))
         .execute(pool)
         .await
         .map(|_| ())
@@ -405,9 +437,13 @@ async fn table_permission_errors_propagate_when_role_creation_is_available() {
                     .expect("system clock is after the Unix epoch")
                     .as_nanos()
             );
+            let quoted_role =
+                quote_identifier(&role).expect("generated role is a valid PostgreSQL identifier");
+            let quoted_password = quote_test_password(&password)
+                .expect("generated password uses a safe alphabet");
             let create_role =
-                format!("CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'");
-            if let Err(error) = sqlx::query(&create_role)
+                format!("CREATE ROLE {quoted_role} LOGIN PASSWORD {quoted_password}");
+            if let Err(error) = sqlx::query(AssertSqlSafe(create_role))
                 .execute(&database.admin_pool)
                 .await
             {
@@ -423,18 +459,16 @@ async fn table_permission_errors_propagate_when_role_creation_is_available() {
             }
             database.register_role(role.clone());
 
-            let grant_connect = format!(
-                "GRANT CONNECT ON DATABASE \"{}\" TO \"{role}\"",
-                database.name
-            );
-            sqlx::query(&grant_connect)
+            let quoted_database = quote_identifier(&database.name)
+                .expect("generated database name is a valid PostgreSQL identifier");
+            let grant_connect =
+                format!("GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_role}");
+            sqlx::query(AssertSqlSafe(grant_connect))
                 .execute(&database.admin_pool)
                 .await
                 .expect("generated role receives access to only the generated database");
-            let grant_schema = format!(
-                "GRANT USAGE ON SCHEMA relgraph_authz TO \"{role}\""
-            );
-            sqlx::query(&grant_schema)
+            let grant_schema = format!("GRANT USAGE ON SCHEMA relgraph_authz TO {quoted_role}");
+            sqlx::query(AssertSqlSafe(grant_schema))
                 .execute(&database.admin_pool)
                 .await
                 .expect("generated role can resolve the adapter schema");
@@ -985,6 +1019,23 @@ async fn assert_pool_connection_is_clean(pool: &PgPool) {
         read_only, "off",
         "the read snapshot was rolled back before pool reuse"
     );
+}
+
+#[test]
+fn dynamic_postgres_identifiers_are_quoted_and_bounded() {
+    assert_eq!(
+        quote_identifier("generated_name").unwrap(),
+        "\"generated_name\""
+    );
+    assert_eq!(
+        quote_identifier("name\"; DROP TABLE users; --").unwrap(),
+        "\"name\"\"; DROP TABLE users; --\""
+    );
+    assert!(quote_identifier(&"x".repeat(64)).is_err());
+    assert!(quote_identifier("name\0suffix").is_err());
+
+    assert_eq!(quote_test_password("p_123_456").unwrap(), "'p_123_456'");
+    assert!(quote_test_password("p_123'; DROP ROLE x; --").is_err());
 }
 
 fn test_tuple(tenant_name: &str, object_id: &str, subject_id: &str) -> RelationshipTuple {

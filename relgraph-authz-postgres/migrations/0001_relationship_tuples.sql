@@ -1,6 +1,6 @@
-CREATE SCHEMA IF NOT EXISTS openfga_authz;
+CREATE SCHEMA IF NOT EXISTS relgraph_authz;
 
-CREATE TABLE openfga_authz.relationship_tuples (
+CREATE TABLE relgraph_authz.relationship_tuples (
     tuple_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     tenant TEXT COLLATE "C" NOT NULL
         CHECK (octet_length(tenant) BETWEEN 1 AND 128),
@@ -36,5 +36,5 @@ CREATE TABLE openfga_authz.relationship_tuples (
 );
 
 CREATE INDEX relationship_tuples_lookup_idx
-    ON openfga_authz.relationship_tuples
+    ON relgraph_authz.relationship_tuples
     (tenant, object_type, object_id, relation, tuple_id);

@@ -154,9 +154,11 @@
 
 //! PostgreSQL storage components for [`relgraph_authz`].
 //!
-//! The initial schema supports PostgreSQL 14 and later. Apply
-//! [`MIGRATION_0001`] transactionally through the application's migration
-//! ledger before using the adapter. Constructing [`PostgresRelationshipStore`]
+//! The schema supports PostgreSQL 14 and later. Apply [`MIGRATION_0001`]
+//! transactionally through the application's migration ledger before using
+//! the adapter. This migration creates the `relgraph_authz` schema queried by
+//! the adapter. Databases created by an earlier mismatched migration are not
+//! upgraded automatically. Constructing [`PostgresRelationshipStore`]
 //! performs no database I/O and does not run migrations.
 //!
 //! The adapter was checked with Rust 1.94.0. The workspace does not currently

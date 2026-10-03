@@ -31,9 +31,9 @@ The migration function demonstrates a small application-owned migration
 ledger. It serializes concurrent startup runners with a transaction-scoped
 advisory lock, records the migration in the same transaction as the DDL, and
 does nothing when the version is already recorded. In an application with a
-migration framework, register `MIGRATION_0001` with that framework's ledger
-instead. Run migrations as a deployment/startup step with the DDL role, then
-close that pool and serve requests with a separate runtime role.
+migration framework, register `MIGRATION_0001` with that framework's ledger.
+Run migrations as a deployment/startup step with the DDL role, then close that
+pool and serve requests with a separate runtime role.
 
 The full sequence is also present as a `no_run` crate-level Rust documentation
 example, so `cargo test -p relgraph-authz-postgres --doc` compiles it without
@@ -191,10 +191,12 @@ itself.
 
 ## Schema migration and database roles
 
-`MIGRATION_0001` is plain versioned SQL for the fixed
-`relgraph_authz.relationship_tuples` table. Apply it once transactionally with
-your application's migration ledger. Store construction does not migrate the
-database. PostgreSQL 14+ is the supported minimum.
+`MIGRATION_0001` creates the fixed `relgraph_authz.relationship_tuples`
+table queried by the adapter. Apply it transactionally with your application's
+migration ledger. Databases created by an earlier mismatched migration are not
+upgraded automatically and must be reconciled or recreated before using this
+version. Store construction does not migrate the database. PostgreSQL 14+ is
+the supported minimum.
 
 Use a trusted dedicated `relgraph_authz` schema, owned by the DDL role. Do not
 grant `CREATE` on that schema to `PUBLIC` or to untrusted roles. Grant the
