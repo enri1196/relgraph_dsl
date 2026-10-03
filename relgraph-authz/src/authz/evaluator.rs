@@ -256,7 +256,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let tuples = self.load_tuples(object.clone(), relation_id).await?;
             let mut allowed = false;
             let mut first_error = None;
-            for tuple in &tuples {
+            for tuple in tuples.iter().flatten() {
                 let prepared_context = self.validate_tuple(tuple, &object, relation_id)?;
                 self.validate_assignment_subject(tuple, &targets)?;
 
@@ -319,7 +319,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
 
             let mut allowed = false;
             let mut first_error = None;
-            for tuple in &tuples {
+            for tuple in tuples.iter().flatten() {
                 let prepared_context = self.validate_tuple(tuple, &object, tupleset_relation_id)?;
                 let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
                     return Err(AuthorizationError::InvalidTuple(
@@ -498,10 +498,12 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         &mut self,
         object: ObjectRef,
         relation_id: usize,
-    ) -> Result<Vec<RelationshipTuple>, AuthorizationError> {
+    ) -> Result<Vec<Vec<RelationshipTuple>>, AuthorizationError> {
         let relation = relation_name(self.compiled.relation_name(relation_id))?;
         let maximum_tuples = self.limits.max_tuples_scanned();
-        let mut tuples = Vec::new();
+        // Keep page allocations until pagination completes so a late read error
+        // still precedes tuple validation without growing a second flat buffer.
+        let mut pages = Vec::new();
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
         loop {
@@ -527,8 +529,9 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let page_is_empty = page.tuples.is_empty();
             self.charge_work(page.tuples.len())?;
             self.tuples_scanned += page.tuples.len();
-            tuples.extend(page.tuples);
-            match page.next_cursor {
+            let next_cursor = page.next_cursor;
+            pages.push(page.tuples);
+            match next_cursor {
                 None => break,
                 Some(next_cursor) => {
                     if page_is_empty {
@@ -548,7 +551,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 }
             }
         }
-        Ok(tuples)
+        Ok(pages)
     }
 
     /// Looks up one validated relation expression from the immutable model.

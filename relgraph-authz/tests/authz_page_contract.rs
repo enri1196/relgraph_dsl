@@ -156,3 +156,102 @@ fn evaluator_rejects_empty_pages_that_claim_a_continuation() {
 
     assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
 }
+
+#[test]
+fn evaluator_allows_a_grant_on_the_first_page_after_reading_later_pages() {
+    let cursor = StoreCursor::from_bytes(vec![3]);
+    let result = run_check(vec![
+        PageScript {
+            request_cursor: None,
+            tuples: vec![tuple()],
+            next_cursor: Some(cursor.clone()),
+        },
+        PageScript {
+            request_cursor: Some(cursor),
+            tuples: vec![page_tuple("other-user", "42")],
+            next_cursor: None,
+        },
+    ]);
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+}
+
+#[test]
+fn evaluator_allows_a_grant_on_a_later_page() {
+    let cursor = StoreCursor::from_bytes(vec![4]);
+    let result = run_check(vec![
+        PageScript {
+            request_cursor: None,
+            tuples: vec![page_tuple("other-user", "42")],
+            next_cursor: Some(cursor.clone()),
+        },
+        PageScript {
+            request_cursor: Some(cursor),
+            tuples: vec![tuple()],
+            next_cursor: None,
+        },
+    ]);
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+}
+
+#[test]
+fn late_page_store_error_prevents_an_earlier_grant() {
+    let result = run_check(vec![PageScript {
+        request_cursor: None,
+        tuples: vec![tuple()],
+        next_cursor: Some(StoreCursor::from_bytes(vec![5])),
+    }]);
+
+    assert!(matches!(result, Err(AuthorizationError::Store(_))));
+}
+
+#[test]
+fn late_invalid_tuple_prevents_an_earlier_grant() {
+    let cursor = StoreCursor::from_bytes(vec![6]);
+    let result = run_check(vec![
+        PageScript {
+            request_cursor: None,
+            tuples: vec![tuple()],
+            next_cursor: Some(cursor.clone()),
+        },
+        PageScript {
+            request_cursor: Some(cursor),
+            tuples: vec![page_tuple("anne", "other-object")],
+            next_cursor: None,
+        },
+    ]);
+
+    assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+}
+
+#[test]
+fn page_read_error_precedes_validation_of_buffered_tuples() {
+    let first_cursor = StoreCursor::from_bytes(vec![7]);
+    let missing_page_cursor = StoreCursor::from_bytes(vec![8]);
+    let result = run_check(vec![
+        PageScript {
+            request_cursor: None,
+            tuples: vec![tuple()],
+            next_cursor: Some(first_cursor.clone()),
+        },
+        PageScript {
+            request_cursor: Some(first_cursor),
+            tuples: vec![page_tuple("anne", "other-object")],
+            next_cursor: Some(missing_page_cursor),
+        },
+    ]);
+
+    assert!(matches!(result, Err(AuthorizationError::Store(_))));
+}
+
+fn page_tuple(subject_id: &str, object_id: &str) -> RelationshipTuple {
+    RelationshipTuple::new(
+        relgraph_authz::TenantId::new("tenant-a").unwrap(),
+        relgraph_authz::ObjectRef::new("document", object_id).unwrap(),
+        relgraph_authz::RelationName::new("viewer").unwrap(),
+        relgraph_authz::TupleSubject::Direct(
+            relgraph_authz::Subject::new("user", subject_id).unwrap(),
+        ),
+    )
+}
