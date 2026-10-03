@@ -69,12 +69,17 @@ fn parse_relation_target(input: TokenInput<'_>) -> Res<'_, RelationTarget> {
     ))
 }
 
-fn parse_relation_target_list(input: TokenInput<'_>) -> Res<'_, Vec<RelationTarget>> {
+fn parse_relation_target_list<'a>(
+    input: TokenInput<'a>,
+    budget: &mut ExpressionBudget,
+) -> Res<'a, Vec<RelationTarget>> {
     let (input, _) = expect_kind(input, TokenKind::LBracket)?;
     let mut input = super::common::skip_horizontal_whitespace(input);
     let mut targets = Vec::new();
 
     loop {
+        let (next_input, _) = budget.consume(input)?;
+        input = next_input;
         let (rest, target) = parse_relation_restriction(input)?;
         targets.push(target);
         let rest = super::common::skip_horizontal_whitespace(rest);
@@ -134,18 +139,26 @@ fn parse_rewrite(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
     ))
 }
 
-fn parse_right_term(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
+fn parse_right_term<'a>(
+    input: TokenInput<'a>,
+    budget: &mut ExpressionBudget,
+    depth: usize,
+) -> Res<'a, RelationExpression> {
     if input
         .first()
         .is_some_and(|token| token.kind == TokenKind::LParen)
     {
+        if depth >= super::schema::MAX_RELATION_EXPRESSION_DEPTH {
+            return Err(construction_limit_error(input));
+        }
         let (input, _) = expect_kind(input, TokenKind::LParen)?;
         let input = super::common::skip_horizontal_whitespace(input);
-        let (input, expression) = parse_no_direct_expression(input)?;
+        let (input, expression) = parse_no_direct_expression(input, budget, depth + 1)?;
         let input = super::common::skip_horizontal_whitespace(input);
         let (input, _) = expect_kind(input, TokenKind::RParen)?;
         Ok((input, expression))
     } else {
+        let (input, _) = budget.consume(input)?;
         parse_rewrite(input)
     }
 }
@@ -158,18 +171,28 @@ fn operator_kind(input: TokenInput<'_>) -> Option<TokenKind> {
 }
 
 fn parse_relation_expression(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
-    parse_expression(input, true)
+    let mut budget = ExpressionBudget::default();
+    parse_expression(input, true, &mut budget, 0)
 }
 
-fn parse_no_direct_expression(input: TokenInput<'_>) -> Res<'_, RelationExpression> {
-    parse_expression(input, false)
+fn parse_no_direct_expression<'a>(
+    input: TokenInput<'a>,
+    budget: &mut ExpressionBudget,
+    depth: usize,
+) -> Res<'a, RelationExpression> {
+    parse_expression(input, false, budget, depth)
 }
 
-fn parse_expression(
-    input: TokenInput<'_>,
+fn parse_expression<'a>(
+    input: TokenInput<'a>,
     direct_assignment_allowed: bool,
-) -> Res<'_, RelationExpression> {
-    let (input, base) = parse_expression_primary(input, direct_assignment_allowed)?;
+    budget: &mut ExpressionBudget,
+    depth: usize,
+) -> Res<'a, RelationExpression> {
+    if depth > super::schema::MAX_RELATION_EXPRESSION_DEPTH {
+        return Err(construction_limit_error(input));
+    }
+    let (input, base) = parse_expression_primary(input, direct_assignment_allowed, budget, depth)?;
     let (after_space, had_space) = take_whitespace(input);
     if !had_space {
         return Ok((input, base));
@@ -177,13 +200,14 @@ fn parse_expression(
     let Some(operator) = operator_kind(after_space) else {
         return Ok((input, base));
     };
+    let (after_space, _) = budget.consume(after_space)?;
     let (mut rest, _) = expect_kind(after_space, operator)?;
     let (next, had_space) = take_whitespace(rest);
     if !had_space {
         return Err(nom::Err::Error(Error::new(next, ErrorKind::Tag)));
     }
     rest = next;
-    let (next, first_term) = parse_right_term(rest)?;
+    let (next, first_term) = parse_right_term(rest, budget, depth)?;
     let mut terms = vec![first_term];
     rest = next;
 
@@ -197,6 +221,7 @@ fn parse_expression(
             {
                 break;
             }
+            let (after_space, _) = budget.consume(after_space)?;
             let (after_operator, _) = expect_kind(after_space, operator)?;
             let (after_required_space, had_space) = take_whitespace(after_operator);
             if !had_space {
@@ -205,7 +230,7 @@ fn parse_expression(
                     ErrorKind::Tag,
                 )));
             }
-            let (next, term) = parse_right_term(after_required_space)?;
+            let (next, term) = parse_right_term(after_required_space, budget, depth)?;
             terms.push(term);
             rest = next;
         }
@@ -220,25 +245,54 @@ fn parse_expression(
     Ok((rest, expression))
 }
 
-fn parse_expression_primary(
-    input: TokenInput<'_>,
+fn parse_expression_primary<'a>(
+    input: TokenInput<'a>,
     direct_assignment_allowed: bool,
-) -> Res<'_, RelationExpression> {
+    budget: &mut ExpressionBudget,
+    depth: usize,
+) -> Res<'a, RelationExpression> {
     match input.first().map(|token| token.kind) {
         Some(TokenKind::LBracket) if direct_assignment_allowed => {
-            let (input, targets) = parse_relation_target_list(input)?;
+            let (input, _) = budget.consume(input)?;
+            let (input, targets) = parse_relation_target_list(input, budget)?;
             Ok((input, RelationExpression::DirectAssignment(targets)))
         }
         Some(TokenKind::LParen) => {
+            if depth >= super::schema::MAX_RELATION_EXPRESSION_DEPTH {
+                return Err(construction_limit_error(input));
+            }
             let (input, _) = expect_kind(input, TokenKind::LParen)?;
             let input = super::common::skip_horizontal_whitespace(input);
-            let (input, expression) = parse_expression(input, direct_assignment_allowed)?;
+            let (input, expression) =
+                parse_expression(input, direct_assignment_allowed, budget, depth + 1)?;
             let input = super::common::skip_horizontal_whitespace(input);
             let (input, _) = expect_kind(input, TokenKind::RParen)?;
             Ok((input, expression))
         }
-        _ => parse_rewrite(input),
+        _ => {
+            let (input, _) = budget.consume(input)?;
+            parse_rewrite(input)
+        }
     }
+}
+
+#[derive(Default)]
+struct ExpressionBudget {
+    nodes: usize,
+}
+
+impl ExpressionBudget {
+    fn consume<'a>(&mut self, input: TokenInput<'a>) -> Res<'a, ()> {
+        if self.nodes >= super::schema::MAX_RELATION_EXPRESSION_NODES {
+            return Err(construction_limit_error(input));
+        }
+        self.nodes += 1;
+        Ok((input, ()))
+    }
+}
+
+fn construction_limit_error<'a>(input: TokenInput<'a>) -> nom::Err<Error<TokenInput<'a>>> {
+    nom::Err::Failure(Error::new(input, nom::error::ErrorKind::TooLarge))
 }
 
 fn parse_relation(input: TokenInput<'_>, comments_before: Vec<String>) -> Res<'_, Relation> {
@@ -262,10 +316,11 @@ fn parse_relation(input: TokenInput<'_>, comments_before: Vec<String>) -> Res<'_
     ))
 }
 
-pub(super) fn parse_relations_block(
-    input: TokenInput<'_>,
+pub(super) fn parse_relations_block<'a>(
+    input: TokenInput<'a>,
     _block_comments: Vec<String>,
-) -> Res<'_, Vec<Relation>> {
+    declaration_count: &mut usize,
+) -> Res<'a, Vec<Relation>> {
     let (input, _) = expect_kind(input, TokenKind::Relations)?;
     let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)));
@@ -276,6 +331,7 @@ pub(super) fn parse_relations_block(
     {
         return Err(nom::Err::Error(Error::new(declaration, ErrorKind::Tag)));
     }
+    let (declaration, _) = super::schema::consume_declaration(declaration, declaration_count)?;
     let mut relations = Vec::new();
 
     let (mut input, relation) = parse_relation(declaration, comments)?;
@@ -290,6 +346,7 @@ pub(super) fn parse_relations_block(
         {
             return Ok((input, relations));
         }
+        let (declaration, _) = super::schema::consume_declaration(declaration, declaration_count)?;
         let (rest, relation) = parse_relation(declaration, comments)?;
         relations.push(relation);
         input = rest;

@@ -6,7 +6,8 @@ use std::task::{Context, Poll, Wake, Waker};
 use relgraph_authz::{
     AuthorizationDecision, AuthorizationError, CheckRequest, ConditionContext, ConstructionError,
     EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ObjectRef, RelationName,
-    RelationshipTuple, Subject, TenantId,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind,
+    StoreFuture, Subject, TenantId,
 };
 use serde_json::{Value, json};
 
@@ -64,6 +65,53 @@ fn authz_with_tuple(
         .insert(tuple("viewer", subject("user", "anne"), condition))
         .unwrap();
     FgaAuthz::new(definition).unwrap().with_store(store, limits)
+}
+
+struct UncheckedTupleStore(RelationshipTuple);
+
+struct UncheckedTupleReadSession(Vec<RelationshipTuple>);
+
+impl RelationshipStore for UncheckedTupleStore {
+    type ReadSession = UncheckedTupleReadSession;
+
+    fn begin_read<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+    ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>> {
+        let tuples = if self.0.tenant() == tenant {
+            vec![self.0.clone()]
+        } else {
+            Vec::new()
+        };
+        Box::pin(async move { Ok(UncheckedTupleReadSession(tuples)) })
+    }
+}
+
+impl RelationshipReadSession for UncheckedTupleReadSession {
+    fn tuples<'a>(
+        &'a self,
+        object: &'a ObjectRef,
+        relation: &'a RelationName,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<Vec<RelationshipTuple>, StoreError>> {
+        let tuples: Vec<_> = self
+            .0
+            .iter()
+            .filter(|tuple| tuple.object() == object && tuple.relation() == relation)
+            .take(maximum.saturating_add(1))
+            .cloned()
+            .collect();
+        Box::pin(async move {
+            if tuples.len() > maximum {
+                Err(StoreError::new(
+                    StoreErrorKind::TupleLimitExceeded,
+                    "test tuple limit exceeded",
+                ))
+            } else {
+                Ok(tuples)
+            }
+        })
+    }
 }
 
 #[test]
@@ -231,6 +279,106 @@ fn condition_cost_budget_is_enforced() {
     assert!(matches!(
         result,
         Err(AuthorizationError::ConditionCostLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn unused_oversized_tuple_values_are_rejected_before_subject_matching() {
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with gate]\ncondition gate(unused: list<int>) { true }\n";
+    let oversized = json!(vec![
+        0_i64;
+        relgraph_authz::MAX_CONDITION_CONTEXT_ELEMENTS + 1
+    ]);
+    let stored_tuple = tuple(
+        "viewer",
+        subject("user", "someone-else"),
+        Some(ConditionContext::new("gate", values([("unused", oversized)])).unwrap()),
+    );
+    let limits = EvaluationLimits::default()
+        .with_max_condition_cost(8)
+        .unwrap();
+    let authz = FgaAuthz::new(definition)
+        .unwrap()
+        .with_store(UncheckedTupleStore(stored_tuple), limits);
+
+    let result = block_on(authz.check(request(BTreeMap::new())));
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::ConditionCostLimitExceeded { .. })
+            | Err(AuthorizationError::InvalidConditionContext { .. })
+    ));
+}
+
+#[test]
+fn oversized_stored_strings_and_maps_are_rejected_before_conversion() {
+    let string_model = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with gate]\ncondition gate(unused: string) { true }\n";
+    let stored_tuple = tuple(
+        "viewer",
+        subject("user", "anne"),
+        Some(
+            ConditionContext::new("gate", values([("unused", json!("x".repeat(70_000)))])).unwrap(),
+        ),
+    );
+    let authz = FgaAuthz::new(string_model).unwrap().with_store(
+        UncheckedTupleStore(stored_tuple),
+        EvaluationLimits::default(),
+    );
+    assert!(matches!(
+        block_on(authz.check(request(BTreeMap::new()))),
+        Err(AuthorizationError::InvalidConditionContext { .. })
+    ));
+
+    let map_model = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with gate]\ncondition gate(unused: map<int>) { true }\n";
+    let large_map = Value::Object(
+        (0..10_001)
+            .map(|index| (format!("key-{index}"), json!(index)))
+            .collect(),
+    );
+    let stored_tuple = tuple(
+        "viewer",
+        subject("user", "anne"),
+        Some(ConditionContext::new("gate", values([("unused", large_map)])).unwrap()),
+    );
+    let authz = FgaAuthz::new(map_model).unwrap().with_store(
+        UncheckedTupleStore(stored_tuple),
+        EvaluationLimits::default(),
+    );
+    assert!(matches!(
+        block_on(authz.check(request(BTreeMap::new()))),
+        Err(AuthorizationError::InvalidConditionContext { .. })
+            | Err(AuthorizationError::ConditionCostLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn failed_condition_attempts_consume_the_shared_budget() {
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define broken: [user with broken_check]\n    define valid: [user with valid_check]\n    define viewer: broken or valid\ncondition broken_check(divisor: int) { 1 / divisor > 0 }\ncondition valid_check(enabled: bool) { enabled }\n";
+    let store = InMemoryRelationshipStore::new();
+    store
+        .insert(tuple(
+            "broken",
+            subject("user", "anne"),
+            Some(ConditionContext::new("broken_check", BTreeMap::new()).unwrap()),
+        ))
+        .unwrap();
+    store
+        .insert(tuple(
+            "valid",
+            subject("user", "anne"),
+            Some(ConditionContext::new("valid_check", BTreeMap::new()).unwrap()),
+        ))
+        .unwrap();
+    let limits = EvaluationLimits::default()
+        .with_max_condition_cost(6)
+        .unwrap();
+    let authz = FgaAuthz::new(definition).unwrap().with_store(store, limits);
+    let check = request(BTreeMap::new())
+        .with_condition_context("broken_check", values([("divisor", json!(0))]))
+        .with_condition_context("valid_check", values([("enabled", json!(true))]));
+
+    assert!(matches!(
+        block_on(authz.check(check)),
+        Err(AuthorizationError::ConditionEvaluationFailed { .. })
     ));
 }
 

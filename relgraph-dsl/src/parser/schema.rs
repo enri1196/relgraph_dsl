@@ -86,10 +86,31 @@ fn take_optional_whitespace(input: TokenInput<'_>) -> TokenInput<'_> {
     }
 }
 
-fn parse_type_definition(
-    input: TokenInput<'_>,
+/// Maximum parenthesis nesting supported in one relation expression.
+pub(super) const MAX_RELATION_EXPRESSION_DEPTH: usize = 128;
+/// Maximum expression and target nodes constructed for one relation.
+pub(super) const MAX_RELATION_EXPRESSION_NODES: usize = 512;
+/// Maximum type, relation, condition, and condition-parameter declarations in one model.
+const MAX_SCHEMA_DECLARATIONS: usize = 4096;
+
+pub(super) fn consume_declaration<'a>(input: TokenInput<'a>, count: &mut usize) -> Res<'a, ()> {
+    if *count >= MAX_SCHEMA_DECLARATIONS {
+        return Err(construction_limit_error(input));
+    }
+    *count += 1;
+    Ok((input, ()))
+}
+
+fn construction_limit_error<'a>(input: TokenInput<'a>) -> nom::Err<Error<TokenInput<'a>>> {
+    nom::Err::Failure(Error::new(input, nom::error::ErrorKind::TooLarge))
+}
+
+fn parse_type_definition<'a>(
+    input: TokenInput<'a>,
     comments_before: Vec<String>,
-) -> Res<'_, TypeDefinition> {
+    declaration_count: &mut usize,
+) -> Res<'a, TypeDefinition> {
+    let (input, _) = consume_declaration(input, declaration_count)?;
     let start = input;
     let (input, is_extended) = if input
         .first()
@@ -113,7 +134,7 @@ fn parse_type_definition(
                 .first()
                 .is_some_and(|next| next.kind == TokenKind::Relations)
     }) {
-        parse_relations_block(input.tail(), Vec::new())?
+        parse_relations_block(input.tail(), Vec::new(), declaration_count)?
     } else {
         (input, Vec::new())
     };
@@ -156,6 +177,7 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
     };
     let (mut input, (header, header_span)) = parse_header(input)?;
 
+    let mut declaration_count = 0;
     let mut type_definitions = Vec::new();
     loop {
         let Some((declaration, comments)) = super::common::declaration_prefix(input) else {
@@ -167,7 +189,8 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
         {
             break;
         }
-        let (rest, type_definition) = parse_type_definition(declaration, comments)?;
+        let (rest, type_definition) =
+            parse_type_definition(declaration, comments, &mut declaration_count)?;
         type_definitions.push(type_definition);
         input = rest;
     }
@@ -183,7 +206,12 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
         {
             break;
         }
+        let (declaration, _) = consume_declaration(declaration, &mut declaration_count)?;
         let (rest, condition) = parse_condition_definition(declaration, comments, source)?;
+        if declaration_count.saturating_add(condition.parameters.len()) > MAX_SCHEMA_DECLARATIONS {
+            return Err(construction_limit_error(declaration));
+        }
+        declaration_count += condition.parameters.len();
         condition_definitions.push(condition);
         input = rest;
     }
@@ -220,6 +248,13 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
 /// bodies preserve their bytes and stop at the first visible `}` token. Errors
 /// use typed codes and spans into the original input; callers migrating from the
 /// pre-1.0 `String` error should inspect [`ParseError::code`] and `ParseError::span`.
+/// Parses an FGA schema while bounding recursive relation-expression construction.
+///
+/// Relation expressions are limited to 128 nested parentheses and 512 expression
+/// or target nodes per relation. A model may contain at most 4,096 type,
+/// relation, condition, and condition-parameter declarations. Exceeding a limit
+/// returns [`ParseErrorCode::ConstructionLimitExceeded`] with the source span of
+/// the token where parsing reached the limit.
 pub fn parse_fga_schema(input: &str) -> Result<Schema, ParseError> {
     let tokens = lex(input)?;
     let visible_tokens: Vec<Token> = tokens
@@ -235,6 +270,7 @@ pub fn parse_fga_schema(input: &str) -> Result<Schema, ParseError> {
         Err(nom::Err::Error(error)) | Err(nom::Err::Failure(error)) => {
             let token = error.input.first();
             let is_eof = token.is_none();
+            let is_construction_limit = error.code == nom::error::ErrorKind::TooLarge;
             let span = token.map_or(
                 SourceSpan {
                     start: input.len(),
@@ -242,15 +278,26 @@ pub fn parse_fga_schema(input: &str) -> Result<Schema, ParseError> {
                 },
                 |token| token.span.clone(),
             );
-            let code = if is_eof {
+            let code = if is_construction_limit {
+                ParseErrorCode::ConstructionLimitExceeded
+            } else if is_eof {
                 ParseErrorCode::UnexpectedEof
             } else {
                 ParseErrorCode::UnexpectedToken
             };
-            let message = token.map_or_else(
-                || "unexpected end of input".to_string(),
-                |token| format!("unexpected token {:?}", error.input.text(token)),
-            );
+            let message = if is_construction_limit {
+                format!(
+                    "schema exceeds parser construction limits: relation expressions allow at most {} nested parentheses and {} expression or target nodes, and models allow at most {} declarations",
+                    MAX_RELATION_EXPRESSION_DEPTH,
+                    MAX_RELATION_EXPRESSION_NODES,
+                    MAX_SCHEMA_DECLARATIONS,
+                )
+            } else {
+                token.map_or_else(
+                    || "unexpected end of input".to_string(),
+                    |token| format!("unexpected token {:?}", error.input.text(token)),
+                )
+            };
             Err(ParseError {
                 code,
                 span,

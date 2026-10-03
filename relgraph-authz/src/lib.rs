@@ -68,8 +68,9 @@ pub use authz::{
     AuthorizationDecision, AuthorizationError, Bound, CapabilityDiagnostic, CheckRequest,
     ConditionContext, ConditionContextSource, ConditionName, ConstructionError, EntityId,
     EvaluationLimits, EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
-    InMemoryRelationshipStore, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
-    RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
+    InMemoryRelationshipStore, MAX_CONDITION_CONTEXT_ELEMENTS,
+    MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, ObjectRef, RelationExpressionKind, RelationLocation,
+    RelationName, RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
     RelationshipWriteStore, RuntimeCapability, StoreCursor, StoreError, StoreErrorKind,
     StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound,
 };

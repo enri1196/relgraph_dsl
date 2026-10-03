@@ -27,6 +27,7 @@ pub(crate) struct TupleRow {
     pub(crate) subject_relation: Option<String>,
     pub(crate) condition_name: Option<String>,
     pub(crate) context_json: Option<String>,
+    pub(crate) context_json_oversized: bool,
     pub(crate) identity_digest: Vec<u8>,
 }
 
@@ -44,6 +45,7 @@ impl<'r> FromRow<'r, PgRow> for TupleRow {
             subject_relation: row.try_get("subject_relation")?,
             condition_name: row.try_get("condition_name")?,
             context_json: row.try_get("context_json")?,
+            context_json_oversized: row.try_get("context_json_oversized")?,
             identity_digest: row.try_get("identity_digest")?,
         })
     }
@@ -72,6 +74,7 @@ impl TupleRow {
         let (condition_name, context_json) = match tuple.condition() {
             None => (None, None),
             Some(context) => {
+                context.serialized_size()?;
                 let json = serde_json::to_string(context.values())
                     .map_err(|_| internal_error(SERIALIZATION_FAILURE))?;
                 (Some(context.name().as_str().to_owned()), Some(json))
@@ -90,11 +93,19 @@ impl TupleRow {
             subject_relation,
             condition_name,
             context_json,
+            context_json_oversized: false,
             identity_digest: tuple_identity_digest(tuple)?.to_vec(),
         })
     }
 
     pub(crate) fn into_tuple(self) -> Result<RelationshipTuple, StoreError> {
+        if self.context_json_oversized
+            || self.context_json.as_ref().is_some_and(|json| {
+                json.len() > relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES
+            })
+        {
+            return Err(corrupt_error());
+        }
         if self.identity_digest.len() != 32 {
             return Err(corrupt_error());
         }
@@ -129,7 +140,9 @@ impl TupleRow {
             (Some(name), Some(json)) => {
                 let values = serde_json::from_str::<BTreeMap<String, Value>>(&json)
                     .map_err(|_| corrupt_error())?;
-                Some(ConditionContext::new(name, values).map_err(|_| corrupt_error())?)
+                let context = ConditionContext::new(name, values).map_err(|_| corrupt_error())?;
+                context.serialized_size().map_err(|_| corrupt_error())?;
+                Some(context)
             }
             _ => return Err(corrupt_error()),
         };
@@ -538,6 +551,58 @@ mod tests {
         bad_digest.identity_digest[0] ^= 0xff;
         assert_eq!(
             bad_digest.into_tuple().unwrap_err().kind(),
+            StoreErrorKind::CorruptData
+        );
+    }
+
+    #[test]
+    fn persisted_context_byte_and_element_limits_are_enforced() {
+        let fixture = tuple(TupleSubject::Direct(Subject::new("user", "alice").unwrap()));
+        let byte_limit = relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES;
+        let element_limit = relgraph_authz::MAX_CONDITION_CONTEXT_ELEMENTS;
+
+        let oversized_write = fixture.clone().with_condition(context(BTreeMap::from([(
+            "payload".to_owned(),
+            Value::String("x".repeat(byte_limit)),
+        )])));
+        assert_eq!(
+            TupleRow::from_tuple(&oversized_write).unwrap_err().kind(),
+            StoreErrorKind::CorruptData
+        );
+
+        let too_many_values = || {
+            context(BTreeMap::from([(
+                "items".to_owned(),
+                Value::Array(vec![Value::Null; element_limit + 1]),
+            )]))
+        };
+        let oversized_elements_write = fixture.clone().with_condition(too_many_values());
+        assert_eq!(
+            TupleRow::from_tuple(&oversized_elements_write)
+                .unwrap_err()
+                .kind(),
+            StoreErrorKind::CorruptData
+        );
+
+        let empty_condition = fixture.clone().with_condition(context(BTreeMap::new()));
+        let mut oversized_decode = TupleRow::from_tuple(&empty_condition).unwrap();
+        // Whitespace is valid JSON and would otherwise decode to the same empty
+        // context and digest, so this specifically verifies the raw-byte guard.
+        oversized_decode.context_json = Some(format!("{}{{}}", " ".repeat(byte_limit)));
+        assert_eq!(
+            oversized_decode.into_tuple().unwrap_err().kind(),
+            StoreErrorKind::CorruptData
+        );
+
+        let decoded_context = too_many_values();
+        let oversized_tuple = fixture.clone().with_condition(decoded_context.clone());
+        let mut oversized_elements_decode = TupleRow::from_tuple(&empty_condition).unwrap();
+        oversized_elements_decode.context_json =
+            Some(serde_json::to_string(decoded_context.values()).unwrap());
+        oversized_elements_decode.identity_digest =
+            tuple_identity_digest(&oversized_tuple).unwrap().to_vec();
+        assert_eq!(
+            oversized_elements_decode.into_tuple().unwrap_err().kind(),
             StoreErrorKind::CorruptData
         );
     }

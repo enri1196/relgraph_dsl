@@ -8,6 +8,12 @@ use std::sync::{Arc, RwLock};
 /// The boxed future type used by asynchronous relationship-store adapters.
 pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Maximum compact JSON byte length for a persisted condition context.
+pub const MAX_CONDITION_CONTEXT_SERIALIZED_BYTES: usize = 65_536;
+
+/// Maximum number of entries across a persisted condition context's JSON maps and arrays.
+pub const MAX_CONDITION_CONTEXT_ELEMENTS: usize = 10_000;
+
 /// An opaque continuation token returned by a relationship store.
 ///
 /// Callers should pass this value back unchanged. Its bytes are not a security
@@ -74,6 +80,95 @@ impl ConditionContext {
     pub fn values(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
         &self.values
     }
+
+    /// Returns the compact JSON byte length when this context fits storage limits.
+    ///
+    /// Serialization is counted through a capped writer, so this check does not
+    /// allocate a second JSON string. It also rejects contexts with more than
+    /// [`MAX_CONDITION_CONTEXT_ELEMENTS`] entries across all nested maps and arrays.
+    pub fn serialized_size(&self) -> Result<usize, StoreError> {
+        validate_context_element_count(&self.values)?;
+        let mut writer = CappedContextWriter::default();
+        let result = serde_json::to_writer(&mut writer, &self.values);
+        if writer.exceeded {
+            return Err(StoreError::new(
+                StoreErrorKind::CorruptData,
+                "condition context exceeds the serialized byte limit",
+            ));
+        }
+        if result.is_err() {
+            return Err(StoreError::new(
+                StoreErrorKind::Internal,
+                "condition context JSON serialization failed",
+            ));
+        }
+        Ok(writer.bytes)
+    }
+}
+
+#[derive(Default)]
+struct CappedContextWriter {
+    bytes: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for CappedContextWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.saturating_add(buffer.len()) > MAX_CONDITION_CONTEXT_SERIALIZED_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "condition context exceeds the serialized byte limit",
+            ));
+        }
+        self.bytes += buffer.len();
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_context_element_count(
+    values: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<(), StoreError> {
+    let mut elements = values.len();
+    if elements > MAX_CONDITION_CONTEXT_ELEMENTS {
+        return Err(context_element_limit_error());
+    }
+
+    let mut pending: Vec<&serde_json::Value> = values.values().collect();
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Array(values) => {
+                elements = elements.saturating_add(values.len());
+                if elements > MAX_CONDITION_CONTEXT_ELEMENTS {
+                    return Err(context_element_limit_error());
+                }
+                pending.extend(values.iter());
+            }
+            serde_json::Value::Object(values) => {
+                elements = elements.saturating_add(values.len());
+                if elements > MAX_CONDITION_CONTEXT_ELEMENTS {
+                    return Err(context_element_limit_error());
+                }
+                pending.extend(values.values());
+            }
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn context_element_limit_error() -> StoreError {
+    StoreError::new(
+        StoreErrorKind::CorruptData,
+        "condition context exceeds the element limit",
+    )
 }
 
 /// One namespaced authorization relationship.
@@ -125,6 +220,13 @@ impl RelationshipTuple {
 
     pub fn condition(&self) -> Option<&ConditionContext> {
         self.condition.as_ref()
+    }
+
+    fn validate_condition_context_limits(&self) -> Result<(), StoreError> {
+        if let Some(condition) = self.condition() {
+            condition.serialized_size()?;
+        }
+        Ok(())
     }
 
     fn key(&self) -> TupleKey {
@@ -293,6 +395,7 @@ impl InMemoryRelationshipStore {
     }
 
     pub fn insert(&self, tuple: RelationshipTuple) -> Result<(), StoreError> {
+        tuple.validate_condition_context_limits()?;
         let key = tuple.key();
         let mut current = self.snapshot.write().map_err(|_| {
             StoreError::new(
@@ -314,6 +417,7 @@ impl InMemoryRelationshipStore {
     }
 
     pub fn remove(&self, tuple: &RelationshipTuple) -> Result<bool, StoreError> {
+        tuple.validate_condition_context_limits()?;
         let key = tuple.key();
         let mut current = self.snapshot.write().map_err(|_| {
             StoreError::new(
@@ -510,15 +614,19 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         tenant: &'a TenantId,
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        Box::pin(async move {
-            if tuple.tenant() != tenant {
-                return Err(StoreError::new(
+        if tuple.tenant() != tenant {
+            return Box::pin(async {
+                Err(StoreError::new(
                     StoreErrorKind::CorruptData,
                     "relationship tuple tenant does not match write tenant",
-                ));
-            }
-            self.insert(tuple.clone())
-        })
+                ))
+            });
+        }
+        if let Err(error) = tuple.validate_condition_context_limits() {
+            return Box::pin(async move { Err(error) });
+        }
+        let tuple = tuple.clone();
+        Box::pin(async move { self.insert(tuple) })
     }
 
     fn remove_tuple<'a>(
@@ -526,14 +634,17 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         tenant: &'a TenantId,
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<bool, StoreError>> {
-        Box::pin(async move {
-            if tuple.tenant() != tenant {
-                return Err(StoreError::new(
+        if tuple.tenant() != tenant {
+            return Box::pin(async {
+                Err(StoreError::new(
                     StoreErrorKind::CorruptData,
                     "relationship tuple tenant does not match write tenant",
-                ));
-            }
-            self.remove(tuple)
-        })
+                ))
+            });
+        }
+        if let Err(error) = tuple.validate_condition_context_limits() {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(async move { self.remove(tuple) })
     }
 }

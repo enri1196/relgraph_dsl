@@ -524,7 +524,10 @@ impl EvaluationLimits {
         Ok(self)
     }
 
-    /// Sets the aggregate CEL condition cost budget for one check.
+    /// Sets the condition work budget for one check.
+    ///
+    /// The budget includes stored tuple context validation and conversion,
+    /// request value conversion, and CEL evaluation, including failed attempts.
     pub fn with_max_condition_cost(
         mut self,
         maximum: usize,
@@ -556,7 +559,10 @@ impl EvaluationLimits {
         self.max_work_units
     }
 
-    /// Returns the aggregate CEL condition cost budget for one check.
+    /// Returns the maximum condition work charged during one check.
+    ///
+    /// Stored tuple context is charged even when its parameter is unused or its
+    /// subject does not match the checked subject.
     pub const fn max_condition_cost(self) -> usize {
         self.max_condition_cost
     }

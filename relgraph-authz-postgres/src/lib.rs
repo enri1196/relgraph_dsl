@@ -219,6 +219,10 @@ mod schema_tests {
         assert!(sql.contains("subject_kind = 'typed_wildcard'"));
         assert!(sql.contains("condition_name is null and context_json is null"));
         assert!(sql.contains("condition_name is not null and context_json is not null"));
+        assert!(sql.contains(&format!(
+            "context_json is null or octet_length(context_json) <= {}",
+            relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES
+        )));
         assert!(sql.contains(
             "on relgraph_authz.relationship_tuples (tenant, object_type, object_id, relation, tuple_id)"
         ));

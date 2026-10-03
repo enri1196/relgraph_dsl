@@ -22,7 +22,10 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 const SELECT_PAGE: &str = "SELECT tuple_id, tenant, object_type, object_id, relation, \
     subject_kind, subject_type, subject_id, subject_relation, condition_name, \
-    context_json, identity_digest \
+    CASE WHEN context_json IS NOT NULL AND octet_length(context_json) > $7 \
+         THEN NULL::text ELSE context_json END AS context_json, \
+    COALESCE(octet_length(context_json) > $7, false) AS context_json_oversized, \
+    identity_digest \
     FROM relgraph_authz.relationship_tuples \
     WHERE tenant = $1 AND object_type = $2 AND object_id = $3 AND relation = $4 \
     AND tuple_id > $5 ORDER BY tuple_id LIMIT $6";
@@ -194,6 +197,7 @@ async fn query_page(
         .bind(relation.as_str())
         .bind(after_id.unwrap_or(0))
         .bind(fetch_limit)
+        .bind(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES as i32)
         .fetch_all(&mut **transaction)
         .await
         .map_err(|error| map_sqlx_error(&error))?;
@@ -529,5 +533,14 @@ mod tests {
             .kind(),
             StoreErrorKind::IncompleteRead
         );
+    }
+
+    #[test]
+    fn page_query_masks_oversized_context_before_sqlx_materializes_it() {
+        assert!(super::SELECT_PAGE.contains("octet_length(context_json) > $7"));
+        assert!(
+            super::SELECT_PAGE.contains("THEN NULL::text ELSE context_json END AS context_json")
+        );
+        assert!(super::SELECT_PAGE.contains("AS context_json_oversized"));
     }
 }

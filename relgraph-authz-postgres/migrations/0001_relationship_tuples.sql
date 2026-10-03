@@ -32,6 +32,9 @@ CREATE TABLE relgraph_authz.relationship_tuples (
         (condition_name IS NULL AND context_json IS NULL)
         OR (condition_name IS NOT NULL AND context_json IS NOT NULL)
     ),
+    CONSTRAINT relationship_tuples_context_json_size CHECK (
+        context_json IS NULL OR octet_length(context_json) <= 65536
+    ),
     CONSTRAINT relationship_tuples_identity_digest_key UNIQUE (identity_digest)
 );
 

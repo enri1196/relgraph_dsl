@@ -28,6 +28,8 @@ pub enum ParseErrorCode {
     InvalidToken,
     UnexpectedToken,
     UnexpectedEof,
+    /// Parsing stopped before constructing an expression or model beyond its bounded limits.
+    ConstructionLimitExceeded,
 }
 
 impl ParseErrorCode {
@@ -36,6 +38,7 @@ impl ParseErrorCode {
             Self::InvalidToken => "InvalidToken",
             Self::UnexpectedToken => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
+            Self::ConstructionLimitExceeded => "ConstructionLimitExceeded",
         }
     }
 }

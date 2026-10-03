@@ -393,23 +393,27 @@ impl Validator {
         relation: &Relation,
         relation_location: &SourceLocation,
     ) {
-        match expression {
-            RelationExpression::DirectAssignment(targets) if targets.is_empty() => self.push(
-                ValidationIssue::EmptyDirectAssignment,
-                relation_location.clone(),
-                Vec::new(),
-                format!(
-                    "relation '{}' has an empty direct assignment",
-                    relation.name
+        let mut pending = vec![expression];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                RelationExpression::DirectAssignment(targets) if targets.is_empty() => self.push(
+                    ValidationIssue::EmptyDirectAssignment,
+                    relation_location.clone(),
+                    Vec::new(),
+                    format!(
+                        "relation '{}' has an empty direct assignment",
+                        relation.name
+                    ),
                 ),
-            ),
-            RelationExpression::DirectAssignment(_) | RelationExpression::ComputedUserset(_) => {}
-            RelationExpression::TupleToUserset { .. } => {}
-            RelationExpression::Union(left, right)
-            | RelationExpression::Intersection(left, right)
-            | RelationExpression::Difference(left, right) => {
-                self.check_empty_assignments(left, relation, relation_location);
-                self.check_empty_assignments(right, relation, relation_location);
+                RelationExpression::DirectAssignment(_)
+                | RelationExpression::ComputedUserset(_)
+                | RelationExpression::TupleToUserset { .. } => {}
+                RelationExpression::Union(left, right)
+                | RelationExpression::Intersection(left, right)
+                | RelationExpression::Difference(left, right) => {
+                    pending.push(right);
+                    pending.push(left);
+                }
             }
         }
     }
@@ -425,29 +429,31 @@ impl Validator {
         relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
         condition_symbols: &HashMap<String, &ConditionDefinition>,
     ) {
-        match expression {
-            RelationExpression::DirectAssignment(targets) => {
-                for target in targets {
-                    if !type_symbols.contains_key(&target.target_type) {
-                        self.push(
-                            ValidationIssue::UnknownType,
-                            owner_location.clone(),
-                            Vec::new(),
-                            format!(
-                                "relation '{}' refers to unknown type '{}'",
-                                owner_relation.name, target.target_type
-                            ),
-                        );
-                    } else if let Some(target_relation) = target
-                        .relation_or_wildcard
-                        .as_deref()
-                        .filter(|name| *name != "*")
-                    {
-                        let relation_exists = relation_symbols
-                            .get(target.target_type.as_str())
-                            .is_some_and(|relations| relations.contains_key(target_relation));
-                        if !relation_exists {
+        let mut pending = vec![expression];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                RelationExpression::DirectAssignment(targets) => {
+                    for target in targets {
+                        if !type_symbols.contains_key(&target.target_type) {
                             self.push(
+                                ValidationIssue::UnknownType,
+                                owner_location.clone(),
+                                Vec::new(),
+                                format!(
+                                    "relation '{}' refers to unknown type '{}'",
+                                    owner_relation.name, target.target_type
+                                ),
+                            );
+                        } else if let Some(target_relation) = target
+                            .relation_or_wildcard
+                            .as_deref()
+                            .filter(|name| *name != "*")
+                        {
+                            let relation_exists = relation_symbols
+                                .get(target.target_type.as_str())
+                                .is_some_and(|relations| relations.contains_key(target_relation));
+                            if !relation_exists {
+                                self.push(
                                 ValidationIssue::UnknownRelation,
                                 owner_location.clone(),
                                 Vec::new(),
@@ -456,72 +462,57 @@ impl Validator {
                                     owner_relation.name, target_relation, target.target_type
                                 ),
                             );
+                            }
+                        }
+
+                        if let Some(RelationCondition::Named(condition)) = &target.condition
+                            && !condition_symbols.contains_key(condition)
+                        {
+                            self.push(
+                                ValidationIssue::UnknownCondition,
+                                owner_location.clone(),
+                                Vec::new(),
+                                format!(
+                                    "relation '{}' refers to unknown condition '{}'",
+                                    owner_relation.name, condition
+                                ),
+                            );
                         }
                     }
-
-                    if let Some(RelationCondition::Named(condition)) = &target.condition
-                        && !condition_symbols.contains_key(condition)
-                    {
+                }
+                RelationExpression::ComputedUserset(name) => {
+                    let exists = relation_symbols
+                        .get(owner_type)
+                        .is_some_and(|relations| relations.contains_key(name.as_str()));
+                    if !exists {
                         self.push(
-                            ValidationIssue::UnknownCondition,
+                            ValidationIssue::UnknownRelation,
                             owner_location.clone(),
                             Vec::new(),
-                            format!(
-                                "relation '{}' refers to unknown condition '{}'",
-                                owner_relation.name, condition
-                            ),
+                            format!("type '{}' has no computed relation '{}'", owner_type, name),
                         );
                     }
                 }
-            }
-            RelationExpression::ComputedUserset(name) => {
-                let exists = relation_symbols
-                    .get(owner_type)
-                    .is_some_and(|relations| relations.contains_key(name.as_str()));
-                if !exists {
-                    self.push(
-                        ValidationIssue::UnknownRelation,
-                        owner_location.clone(),
-                        Vec::new(),
-                        format!("type '{}' has no computed relation '{}'", owner_type, name),
-                    );
-                }
-            }
-            RelationExpression::TupleToUserset {
-                computed_userset,
-                tupleset_relation,
-            } => self.check_tuple_to_userset(
-                owner_type,
-                owner_relation,
-                TupleToUsersetNames {
+                RelationExpression::TupleToUserset {
                     computed_userset,
                     tupleset_relation,
-                },
-                type_symbols,
-                relation_symbols,
-                owner_location,
-            ),
-            RelationExpression::Union(left, right)
-            | RelationExpression::Intersection(left, right)
-            | RelationExpression::Difference(left, right) => {
-                self.check_expression(
-                    left,
+                } => self.check_tuple_to_userset(
                     owner_type,
                     owner_relation,
-                    owner_location,
+                    TupleToUsersetNames {
+                        computed_userset,
+                        tupleset_relation,
+                    },
                     type_symbols,
                     relation_symbols,
-                    condition_symbols,
-                );
-                self.check_expression(
-                    right,
-                    owner_type,
-                    owner_relation,
                     owner_location,
-                    type_symbols,
-                    relation_symbols,
-                    condition_symbols,
-                );
+                ),
+                RelationExpression::Union(left, right)
+                | RelationExpression::Intersection(left, right)
+                | RelationExpression::Difference(left, right) => {
+                    pending.push(right);
+                    pending.push(left);
+                }
             }
         }
     }

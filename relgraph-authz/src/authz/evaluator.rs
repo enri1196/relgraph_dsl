@@ -87,7 +87,7 @@ struct Evaluator<'a, S> {
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
-    condition_cost_used: usize,
+    condition_budget: super::conditions::ConditionBudget,
 }
 
 impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
@@ -98,6 +98,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         limits: EvaluationLimits,
         request: &'a CheckRequest,
     ) -> Self {
+        let condition_budget = super::conditions::ConditionBudget::new(limits.max_condition_cost());
         Self {
             compiled,
             session,
@@ -108,7 +109,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
-            condition_cost_used: 0,
+            condition_budget,
         }
     }
 
@@ -242,7 +243,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let mut allowed = false;
             let mut first_error = None;
             for tuple in &tuples {
-                self.validate_tuple(tuple, &object, &relation)?;
+                let prepared_context = self.validate_tuple(tuple, &object, &relation)?;
                 self.validate_assignment_subject(tuple, &targets)?;
 
                 let membership = match tuple.subject() {
@@ -258,7 +259,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     }
                 };
                 let result = match membership {
-                    Ok(true) => self.evaluate_tuple_condition(tuple),
+                    Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
                     other => other,
                 };
                 match result {
@@ -319,7 +320,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let mut allowed = false;
             let mut first_error = None;
             for tuple in &tuples {
-                self.validate_tuple(tuple, &object, &tupleset_name)?;
+                let prepared_context = self.validate_tuple(tuple, &object, &tupleset_name)?;
                 let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
                     return Err(AuthorizationError::InvalidTuple(
                         "tupleset tuple subject must be a direct object",
@@ -345,7 +346,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     .evaluate_relation(target_object, computed_relation.clone(), depth + 1)
                     .await;
                 let result = match membership {
-                    Ok(true) => self.evaluate_tuple_condition(tuple),
+                    Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
                     other => other,
                 };
                 match result {
@@ -409,11 +410,11 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
 
     /// Validates tuple ownership and rejects condition metadata until Task 4.
     fn validate_tuple(
-        &self,
+        &mut self,
         tuple: &RelationshipTuple,
         object: &ObjectRef,
         relation: &RelationName,
-    ) -> Result<(), AuthorizationError> {
+    ) -> Result<Option<super::conditions::PreparedConditionContext>, AuthorizationError> {
         if tuple.tenant() != self.request.tenant() {
             return Err(AuthorizationError::InvalidTuple(
                 "tuple belongs to a different tenant",
@@ -430,14 +431,17 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     "tuple condition is absent from the authorization model",
                 ),
             )?;
-            condition.validate_stored_context(context.values())?;
+            return condition
+                .validate_stored_context(context.values(), &mut self.condition_budget)
+                .map(Some);
         }
-        Ok(())
+        Ok(None)
     }
 
     fn evaluate_tuple_condition(
         &mut self,
         tuple: &RelationshipTuple,
+        prepared_context: Option<super::conditions::PreparedConditionContext>,
     ) -> Result<bool, AuthorizationError> {
         let Some(context) = tuple.condition() else {
             return Ok(true);
@@ -447,17 +451,12 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 "tuple condition is absent from the authorization model",
             ),
         )?;
-        let remaining_cost = self
-            .limits
-            .max_condition_cost()
-            .saturating_sub(self.condition_cost_used);
         let evaluation = condition.evaluate(
-            Some(context.values()),
+            prepared_context,
             self.request.condition_context(context.name().as_str()),
             self.request.context(),
-            remaining_cost,
+            &mut self.condition_budget,
         )?;
-        self.condition_cost_used = self.condition_cost_used.saturating_add(evaluation.cost);
         Ok(evaluation.allowed)
     }
 

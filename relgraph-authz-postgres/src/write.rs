@@ -16,6 +16,15 @@ const DUPLICATE_TUPLE: &str = "relationship tuple identity already exists";
 const TENANT_MISMATCH: &str = "relationship tuple tenant does not match the requested tenant";
 const REMOVAL_MISMATCH: &str = "persisted relationship tuple changed during removal";
 const IDENTITY_CONSTRAINT: &str = "relationship_tuples_identity_digest_key";
+const SELECT_MATCHING_TUPLE_FOR_UPDATE: &str = r"SELECT tuple_id, tenant, object_type, object_id, relation, subject_kind,
+                         subject_type, subject_id, subject_relation, condition_name,
+                         CASE WHEN context_json IS NOT NULL AND octet_length(context_json) > $3
+                              THEN NULL::text ELSE context_json END AS context_json,
+                         COALESCE(octet_length(context_json) > $3, false) AS context_json_oversized,
+                         identity_digest
+                  FROM relgraph_authz.relationship_tuples
+                  WHERE tenant = $1 AND identity_digest = $2
+                  FOR UPDATE";
 
 impl RelationshipWriteStore for PostgresRelationshipStore {
     fn insert_tuple<'a>(
@@ -82,19 +91,13 @@ impl RelationshipWriteStore for PostgresRelationshipStore {
 
         Box::pin(async move {
             let mut transaction = pool.begin().await.map_err(|error| map_sqlx_error(&error))?;
-            let row = sqlx::query_as::<_, TupleRow>(
-                r"SELECT tuple_id, tenant, object_type, object_id, relation, subject_kind,
-                         subject_type, subject_id, subject_relation, condition_name, context_json,
-                         identity_digest
-                  FROM relgraph_authz.relationship_tuples
-                  WHERE tenant = $1 AND identity_digest = $2
-                  FOR UPDATE",
-            )
-            .bind(&expected_row.tenant)
-            .bind(&expected_row.identity_digest)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|error| map_sqlx_error(&error))?;
+            let row = sqlx::query_as::<_, TupleRow>(SELECT_MATCHING_TUPLE_FOR_UPDATE)
+                .bind(&expected_row.tenant)
+                .bind(&expected_row.identity_digest)
+                .bind(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES as i32)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|error| map_sqlx_error(&error))?;
 
             let Some(row) = row else {
                 transaction
@@ -151,12 +154,22 @@ fn tenant_mismatch_error() -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::PostgresRelationshipStore;
+    use super::{PostgresRelationshipStore, SELECT_MATCHING_TUPLE_FOR_UPDATE};
     use relgraph_authz::{
         ObjectRef, RelationName, RelationshipTuple, RelationshipWriteStore, StoreErrorKind,
         Subject, TenantId,
     };
     use sqlx::postgres::PgPoolOptions;
+
+    #[test]
+    fn removal_query_masks_oversized_context_before_sqlx_materializes_it() {
+        assert!(SELECT_MATCHING_TUPLE_FOR_UPDATE.contains("octet_length(context_json) > $3"));
+        assert!(
+            SELECT_MATCHING_TUPLE_FOR_UPDATE
+                .contains("THEN NULL::text ELSE context_json END AS context_json")
+        );
+        assert!(SELECT_MATCHING_TUPLE_FOR_UPDATE.contains("AS context_json_oversized"));
+    }
 
     #[tokio::test]
     async fn tenant_mismatch_is_rejected_before_pool_io() {

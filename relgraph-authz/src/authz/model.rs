@@ -121,18 +121,21 @@ fn inspect_expression(
     span: Option<relgraph_dsl::SourceSpan>,
     diagnostics: &mut Vec<CapabilityDiagnostic>,
 ) {
-    match expression {
-        RelationExpression::DirectAssignment(targets) => {
-            for target in targets {
-                inspect_target(target, location, span.clone(), diagnostics);
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match expression {
+            RelationExpression::DirectAssignment(targets) => {
+                for target in targets {
+                    inspect_target(target, location, span.clone(), diagnostics);
+                }
             }
-        }
-        RelationExpression::ComputedUserset(_) | RelationExpression::TupleToUserset { .. } => {}
-        RelationExpression::Union(left, right)
-        | RelationExpression::Intersection(left, right)
-        | RelationExpression::Difference(left, right) => {
-            inspect_expression(left, location, span.clone(), diagnostics);
-            inspect_expression(right, location, span, diagnostics);
+            RelationExpression::ComputedUserset(_) | RelationExpression::TupleToUserset { .. } => {}
+            RelationExpression::Union(left, right)
+            | RelationExpression::Intersection(left, right)
+            | RelationExpression::Difference(left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
         }
     }
 }
@@ -238,55 +241,19 @@ fn collect_relation_edges(
     graph: &mut [Vec<RelationEdge>],
     span: Option<relgraph_dsl::SourceSpan>,
 ) {
-    match expression {
-        RelationExpression::DirectAssignment(targets) => {
-            for target in targets {
-                if let Some(Some(target_relation)) = target
-                    .relation_or_wildcard
-                    .as_deref()
-                    .map(|relation| (relation != "*").then_some(relation))
-                {
-                    add_edge(
-                        source,
-                        &(target.target_type.clone(), target_relation.to_owned()),
-                        ids,
-                        graph,
-                        span.clone(),
-                    );
-                }
-            }
-        }
-        RelationExpression::ComputedUserset(target_relation) => add_edge(
-            source,
-            &(owner.name.clone(), target_relation.clone()),
-            ids,
-            graph,
-            span,
-        ),
-        RelationExpression::TupleToUserset {
-            computed_userset,
-            tupleset_relation,
-        } => {
-            add_edge(
-                source,
-                &(owner.name.clone(), tupleset_relation.clone()),
-                ids,
-                graph,
-                span.clone(),
-            );
-
-            if let Some(tupleset) = owner
-                .relations
-                .iter()
-                .find(|relation| relation.name == *tupleset_relation)
-            {
-                if let RelationExpression::DirectAssignment(targets) =
-                    &tupleset.definition.expression
-                {
-                    for target in targets {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match expression {
+            RelationExpression::DirectAssignment(targets) => {
+                for target in targets {
+                    if let Some(Some(target_relation)) = target
+                        .relation_or_wildcard
+                        .as_deref()
+                        .map(|relation| (relation != "*").then_some(relation))
+                    {
                         add_edge(
                             source,
-                            &(target.target_type.clone(), computed_userset.clone()),
+                            &(target.target_type.clone(), target_relation.to_owned()),
                             ids,
                             graph,
                             span.clone(),
@@ -294,12 +261,51 @@ fn collect_relation_edges(
                     }
                 }
             }
-        }
-        RelationExpression::Union(left, right)
-        | RelationExpression::Intersection(left, right)
-        | RelationExpression::Difference(left, right) => {
-            collect_relation_edges(source, left, owner, ids, graph, span.clone());
-            collect_relation_edges(source, right, owner, ids, graph, span);
+            RelationExpression::ComputedUserset(target_relation) => add_edge(
+                source,
+                &(owner.name.clone(), target_relation.clone()),
+                ids,
+                graph,
+                span.clone(),
+            ),
+            RelationExpression::TupleToUserset {
+                computed_userset,
+                tupleset_relation,
+            } => {
+                add_edge(
+                    source,
+                    &(owner.name.clone(), tupleset_relation.clone()),
+                    ids,
+                    graph,
+                    span.clone(),
+                );
+
+                if let Some(tupleset) = owner
+                    .relations
+                    .iter()
+                    .find(|relation| relation.name == *tupleset_relation)
+                {
+                    if let RelationExpression::DirectAssignment(targets) =
+                        &tupleset.definition.expression
+                    {
+                        for target in targets {
+                            add_edge(
+                                source,
+                                &(target.target_type.clone(), computed_userset.clone()),
+                                ids,
+                                graph,
+                                span.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+            RelationExpression::Union(left, right)
+            | RelationExpression::Intersection(left, right)
+            | RelationExpression::Difference(left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
         }
     }
 }
@@ -332,22 +338,37 @@ fn visit_dependencies(
 ) {
     state[node] = 1;
     stack.push(node);
+    let mut frames = vec![(node, 0usize)];
 
-    for edge in &graph[node] {
-        match state[edge.target] {
-            0 => visit_dependencies(
-                edge.target,
-                graph,
-                nodes,
-                state,
-                stack,
-                emitted,
-                diagnostics,
-            ),
+    loop {
+        let next = frames.last().and_then(|(current, edge_index)| {
+            graph[*current]
+                .get(*edge_index)
+                .map(|edge| (*current, *edge_index, edge.target))
+        });
+        let Some((current, edge_index, target)) = next else {
+            let (finished, _) = frames.pop().expect("a finished DFS frame exists");
+            let popped = stack.pop();
+            debug_assert_eq!(popped, Some(finished));
+            state[finished] = 2;
+            if frames.is_empty() {
+                break;
+            }
+            continue;
+        };
+        frames.last_mut().expect("the active DFS frame exists").1 += 1;
+
+        match state[target] {
+            0 => {
+                state[target] = 1;
+                stack.push(target);
+                frames.push((target, 0));
+            }
             1 => {
+                let edge = &graph[current][edge_index];
                 let start = stack
                     .iter()
-                    .position(|candidate| *candidate == edge.target)
+                    .position(|candidate| *candidate == target)
                     .unwrap_or(0);
                 let mut cycle = stack[start..].to_vec();
                 cycle.sort_unstable();
@@ -355,7 +376,7 @@ fn visit_dependencies(
                 if emitted.insert(cycle) {
                     let path = stack[start..]
                         .iter()
-                        .chain(std::iter::once(&edge.target))
+                        .chain(std::iter::once(&target))
                         .map(|id| {
                             let relation = &nodes[*id].location;
                             format!("{}#{}", relation.object_type, relation.relation)
@@ -364,8 +385,8 @@ fn visit_dependencies(
                         .join(" -> ");
                     diagnostics.push(CapabilityDiagnostic {
                         capability: RuntimeCapability::RecursiveRelationDependency,
-                        relation: Some(nodes[node].location.clone()),
-                        span: edge.span.clone().or_else(|| nodes[node].span.clone()),
+                        relation: Some(nodes[current].location.clone()),
+                        span: edge.span.clone().or_else(|| nodes[current].span.clone()),
                         message: format!("recursive relation dependency is unsupported: {path}"),
                     });
                 }
@@ -373,9 +394,6 @@ fn visit_dependencies(
             _ => {}
         }
     }
-
-    stack.pop();
-    state[node] = 2;
 }
 
 #[cfg(test)]

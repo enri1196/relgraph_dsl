@@ -14,7 +14,8 @@ pub use request::{
     RelationName, RuntimeCapability, Subject, TenantId, TypeName,
 };
 pub use store::{
-    ConditionContext, InMemoryReadSession, InMemoryRelationshipStore, RelationshipPage,
+    ConditionContext, InMemoryReadSession, InMemoryRelationshipStore,
+    MAX_CONDITION_CONTEXT_ELEMENTS, MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, RelationshipPage,
     RelationshipReadSession, RelationshipStore, RelationshipTuple, RelationshipWriteStore,
     StoreCursor, StoreError, StoreErrorKind, StoreFuture, TupleSubject,
 };

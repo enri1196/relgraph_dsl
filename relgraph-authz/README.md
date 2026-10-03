@@ -155,6 +155,10 @@ budget cannot become an allow. The protected handler runs only after an allow.
 relation traversal steps, 1,024 store page reads, 100,000 expression/tuple work
 units, and CEL condition cost 100. Applications can configure these limits
 when binding a store; the condition-cost limit can be raised up to 100,000.
+Condition contexts accepted by the in-memory and PostgreSQL stores are limited to
+65,536 serialized JSON bytes and 10,000 collection entries. Evaluation also
+accounts for request and custom-store context conversion against the condition
+budget.
 These local budgets bound this runtime's work and do not claim to reproduce
 OpenFGA server CEL cost accounting.
 

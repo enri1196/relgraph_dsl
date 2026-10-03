@@ -119,3 +119,68 @@ fn store_preserves_named_condition_context_for_later_evaluation() {
         Some(&serde_json::json!("pro"))
     );
 }
+
+#[test]
+fn in_memory_writes_reject_contexts_over_shared_limits() {
+    let store = InMemoryRelationshipStore::new();
+    let tenant = tenant("tenant-a");
+    let oversized_string = RelationshipTuple::new(
+        tenant.clone(),
+        object("document", "43"),
+        relation("viewer"),
+        subject("user", "anne"),
+    )
+    .with_condition(
+        ConditionContext::new(
+            "grant",
+            std::collections::BTreeMap::from([(
+                "payload".to_owned(),
+                serde_json::Value::String(
+                    "x".repeat(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES),
+                ),
+            )]),
+        )
+        .unwrap(),
+    );
+    assert_in_memory_writes_reject(&store, &tenant, oversized_string);
+
+    let oversized_array = RelationshipTuple::new(
+        tenant.clone(),
+        object("document", "44"),
+        relation("viewer"),
+        subject("user", "anne"),
+    )
+    .with_condition(
+        ConditionContext::new(
+            "grant",
+            std::collections::BTreeMap::from([(
+                "items".to_owned(),
+                serde_json::Value::Array(vec![
+                    serde_json::Value::Null;
+                    relgraph_authz::MAX_CONDITION_CONTEXT_ELEMENTS + 1
+                ]),
+            )]),
+        )
+        .unwrap(),
+    );
+    assert_in_memory_writes_reject(&store, &tenant, oversized_array);
+}
+
+fn assert_in_memory_writes_reject(
+    store: &InMemoryRelationshipStore,
+    tenant: &relgraph_authz::TenantId,
+    tuple: RelationshipTuple,
+) {
+    assert_eq!(
+        block_on(relgraph_authz::RelationshipWriteStore::insert_tuple(
+            store, tenant, &tuple
+        ))
+        .unwrap_err()
+        .kind(),
+        relgraph_authz::StoreErrorKind::CorruptData
+    );
+    assert_eq!(
+        store.insert(tuple).unwrap_err().kind(),
+        relgraph_authz::StoreErrorKind::CorruptData
+    );
+}
