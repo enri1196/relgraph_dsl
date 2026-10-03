@@ -58,6 +58,15 @@ impl ModularModel {
         &self.schema
     }
 
+    /// Consumes this assembled model and returns its composed schema.
+    ///
+    /// Call [`validate_modular_model`] first when semantic validation is
+    /// required. This accessor does not preserve the module origins once the
+    /// model is consumed.
+    pub fn into_schema(self) -> Schema {
+        self.schema
+    }
+
     /// Returns origins aligned with [`Schema::type_definitions`].
     pub fn type_origins(&self) -> &[SourceLocation] {
         &self.type_origins

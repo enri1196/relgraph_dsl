@@ -106,6 +106,25 @@ impl FgaAuthz<Unbound> {
         })
     }
 
+    /// Constructs an authorizer from an assembled modular model.
+    ///
+    /// The model is semantically revalidated before its composed schema is
+    /// consumed, preserving module and file locations in validation errors.
+    /// Runtime capability checks and CEL compilation then run as they do for
+    /// [`FgaAuthz::new`].
+    pub fn from_modular_model(
+        model: relgraph_dsl::ModularModel,
+    ) -> Result<Self, ConstructionError> {
+        relgraph_dsl::validate_modular_model(&model).map_err(ConstructionError::Validation)?;
+        let schema = model.into_schema();
+        let compiled = CompiledModel::compile_validated(schema)?;
+        Ok(Self {
+            compiled: Arc::new(compiled),
+            model_identity: ModelIdentity::new(),
+            state: Unbound,
+        })
+    }
+
     /// Binds an explicit relationship source and bounded evaluation profile.
     pub fn with_store<S: RelationshipStore>(
         self,

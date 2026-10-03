@@ -96,6 +96,12 @@ impl CompiledModel {
     pub(crate) fn compile(schema: Schema) -> Result<Self, ConstructionError> {
         validate_schema(&schema).map_err(ConstructionError::Validation)?;
 
+        Self::compile_validated(schema)
+    }
+
+    /// Compiles runtime structures from a schema that already passed semantic
+    /// validation at its trust boundary.
+    pub(crate) fn compile_validated(schema: Schema) -> Result<Self, ConstructionError> {
         let mut capability_errors = unsupported_capabilities(&schema);
         capability_errors.extend(recursive_dependencies(&schema));
         if !capability_errors.is_empty() {
