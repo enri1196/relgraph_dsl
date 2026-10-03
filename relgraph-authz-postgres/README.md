@@ -14,7 +14,7 @@ Use the same SQLx version and features as the adapter:
 [dependencies]
 relgraph-authz = { version = "0.1", default-features = false }
 relgraph-authz-postgres = "0.1"
-sqlx = { version = "=0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring"] }
+sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ```
 

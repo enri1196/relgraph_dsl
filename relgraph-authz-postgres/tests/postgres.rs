@@ -18,7 +18,7 @@ use sqlx::{AssertSqlSafe, PgPool};
 mod store_contract;
 
 const ADMIN_DATABASE: &str = "postgres";
-const MINIMUM_SERVER_VERSION: u32 = 130_000;
+const MINIMUM_SERVER_VERSION: u32 = 140_000;
 const DEFAULT_APP_POOL_SIZE: u32 = 8;
 static NEXT_DATABASE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -94,7 +94,7 @@ impl TestDatabase {
         };
         if version < MINIMUM_SERVER_VERSION {
             maintenance_pool.close().await;
-            return Err("PostgreSQL 13 or newer is required by these live tests");
+            return Err("PostgreSQL 14 or newer is required by these live tests");
         }
 
         let name = next_database_name();
