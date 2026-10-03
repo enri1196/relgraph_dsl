@@ -46,7 +46,7 @@ fn tuple(
 
 #[test]
 fn computed_usersets_union_intersection_and_difference_evaluate() {
-    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define owner: [user]\n    define editor: [user]\n    define blocked: [user]\n    define inherited: owner\n    define union_viewer: owner or editor\n    define shared_viewer: owner and editor\n    define unblocked_owner: owner but not blocked\n";
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define owner: [user]\n    define editor: [user]\n    define blocked: [user]\n    define inherited: owner\n    define union_viewer: owner or editor\n    define shared_viewer: owner and editor\n    define unblocked_owner: owner but not blocked\n    define nested_viewer: [user] or editor\n";
     let store = InMemoryRelationshipStore::new();
     store
         .insert(tuple("document", "42", "owner", subject("user", "anne")))
@@ -65,11 +65,24 @@ fn computed_usersets_union_intersection_and_difference_evaluate() {
             subject("user", "charlie"),
         ))
         .unwrap();
+    store
+        .insert(tuple(
+            "document",
+            "42",
+            "nested_viewer",
+            subject("user", "charlie"),
+        ))
+        .unwrap();
     let authz = FgaAuthz::new(definition)
         .unwrap()
         .with_store(store, EvaluationLimits::default());
 
-    for relation_name in ["inherited", "union_viewer", "shared_viewer"] {
+    for relation_name in [
+        "inherited",
+        "union_viewer",
+        "shared_viewer",
+        "nested_viewer",
+    ] {
         assert_eq!(
             block_on(authz.check(check_request(
                 "tenant-a",
@@ -95,6 +108,18 @@ fn computed_usersets_union_intersection_and_difference_evaluate() {
         )))
         .unwrap(),
         AuthorizationDecision::Deny
+    );
+    assert_eq!(
+        block_on(authz.check(check_request(
+            "tenant-a",
+            "user",
+            "charlie",
+            "document",
+            "42",
+            "nested_viewer",
+        )))
+        .unwrap(),
+        AuthorizationDecision::Allow
     );
     assert_eq!(
         block_on(authz.check(check_request(
@@ -243,6 +268,28 @@ fn tuple_to_userset_inherits_access_from_parent_objects() {
         .unwrap(),
         AuthorizationDecision::Deny
     );
+}
+
+#[test]
+fn tuple_to_userset_preserves_missing_computed_relation_errors() {
+    let definition = "model\nschema 1.1\ntype user\ntype folder\n  relations\n    define viewer: [user]\ntype team\ntype document\n  relations\n    define parent: [folder, team]\n    define viewer: viewer from parent\n";
+    let store = InMemoryRelationshipStore::new();
+    store
+        .insert(tuple("document", "42", "parent", subject("team", "ops")))
+        .unwrap();
+    let authz = FgaAuthz::new(definition)
+        .unwrap()
+        .with_store(store, EvaluationLimits::default());
+
+    let error = block_on(authz.check(check_request(
+        "tenant-a", "user", "anne", "document", "42", "viewer",
+    )))
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        relgraph_authz::AuthorizationError::UnknownRelation { object_type, relation }
+            if object_type == "team" && relation == "viewer"
+    ));
 }
 
 #[test]

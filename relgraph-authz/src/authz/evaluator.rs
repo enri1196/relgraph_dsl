@@ -1,4 +1,6 @@
-use super::model::CompiledModel;
+use super::model::{
+    CompiledExpression, CompiledModel, CompiledTargetRange, CompiledTargetRestriction,
+};
 use super::request::{
     AuthorizationDecision, AuthorizationError, CheckRequest, EvaluationLimits, ObjectRef,
     RelationName,
@@ -7,22 +9,11 @@ use super::store::{
     RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind,
     TupleSubject,
 };
-use relgraph_dsl::{RelationExpression, RelationTarget};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
 type EvalFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AuthorizationError>> + Send + 'a>>;
-
-fn condition_matches(target: &RelationTarget, tuple: &RelationshipTuple) -> bool {
-    match (&target.condition, tuple.condition()) {
-        (None, None) => true,
-        (Some(relgraph_dsl::RelationCondition::Named(expected)), Some(context)) => {
-            expected == context.name().as_str()
-        }
-        _ => false,
-    }
-}
 
 /// Evaluates one structured check against one tenant-scoped store snapshot.
 pub(crate) async fn check<S: RelationshipStore>(
@@ -35,15 +26,12 @@ pub(crate) async fn check<S: RelationshipStore>(
     let object_type_id = compiled
         .type_id(object_type_name)
         .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type_name.to_owned()))?;
-    if compiled
+    let relation_id = compiled
         .relation_id(object_type_id, request.relation().as_str())
-        .is_none()
-    {
-        return Err(AuthorizationError::UnknownRelation {
+        .ok_or_else(|| AuthorizationError::UnknownRelation {
             object_type: object_type_name.to_owned(),
             relation: request.relation().as_str().to_owned(),
-        });
-    }
+        })?;
 
     let subject_type_name = request.subject().type_name().as_str();
     compiled
@@ -59,7 +47,7 @@ pub(crate) async fn check<S: RelationshipStore>(
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
     let mut evaluator = Evaluator::new(compiled, session, limits, request);
     let allowed = evaluator
-        .evaluate_relation(request.object().clone(), request.relation().clone(), 0)
+        .evaluate_relation_by_id(request.object().clone(), relation_id, 0)
         .await?;
     Ok(if allowed {
         AuthorizationDecision::Allow
@@ -120,7 +108,34 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         relation: RelationName,
         depth: usize,
     ) -> EvalFuture<'_> {
+        self.evaluate_relation_resolved(object, Some(relation), None, depth)
+    }
+
+    fn evaluate_relation_by_id(
+        &mut self,
+        object: ObjectRef,
+        relation_id: usize,
+        depth: usize,
+    ) -> EvalFuture<'_> {
+        self.evaluate_relation_resolved(object, None, Some(relation_id), depth)
+    }
+
+    fn evaluate_relation_resolved(
+        &mut self,
+        object: ObjectRef,
+        relation: Option<RelationName>,
+        known_relation_id: Option<usize>,
+        depth: usize,
+    ) -> EvalFuture<'_> {
         Box::pin(async move {
+            let relation_name = match known_relation_id {
+                Some(relation_id) => self.compiled.relation_name(relation_id).to_owned(),
+                None => relation
+                    .as_ref()
+                    .expect("unresolved relation names are supplied by callers")
+                    .as_str()
+                    .to_owned(),
+            };
             if depth > self.limits.max_relation_depth() {
                 return Err(AuthorizationError::RelationDepthExceeded {
                     maximum_depth: self.limits.max_relation_depth(),
@@ -130,7 +145,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let key = EvaluationKey {
                 object_type: object.type_name().as_str().to_owned(),
                 object_id: object.id().as_str().to_owned(),
-                relation: relation.as_str().to_owned(),
+                relation: relation_name.clone(),
             };
             if let Some(decision) = self.completed.get(&key) {
                 return Ok(*decision);
@@ -143,9 +158,14 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 });
             }
 
-            let result = match self.relation_expression(&object, &relation) {
-                Ok(expression) => {
-                    self.evaluate_expression(object.clone(), relation.clone(), expression, depth)
+            let relation_id = match known_relation_id {
+                Some(relation_id) => Ok(relation_id),
+                None => self.resolve_relation_id(object.type_name().as_str(), &relation_name),
+            };
+            let result = match relation_id {
+                Ok(relation_id) => {
+                    let expression_id = self.compiled.relation_expression_id(relation_id);
+                    self.evaluate_expression(object.clone(), relation_id, expression_id, depth)
                         .await
                 }
                 Err(error) => Err(error),
@@ -162,67 +182,61 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     fn evaluate_expression(
         &mut self,
         object: ObjectRef,
-        relation: RelationName,
-        expression: RelationExpression,
+        relation_id: usize,
+        expression_id: usize,
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
             self.charge_work(1)?;
-            match expression {
-                RelationExpression::DirectAssignment(targets) => {
-                    self.evaluate_direct_assignment(object, relation, targets, depth)
+            match self.compiled.expression(expression_id) {
+                CompiledExpression::DirectAssignment(targets) => {
+                    self.evaluate_direct_assignment(object, relation_id, targets, depth)
                         .await
                 }
-                RelationExpression::ComputedUserset(target_relation) => {
-                    let target_relation = relation_name(&target_relation)?;
-                    self.evaluate_relation(object.clone(), target_relation, depth + 1)
+                CompiledExpression::ComputedUserset(target_relation_id) => {
+                    self.evaluate_relation_by_id(object, target_relation_id, depth + 1)
                         .await
                 }
-                RelationExpression::TupleToUserset {
-                    computed_userset,
-                    tupleset_relation,
+                CompiledExpression::TupleToUserset {
+                    tupleset_relation_id,
+                    edge_range,
                 } => {
-                    self.evaluate_tuple_to_userset(
-                        object,
-                        computed_userset,
-                        tupleset_relation,
-                        depth,
-                    )
-                    .await
+                    self.evaluate_tuple_to_userset(object, tupleset_relation_id, edge_range, depth)
+                        .await
                 }
-                RelationExpression::Union(left, right) => {
+                CompiledExpression::Union { left, right } => {
                     let left_result = self
-                        .evaluate_expression(object.clone(), relation.clone(), *left, depth)
+                        .evaluate_expression(object.clone(), relation_id, left, depth)
                         .await;
                     if let Ok(true) = &left_result {
                         return Ok(true);
                     }
                     let right_result = self
-                        .evaluate_expression(object, relation, *right, depth)
+                        .evaluate_expression(object, relation_id, right, depth)
                         .await;
                     combine_union(left_result, right_result)
                 }
-                RelationExpression::Intersection(left, right) => {
+                CompiledExpression::Intersection { left, right } => {
                     let left_result = self
-                        .evaluate_expression(object.clone(), relation.clone(), *left, depth)
+                        .evaluate_expression(object.clone(), relation_id, left, depth)
                         .await;
                     if let Ok(false) = &left_result {
                         return Ok(false);
                     }
                     let right_result = self
-                        .evaluate_expression(object, relation, *right, depth)
+                        .evaluate_expression(object, relation_id, right, depth)
                         .await;
                     combine_intersection(left_result, right_result)
                 }
-                RelationExpression::Difference(base, subtract) => {
+                CompiledExpression::Difference { left, right } => {
                     let base_result = self
-                        .evaluate_expression(object.clone(), relation.clone(), *base, depth)
+                        .evaluate_expression(object.clone(), relation_id, left, depth)
                         .await;
                     if let Ok(false) = &base_result {
                         return Ok(false);
                     }
                     let subtract_result = self
-                        .evaluate_expression(object, relation, *subtract, depth)
+                        .evaluate_expression(object, relation_id, right, depth)
                         .await;
                     combine_difference(base_result, subtract_result)
                 }
@@ -234,16 +248,16 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     fn evaluate_direct_assignment(
         &mut self,
         object: ObjectRef,
-        relation: RelationName,
-        targets: Vec<RelationTarget>,
+        relation_id: usize,
+        targets: CompiledTargetRange,
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let tuples = self.load_tuples(object.clone(), relation.clone()).await?;
+            let tuples = self.load_tuples(object.clone(), relation_id).await?;
             let mut allowed = false;
             let mut first_error = None;
             for tuple in &tuples {
-                let prepared_context = self.validate_tuple(tuple, &object, &relation)?;
+                let prepared_context = self.validate_tuple(tuple, &object, relation_id)?;
                 self.validate_assignment_subject(tuple, &targets)?;
 
                 let membership = match tuple.subject() {
@@ -286,65 +300,66 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     fn evaluate_tuple_to_userset(
         &mut self,
         object: ObjectRef,
-        computed_userset: String,
-        tupleset_relation: String,
+        tupleset_relation_id: usize,
+        edge_range: CompiledTargetRange,
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let tupleset_name = relation_name(&tupleset_relation)?;
             let tuples = self
-                .load_tuples(object.clone(), tupleset_name.clone())
+                .load_tuples(object.clone(), tupleset_relation_id)
                 .await?;
-            let type_id = self
-                .compiled
-                .type_id(object.type_name().as_str())
-                .ok_or_else(|| {
-                    AuthorizationError::UnknownObjectType(object.type_name().as_str().to_owned())
-                })?;
-            let tupleset_expression = self.compiled.schema().type_definitions[type_id]
-                .relations
-                .iter()
-                .find(|candidate| candidate.name == tupleset_relation)
-                .map(|candidate| &candidate.definition.expression)
-                .ok_or_else(|| AuthorizationError::UnknownRelation {
-                    object_type: object.type_name().as_str().to_owned(),
-                    relation: tupleset_relation.clone(),
-                })?;
-            let RelationExpression::DirectAssignment(targets) = tupleset_expression else {
+            let tupleset_expression_id = self.compiled.relation_expression_id(tupleset_relation_id);
+            let CompiledExpression::DirectAssignment(_) =
+                self.compiled.expression(tupleset_expression_id)
+            else {
                 return Err(AuthorizationError::InvalidTuple(
                     "tupleset relation is not a direct assignment",
                 ));
             };
 
-            let computed_relation = relation_name(&computed_userset)?;
             let mut allowed = false;
             let mut first_error = None;
             for tuple in &tuples {
-                let prepared_context = self.validate_tuple(tuple, &object, &tupleset_name)?;
+                let prepared_context = self.validate_tuple(tuple, &object, tupleset_relation_id)?;
                 let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
                     return Err(AuthorizationError::InvalidTuple(
                         "tupleset tuple subject must be a direct object",
                     ));
                 };
                 let subject_type = tuple_subject.type_name().as_str();
-                let compatible = targets.iter().any(|target| {
-                    target.target_type == subject_type
-                        && target.relation_or_wildcard.is_none()
-                        && condition_matches(target, tuple)
-                });
-                if !compatible {
+                let subject_type_id = self.compiled.type_id(subject_type);
+                let compatible_edge = (edge_range.start..edge_range.start + edge_range.len)
+                    .map(|edge_id| self.compiled.tuple_to_userset_edge(edge_id))
+                    .find(|edge| {
+                        let target = self.compiled.target(edge.target_id);
+                        Some(target.type_id) == subject_type_id
+                            && matches!(target.restriction, CompiledTargetRestriction::Direct)
+                            && self.condition_matches(target.condition_id, tuple)
+                    });
+                let Some(edge) = compatible_edge else {
                     return Err(AuthorizationError::InvalidTuple(
                         "tupleset subject type is incompatible with the relation",
                     ));
-                }
+                };
                 let target_object = ObjectRef::new(
                     subject_type.to_owned(),
                     tuple_subject.id().as_str().to_owned(),
                 )
                 .map_err(|_| AuthorizationError::InvalidTuple("invalid tupleset subject"))?;
-                let membership = self
-                    .evaluate_relation(target_object, computed_relation.clone(), depth + 1)
-                    .await;
+                let membership = match edge.computed_relation_id {
+                    Some(computed_relation_id) => {
+                        self.evaluate_relation_by_id(target_object, computed_relation_id, depth + 1)
+                            .await
+                    }
+                    None => Err(AuthorizationError::UnknownRelation {
+                        object_type: subject_type.to_owned(),
+                        relation: self
+                            .compiled
+                            .tuple_to_userset_computed_name(edge_range)
+                            .expect("validated tupleset has a computed relation target")
+                            .to_owned(),
+                    }),
+                };
                 let result = match membership {
                     Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
                     other => other,
@@ -373,7 +388,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     fn validate_assignment_subject(
         &self,
         tuple: &RelationshipTuple,
-        targets: &[RelationTarget],
+        targets: &CompiledTargetRange,
     ) -> Result<(), AuthorizationError> {
         let (subject_type, restriction) = match tuple.subject() {
             TupleSubject::Direct(subject) => (subject.type_name().as_str(), None),
@@ -388,18 +403,24 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 .ok_or(AuthorizationError::InvalidTuple(
                     "tuple subject type is absent from the authorization model",
                 ))?;
-        if let Some(relation) = restriction.filter(|relation| *relation != "*") {
-            if self.compiled.relation_id(type_id, relation).is_none() {
-                return Err(AuthorizationError::InvalidTuple(
-                    "tuple userset relation is absent from the authorization model",
-                ));
-            }
-        }
-        if targets.iter().any(|target| {
-            target.target_type == subject_type
-                && target.relation_or_wildcard.as_deref() == restriction
-                && condition_matches(target, tuple)
-        }) {
+        let restriction = match restriction {
+            None => CompiledTargetRestriction::Direct,
+            Some("*") => CompiledTargetRestriction::Wildcard,
+            Some(relation) => CompiledTargetRestriction::Userset(
+                self.compiled.relation_id(type_id, relation).ok_or(
+                    AuthorizationError::InvalidTuple(
+                        "tuple userset relation is absent from the authorization model",
+                    ),
+                )?,
+            ),
+        };
+        let matches = (targets.start..targets.start + targets.len).any(|target_id| {
+            let target = self.compiled.target(target_id);
+            target.type_id == type_id
+                && target.restriction.matches(restriction)
+                && self.condition_matches(target.condition_id, tuple)
+        });
+        if matches {
             Ok(())
         } else {
             Err(AuthorizationError::InvalidTuple(
@@ -413,14 +434,16 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         &mut self,
         tuple: &RelationshipTuple,
         object: &ObjectRef,
-        relation: &RelationName,
+        relation_id: usize,
     ) -> Result<Option<super::conditions::PreparedConditionContext>, AuthorizationError> {
         if tuple.tenant() != self.request.tenant() {
             return Err(AuthorizationError::InvalidTuple(
                 "tuple belongs to a different tenant",
             ));
         }
-        if tuple.object() != object || tuple.relation() != relation {
+        if tuple.object() != object
+            || tuple.relation().as_str() != self.compiled.relation_name(relation_id)
+        {
             return Err(AuthorizationError::InvalidTuple(
                 "tuple does not match the requested object and relation",
             ));
@@ -436,6 +459,16 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 .map(Some);
         }
         Ok(None)
+    }
+
+    fn condition_matches(&self, condition_id: Option<usize>, tuple: &RelationshipTuple) -> bool {
+        match (condition_id, tuple.condition()) {
+            (None, None) => true,
+            (Some(expected), Some(context)) => {
+                self.compiled.condition_id(context.name().as_str()) == Some(expected)
+            }
+            _ => false,
+        }
     }
 
     fn evaluate_tuple_condition(
@@ -464,8 +497,9 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     async fn load_tuples(
         &mut self,
         object: ObjectRef,
-        relation: RelationName,
+        relation_id: usize,
     ) -> Result<Vec<RelationshipTuple>, AuthorizationError> {
+        let relation = relation_name(self.compiled.relation_name(relation_id))?;
         let maximum_tuples = self.limits.max_tuples_scanned();
         let mut tuples = Vec::new();
         let mut cursor = None;
@@ -518,26 +552,21 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     }
 
     /// Looks up one validated relation expression from the immutable model.
-    fn relation_expression(
+    fn resolve_relation_id(
         &self,
-        object: &ObjectRef,
-        relation: &RelationName,
-    ) -> Result<RelationExpression, AuthorizationError> {
-        let object_type = object.type_name().as_str();
+        object_type: &str,
+        relation: &str,
+    ) -> Result<usize, AuthorizationError> {
         let type_id = self
             .compiled
             .type_id(object_type)
             .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type.to_owned()))?;
-        let expression = self.compiled.schema().type_definitions[type_id]
-            .relations
-            .iter()
-            .find(|candidate| candidate.name == relation.as_str())
-            .map(|candidate| candidate.definition.expression.clone())
-            .ok_or_else(|| AuthorizationError::UnknownRelation {
+        self.compiled.relation_id(type_id, relation).ok_or_else(|| {
+            AuthorizationError::UnknownRelation {
                 object_type: object_type.to_owned(),
-                relation: relation.as_str().to_owned(),
-            })?;
-        Ok(expression)
+                relation: relation.to_owned(),
+            }
+        })
     }
 
     /// Charges a bounded unit of evaluator work.

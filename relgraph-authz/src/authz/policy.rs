@@ -8,13 +8,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use http::request::Parts;
-use relgraph_dsl::{
-    ConditionDefinition, ParameterType, RelationCondition, RelationExpression, RelationTarget,
-    Schema, TypeDefinition,
-};
+use relgraph_dsl::{ConditionDefinition, ParameterType};
 use serde_json::Value;
 
-use super::model::CompiledModel;
+use super::model::{CompiledExpression, CompiledModel, CompiledTargetRestriction};
 use super::{EntityId, FgaAuthz, Subject};
 
 /// A type/relation pair in the validated authorization model.
@@ -945,143 +942,154 @@ impl<State> FgaAuthz<State> {
     }
 }
 
+enum RequirementDependency {
+    Resolved(usize),
+    MissingRelation {
+        object_type: String,
+        relation: String,
+    },
+}
+
 fn build_requirements(
     compiled: &CompiledModel,
     object_type: &str,
     relation: &str,
 ) -> Result<AuthorizationRequirements, PolicyError> {
-    let schema = compiled.schema();
     let root = RelationKey::new(object_type, relation);
-    let mut pending = vec![root.clone()];
+    let root_type_id = compiled
+        .type_id(object_type)
+        .ok_or_else(|| PolicyError::UnknownObjectType(object_type.to_owned()))?;
+    let root_relation_id = compiled
+        .relation_id(root_type_id, relation)
+        .ok_or_else(|| PolicyError::UnknownRelation {
+            object_type: object_type.to_owned(),
+            relation: relation.to_owned(),
+        })?;
+    let mut pending = vec![RequirementDependency::Resolved(root_relation_id)];
+    let mut visited = std::collections::HashSet::new();
     let mut relations = BTreeMap::new();
-    while let Some(key) = pending.pop() {
-        if relations.contains_key(&key) {
+    while let Some(dependency) = pending.pop() {
+        let relation_id = match dependency {
+            RequirementDependency::Resolved(relation_id) => relation_id,
+            RequirementDependency::MissingRelation {
+                object_type,
+                relation,
+            } => {
+                return Err(PolicyError::UnknownRelation {
+                    object_type,
+                    relation,
+                });
+            }
+        };
+        if !visited.insert(relation_id) {
             continue;
         }
-        let owner = schema
-            .type_definitions
-            .iter()
-            .find(|definition| definition.name == key.object_type)
-            .ok_or_else(|| PolicyError::UnknownObjectType(key.object_type.clone()))?;
-        let definition = owner
-            .relations
-            .iter()
-            .find(|definition| definition.name == key.relation)
-            .ok_or_else(|| PolicyError::UnknownRelation {
-                object_type: key.object_type.clone(),
-                relation: key.relation.clone(),
-            })?;
+        let owner_type_id = compiled.relation_owner_type_id(relation_id);
+        let key = RelationKey::new(
+            compiled.type_name(owner_type_id),
+            compiled.relation_name(relation_id),
+        );
         let mut dependencies = Vec::new();
-        let expression = describe_expression(
-            &definition.definition.expression,
-            owner,
-            schema,
-            &mut dependencies,
-        )?;
+        let expression_id = compiled.relation_expression_id(relation_id);
+        let expression = describe_compiled_expression(compiled, expression_id, &mut dependencies)?;
         relations.insert(key.clone(), RelationRequirements { key, expression });
         pending.extend(dependencies);
     }
     Ok(AuthorizationRequirements { root, relations })
 }
 
-fn describe_expression(
-    expression: &RelationExpression,
-    owner: &TypeDefinition,
-    schema: &Schema,
-    dependencies: &mut Vec<RelationKey>,
+fn describe_compiled_expression(
+    compiled: &CompiledModel,
+    expression_id: usize,
+    dependencies: &mut Vec<RequirementDependency>,
 ) -> Result<RequirementExpression, PolicyError> {
-    Ok(match expression {
-        RelationExpression::DirectAssignment(targets) => {
-            let mut assignments = Vec::with_capacity(targets.len());
-            for target in targets {
-                assignments.push(describe_assignment(target, owner, schema, dependencies)?);
+    Ok(match compiled.expression(expression_id) {
+        CompiledExpression::DirectAssignment(targets) => {
+            let mut assignments = Vec::with_capacity(targets.len);
+            for target_id in targets.start..targets.start + targets.len {
+                let target = compiled.target(target_id);
+                let subject_relation = match target.restriction {
+                    CompiledTargetRestriction::Direct | CompiledTargetRestriction::Wildcard => None,
+                    CompiledTargetRestriction::Userset(relation_id) => {
+                        dependencies.push(RequirementDependency::Resolved(relation_id));
+                        Some(compiled.relation_name(relation_id).to_owned())
+                    }
+                };
+                let condition = target
+                    .condition_id
+                    .map(|condition_id| {
+                        describe_condition(compiled.condition_definition(condition_id))
+                    })
+                    .transpose()?;
+                assignments.push(AssignmentRequirement {
+                    subject_type: compiled.type_name(target.type_id).to_owned(),
+                    subject_relation,
+                    wildcard: matches!(target.restriction, CompiledTargetRestriction::Wildcard),
+                    condition,
+                });
             }
             RequirementExpression::DirectAssignment(assignments)
         }
-        RelationExpression::ComputedUserset(relation) => {
-            let dependency = RelationKey::new(&owner.name, relation);
-            dependencies.push(dependency.clone());
+        CompiledExpression::ComputedUserset(relation_id) => {
+            dependencies.push(RequirementDependency::Resolved(relation_id));
+            let dependency = RelationKey::new(
+                compiled.type_name(compiled.relation_owner_type_id(relation_id)),
+                compiled.relation_name(relation_id),
+            );
             RequirementExpression::ComputedUserset(dependency)
         }
-        RelationExpression::TupleToUserset {
-            computed_userset,
-            tupleset_relation,
+        CompiledExpression::TupleToUserset {
+            tupleset_relation_id,
+            edge_range,
         } => {
-            let tupleset = RelationKey::new(&owner.name, tupleset_relation);
-            dependencies.push(tupleset.clone());
+            let tupleset = tupleset_relation_id;
+            dependencies.push(RequirementDependency::Resolved(tupleset));
             let mut computed_usersets = BTreeSet::new();
-            if let Some(tupleset_definition) = owner
-                .relations
-                .iter()
-                .find(|candidate| candidate.name == *tupleset_relation)
-            {
-                if let RelationExpression::DirectAssignment(targets) =
-                    &tupleset_definition.definition.expression
-                {
-                    for target in targets {
-                        if target.relation_or_wildcard.as_deref() == Some("*") {
-                            continue;
-                        }
-                        let dependency = RelationKey::new(&target.target_type, computed_userset);
-                        dependencies.push(dependency.clone());
-                        computed_usersets.insert(dependency);
-                    }
+            let computed_name = compiled
+                .tuple_to_userset_computed_name(edge_range)
+                .expect("validated tupleset has a computed relation target");
+            for edge_id in edge_range.start..edge_range.start + edge_range.len {
+                let edge = compiled.tuple_to_userset_edge(edge_id);
+                let target = compiled.target(edge.target_id);
+                if matches!(target.restriction, CompiledTargetRestriction::Wildcard) {
+                    continue;
+                }
+                if let Some(computed_relation_id) = edge.computed_relation_id {
+                    dependencies.push(RequirementDependency::Resolved(computed_relation_id));
+                    computed_usersets.insert(RelationKey::new(
+                        compiled.type_name(compiled.relation_owner_type_id(computed_relation_id)),
+                        compiled.relation_name(computed_relation_id),
+                    ));
+                } else {
+                    let object_type = compiled.type_name(target.type_id).to_owned();
+                    dependencies.push(RequirementDependency::MissingRelation {
+                        object_type: object_type.clone(),
+                        relation: computed_name.to_owned(),
+                    });
+                    computed_usersets
+                        .insert(RelationKey::new(object_type, computed_name.to_owned()));
                 }
             }
             RequirementExpression::TupleToUserset {
-                tupleset,
+                tupleset: RelationKey::new(
+                    compiled.type_name(compiled.relation_owner_type_id(tupleset)),
+                    compiled.relation_name(tupleset),
+                ),
                 computed_usersets: computed_usersets.into_iter().collect(),
             }
         }
-        RelationExpression::Union(left, right) => RequirementExpression::Union(
-            Box::new(describe_expression(left, owner, schema, dependencies)?),
-            Box::new(describe_expression(right, owner, schema, dependencies)?),
+        CompiledExpression::Union { left, right } => RequirementExpression::Union(
+            Box::new(describe_compiled_expression(compiled, left, dependencies)?),
+            Box::new(describe_compiled_expression(compiled, right, dependencies)?),
         ),
-        RelationExpression::Intersection(left, right) => RequirementExpression::Intersection(
-            Box::new(describe_expression(left, owner, schema, dependencies)?),
-            Box::new(describe_expression(right, owner, schema, dependencies)?),
+        CompiledExpression::Intersection { left, right } => RequirementExpression::Intersection(
+            Box::new(describe_compiled_expression(compiled, left, dependencies)?),
+            Box::new(describe_compiled_expression(compiled, right, dependencies)?),
         ),
-        RelationExpression::Difference(left, right) => RequirementExpression::Difference(
-            Box::new(describe_expression(left, owner, schema, dependencies)?),
-            Box::new(describe_expression(right, owner, schema, dependencies)?),
+        CompiledExpression::Difference { left, right } => RequirementExpression::Difference(
+            Box::new(describe_compiled_expression(compiled, left, dependencies)?),
+            Box::new(describe_compiled_expression(compiled, right, dependencies)?),
         ),
-    })
-}
-
-fn describe_assignment(
-    target: &RelationTarget,
-    owner: &TypeDefinition,
-    schema: &Schema,
-    dependencies: &mut Vec<RelationKey>,
-) -> Result<AssignmentRequirement, PolicyError> {
-    let subject_relation = match target.relation_or_wildcard.as_deref() {
-        Some("*") | None => None,
-        Some(relation) => {
-            dependencies.push(RelationKey::new(&target.target_type, relation));
-            Some(relation.to_owned())
-        }
-    };
-    let condition = match &target.condition {
-        None => None,
-        Some(RelationCondition::Named(name)) => {
-            let definition = schema
-                .condition_definitions
-                .iter()
-                .find(|condition| condition.name == *name)
-                .ok_or_else(|| PolicyError::UndeclaredCondition(name.clone()))?;
-            Some(describe_condition(definition)?)
-        }
-        Some(RelationCondition::InlineExpression) => {
-            return Err(PolicyError::UnsupportedInlineCondition);
-        }
-    };
-    let wildcard = target.relation_or_wildcard.as_deref() == Some("*");
-    let _ = owner;
-    Ok(AssignmentRequirement {
-        subject_type: target.target_type.clone(),
-        subject_relation,
-        wildcard,
-        condition,
     })
 }
 
