@@ -3,14 +3,21 @@ mod common;
 
 use common::{block_on, object, relation, request as check_request, subject, tenant};
 use relgraph_authz::{
-    AuthorizationDecision, AuthorizationError, CheckRequest, EvaluationLimits, FgaAuthz, ObjectRef,
-    RelationName, RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
-    StoreCursor, StoreError, StoreErrorKind, StoreFuture, TenantId,
+    AuthorizationDecision, AuthorizationError, CheckRequest, ConditionContext, EvaluationLimits,
+    FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
+    RelationshipStore, RelationshipTuple, StoreCursor, StoreError, StoreErrorKind, StoreFuture,
+    TenantId, TupleSubject,
 };
 use std::sync::{Arc, Mutex};
 
 const MODEL: &str =
     "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user]\n";
+
+const USERSET_MODEL: &str = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define member: [user]\n    define viewer: [document#member]\n";
+
+const TUPLESET_MODEL: &str = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define parent: [document]\n    define member: [user]\n    define viewer: member from parent\n";
+
+const CONDITION_MODEL: &str = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with enabled]\ncondition enabled(flag: bool) {\n  flag\n}\n";
 
 #[derive(Clone)]
 struct PageScript {
@@ -168,6 +175,48 @@ fn tuple() -> RelationshipTuple {
         object("document", "42"),
         relation("viewer"),
         subject("user", "anne"),
+    )
+}
+
+fn userset_tuple(
+    object_id: &str,
+    relation_name: &str,
+    subject_object_id: &str,
+    subject_relation: &str,
+) -> RelationshipTuple {
+    RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", object_id),
+        relation(relation_name),
+        TupleSubject::Userset {
+            object: object("document", subject_object_id),
+            relation: relation(subject_relation),
+        },
+    )
+}
+
+fn parent_tuple(subject_id: &str) -> RelationshipTuple {
+    RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "42"),
+        relation("parent"),
+        subject("document", subject_id),
+    )
+}
+
+fn condition_tuple(subject_id: &str, flag: serde_json::Value) -> RelationshipTuple {
+    RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "42"),
+        relation("viewer"),
+        subject("user", subject_id),
+    )
+    .with_condition(
+        ConditionContext::new(
+            "enabled",
+            std::collections::BTreeMap::from([("flag".to_owned(), flag)]),
+        )
+        .unwrap(),
     )
 }
 
@@ -716,6 +765,410 @@ fn terminal_empty_page_denies_without_another_read() {
         .clone();
 
     assert!(matches!(result, Ok(AuthorizationDecision::Deny)));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn userset_grant_skips_the_next_parent_page() {
+    let cursor = StoreCursor::from_bytes(vec![15]);
+    let direct_grant = page_tuple("anne", "group");
+    let member_grant = RelationshipTuple::new(
+        direct_grant.tenant().clone(),
+        direct_grant.object().clone(),
+        relation("member"),
+        direct_grant.subject().clone(),
+    );
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        USERSET_MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![userset_tuple("42", "viewer", "group", "member")],
+                Some(cursor.clone()),
+            ),
+            scripted_page("group", "member", None, vec![member_grant], None),
+            scripted_error("42", "viewer", Some(cursor), StoreErrorKind::IncompleteRead),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        (calls[0].0.clone(), calls[0].1.clone()),
+        (object("document", "42"), relation("viewer"))
+    );
+    assert_eq!(
+        (calls[1].0.clone(), calls[1].1.clone()),
+        (object("document", "group"), relation("member"))
+    );
+    assert_eq!(calls[0].2, None);
+    assert_eq!(calls[1].2, None);
+}
+
+#[test]
+fn tupleset_grant_skips_the_next_parent_page() {
+    let cursor = StoreCursor::from_bytes(vec![16]);
+    let direct_grant = page_tuple("anne", "folder");
+    let member_grant = RelationshipTuple::new(
+        direct_grant.tenant().clone(),
+        direct_grant.object().clone(),
+        relation("member"),
+        direct_grant.subject().clone(),
+    );
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        TUPLESET_MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "parent",
+                None,
+                vec![parent_tuple("folder")],
+                Some(cursor.clone()),
+            ),
+            scripted_page("folder", "member", None, vec![member_grant], None),
+            scripted_error("42", "parent", Some(cursor), StoreErrorKind::IncompleteRead),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        (calls[0].0.clone(), calls[0].1.clone()),
+        (object("document", "42"), relation("parent"))
+    );
+    assert_eq!(
+        (calls[1].0.clone(), calls[1].1.clone()),
+        (object("document", "folder"), relation("member"))
+    );
+    assert_eq!(calls[0].2, None);
+    assert_eq!(calls[1].2, None);
+}
+
+#[test]
+fn tupleset_preparation_rejects_a_same_page_invalid_subject() {
+    let wildcard_parent = RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "42"),
+        relation("parent"),
+        TupleSubject::TypedWildcard(relgraph_authz::TypeName::new("document").unwrap()),
+    );
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        TUPLESET_MODEL,
+        vec![scripted_page(
+            "42",
+            "parent",
+            None,
+            vec![parent_tuple("folder"), wildcard_parent],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, relation("parent"));
+}
+
+#[test]
+fn nested_reads_share_the_global_tuple_budget() {
+    let limits = EvaluationLimits::new(1)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        TUPLESET_MODEL,
+        vec![scripted_page(
+            "42",
+            "parent",
+            None,
+            vec![parent_tuple("folder")],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples: 1 })
+    ));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, relation("parent"));
+}
+
+#[test]
+fn nested_reads_share_the_global_store_call_budget() {
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(1)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        TUPLESET_MODEL,
+        vec![scripted_page(
+            "42",
+            "parent",
+            None,
+            vec![parent_tuple("folder")],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::StoreCallLimitExceeded { maximum_calls: 1 })
+    ));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, relation("parent"));
+}
+
+#[test]
+fn stored_context_is_prepared_before_any_same_page_grant() {
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        CONDITION_MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            vec![
+                condition_tuple("anne", serde_json::Value::Bool(true)),
+                condition_tuple(
+                    "another-user",
+                    serde_json::Value::String("not-a-bool".to_owned()),
+                ),
+            ],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(
+        matches!(
+            &result,
+            Err(AuthorizationError::InvalidConditionContext {
+                condition,
+                parameter,
+                ..
+            }) if condition == "enabled" && parameter == "flag"
+        ),
+        "unexpected same-page preparation result: {result:?}"
+    );
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn condition_false_requires_the_next_page() {
+    let cursor = StoreCursor::from_bytes(vec![17]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        CONDITION_MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![condition_tuple("anne", serde_json::Value::Bool(false))],
+                Some(cursor.clone()),
+            ),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(cursor),
+                vec![condition_tuple("anne", serde_json::Value::Bool(true))],
+                None,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 2);
+}
+
+#[test]
+fn earlier_condition_evaluation_error_can_be_masked_by_a_later_grant() {
+    let cursor = StoreCursor::from_bytes(vec![18]);
+    let missing_flag = RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "42"),
+        relation("viewer"),
+        subject("user", "anne"),
+    )
+    .with_condition(ConditionContext::new("enabled", std::collections::BTreeMap::new()).unwrap());
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        CONDITION_MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![missing_flag],
+                Some(cursor.clone()),
+            ),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(cursor),
+                vec![condition_tuple("anne", serde_json::Value::Bool(true))],
+                None,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 2);
+}
+
+#[test]
+fn condition_evaluation_error_survives_stream_exhaustion() {
+    let missing_flag = RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "42"),
+        relation("viewer"),
+        subject("user", "anne"),
+    )
+    .with_condition(ConditionContext::new("enabled", std::collections::BTreeMap::new()).unwrap());
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        CONDITION_MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            vec![missing_flag],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::MissingConditionContext {
+            condition,
+            parameter,
+        }) if condition == "enabled" && parameter == "flag"
+    ));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn page_preparation_budget_error_defeats_a_same_page_grant() {
+    let mut tuples = vec![condition_tuple("anne", serde_json::Value::Bool(true))];
+    tuples.extend((0..127).map(|index| {
+        condition_tuple(
+            &format!("other-user-{index}"),
+            serde_json::Value::Bool(true),
+        )
+    }));
+    let limits = EvaluationLimits::new(128)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap()
+        .with_max_condition_cost(1)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        CONDITION_MODEL,
+        vec![scripted_page("42", "viewer", None, tuples, None)],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::ConditionCostLimitExceeded {
+            maximum_cost: 1,
+            ..
+        })
+    ));
     assert_eq!(calls.len(), 1);
 }
 

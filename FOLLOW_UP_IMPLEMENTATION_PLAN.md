@@ -282,7 +282,7 @@ no all-pages collection; unchanged operator combiners preserve their behavior.
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 
-## Task 3 — Cover nested traversal, condition preparation, and short circuit [TODO]
+## Task 3 — Cover nested traversal, condition preparation, and short circuit [DONE]
 
 **Dependency:** task 2. **Commit:** `test(authz): cover streaming traversal boundaries`.
 
@@ -364,7 +364,12 @@ to the inspected ownership design; scripted fixtures themselves retain tuples.
 `cargo test -p relgraph-authz --test authz_relations --test authz_conditions`;
 `cargo fmt --all -- --check`; `git diff --check`.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- `cargo test -p relgraph-authz --test authz_page_contract` — passed (25 passed, 0 failed).
+- `cargo test -p relgraph-authz --test authz_relations --test authz_conditions` — passed (21 passed, 0 failed).
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
+- The malformed stored bool fixture uses `"not-a-bool"`; `"true"` is an accepted string representation for CEL bool parameters.
 
 ## Task 4 — Define exact large allowed construction workloads and stress cases [TODO]
 
