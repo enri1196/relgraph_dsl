@@ -586,12 +586,13 @@ count assertions validate that the intended workload reached compilation.
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 
-## Task 6 — Measure costs and record evidence on available platforms [TODO]
+## Task 6 — Measure costs and record evidence on available platforms [DONE]
 
 **Dependency:** task 5. **Commit:** `docs(perf): record construction cost measurements`.
 
-**Owned file:** existing `CONSTRUCTION_COSTS.md` only. Temporary command output
-may be stored under `/private/tmp`, never added to the repository.
+**Owned files:** existing `CONSTRUCTION_COSTS.md` and this task's status and
+execution record. Temporary command output may be stored under `/private/tmp`,
+never added to the repository.
 
 Run the debug/release child stress suite from task 4 on the available host.
 Record `rustc -Vv`, `cargo -V`, `uname -sm`, CPU model, RAM, power mode when
@@ -653,7 +654,14 @@ measurements are explicitly identified and do not block a local evidence report.
 **Verification:** inspect recorded tables against captured output;
 `git diff --check`. No implementation or optimization changes in this commit.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- Starting revision: `ec877dcf043c703dbc38a3784b77ba4f26bc0ffb`. The measured host was macOS `Darwin arm64`, Apple M1, `17179869184` bytes RAM, on AC power with `lowpowermode 0`; `rustc 1.94.0`, `cargo 1.94.0`, release measurements used the package's empty default feature set. The workspace declares no MSRV.
+- `cargo test -p relgraph-authz --test construction_depth` — passed (5 passed, 0 failed), including all ten allowed construction/drop subprocesses.
+- `cargo test -p relgraph-authz --release --test construction_depth` — passed (5 passed, 0 failed), including all ten allowed construction/drop subprocesses.
+- Ran the specified all-case release measurement command three times sequentially. Each run passed and emitted all 60 workload/phase rows; captured output is under `/private/tmp/relgraph-task6-20261004/release-all-run-{1,2,3}.log`.
+- Obtained the release library-test executable from the `relgraph_authz` library `compiler-artifact` JSON record and measured fresh-process RSS with macOS `/usr/bin/time -l`: `union_exact_512` 9633792 bytes, `wide_indexes_2047` 17383424 bytes, `edges_511` 12451840 bytes, and `repeated_128` 233979904 bytes. Captured output and host metadata are under `/private/tmp/relgraph-task6-20261004/`.
+- `CONSTRUCTION_COSTS.md` records all median/p95/max values, same-phase union ratios, host and command metadata, RSS values and limitations, and separate interpretation of exact-limit chains, wide indexes, fanout, repeated expressions, and destruction. Linux x86_64 was unavailable and is recorded as not measured.
+- Checked all 180 timing table cells against the captured CSV output, all four RSS entries against captured time output, and ran `git diff --check` — passed. No implementation or optimization changes.
 
 ## Task 7 — Validate the completed follow-ups and publish their documented scope [TODO]
 
