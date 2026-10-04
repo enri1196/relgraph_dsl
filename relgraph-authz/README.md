@@ -221,6 +221,45 @@ parent pages can remain live while nested checks run. Backend snapshot memory
 is outside this bound. These local budgets bound this runtime's work and do not
 claim to reproduce OpenFGA server CEL cost accounting.
 
+## Construction cost measurements
+
+The parser's construction guards bound three different model shapes: 128
+nested parentheses, 512 expression or target units in one relation, and 4,096
+declarations across a model. The expression-unit limit constrains the input
+shape presented to the recursive compiler; it is not a general compiler-stack
+guarantee. The declaration limit bounds model-wide index volume independently
+of the per-relation limit.
+
+On the measured macOS Apple M1 host, all ten accepted construction workloads
+compiled and dropped in isolated child processes in both debug and release
+profiles. This includes a left-deep relation at the 512-unit boundary and
+`nested_128`, whose 128 parentheses produce only two expression units. The
+`wide_indexes_2047` case compiled a model with 2,047 independent relations and
+4,095 declarations; `repeated_128` compiled 128 relations with 512 units each
+and 65,409 compiled expressions. These stress results apply to the tested
+workloads and host.
+
+Across three release runs, full-construction medians for `union_exact_512`
+were 92,375 / 92,666 / 95,333 ns; `wide_indexes_2047` measured
+3,445,000 / 3,498,417 / 3,724,417 ns; and `repeated_128` measured
+12,193,750 / 12,060,250 / 13,824,417 ns. Their measured whole-process peak
+RSS was 9,633,792, 17,383,424, and 233,979,904 bytes, respectively. RSS
+includes the test harness, fixture preparation, and all measurement phases;
+it is not an index allocation or live evaluator measurement. Linux x86_64 was
+not measured, and the workspace declares no MSRV, so these observations make
+no general platform-support claim.
+
+The ignored measurement test can be run for the exact-limit union case with:
+
+```sh
+RELGRAPH_CONSTRUCTION_COST_CASE=union_exact_512 cargo test -p relgraph-authz --release --lib authz::model::construction_costs::measure_construction_costs -- --ignored --exact --nocapture --test-threads=1
+```
+
+See the [construction cost report](../CONSTRUCTION_COSTS.md) for all
+workloads, phases, measurements, and limitations. The timings are descriptive
+construction observations; they do not set a latency target or claim runtime
+authorization speed.
+
 ## Supported runtime profile
 
 The runtime supports all six relation-expression forms represented by the

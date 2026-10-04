@@ -674,7 +674,7 @@ measurements are explicitly identified and do not block a local evidence report.
 - `CONSTRUCTION_COSTS.md` records all median/p95/max values, same-phase union ratios, host and command metadata, RSS values and limitations, and separate interpretation of exact-limit chains, wide indexes, fanout, repeated expressions, and destruction. Linux x86_64 was unavailable and is recorded as not measured.
 - Checked all 180 timing table cells against the captured CSV output, all four RSS entries against captured time output, and ran `git diff --check` — passed. No implementation or optimization changes.
 
-## Task 7 — Validate the completed follow-ups and publish their documented scope [TODO]
+## Task 7 — Validate the completed follow-ups and publish their documented scope [DONE]
 
 **Dependency:** task 6. **Commit:** `docs(authz): document streaming and construction evidence`.
 
@@ -729,4 +729,37 @@ measurement report are complete; a benchmark harness alone is insufficient.
 with implemented/tested behavior; optional unavailable live/external gates are
 clearly stated; all seven task headings are `[DONE]` with execution evidence.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- Added the README construction-cost subsection with measured macOS results,
+  near-limit stress evidence, parser/compiler/index-volume boundaries, and the
+  opt-in Task 5 measurement command. Reviewed the streaming contract against
+  the evaluator and page-contract tests: a fetched page is fully prepared
+  before tuple evaluation, a grant skips later pages, and each active
+  traversal retains at most one tuple page plus prepared metadata and bounded
+  cursor history; parent pages can remain live during nested checks.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --all-features` — passed, including a
+  post-amendment rerun.
+- The first `cargo test -p relgraph-authz --all-targets --no-default-features`
+  run exposed the stale `tuple_limit_exhaustion_is_an_error` expectation in
+  `relgraph-authz/tests/authz_check.rs`: Anne's first tuple grants within the
+  one-tuple limit, as Task 2 specifies. The focused Task 2 amendment was
+  committed as `8153c3a`; the test now asserts the early grant. The amended
+  no-default-features suite passed.
+- `cargo test -p relgraph-authz --all-targets --features axum` — passed.
+- `cargo test -p relgraph_dsl -p relgraph-authz --all-targets --all-features`
+  — passed.
+- `cargo test -p relgraph-authz-postgres --lib` — passed (20 passed).
+- `cargo test --workspace --doc --all-features` — passed (6 doctests).
+- `git diff --check` — passed. The ignored construction measurement remained
+  ignored in ordinary test runs.
+- The configured PostgreSQL target is a generic loopback service without
+  evidence that it is disposable. Therefore
+  `cargo test --workspace --all-targets --all-features` and the live
+  PostgreSQL suite were not run; no URL was printed and no database or role
+  changes were attempted.
+- The optional `python3 relgraph-authz/tools/openfga-differential.py` gate was
+  available and passed 17 cases against OpenFGA v1.21.0, release commit
+  `ab557c5592670c899de35297e7aa067015f06502`, image digest
+  `sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55`.
+  This external result is separate from offline fixture tests.
