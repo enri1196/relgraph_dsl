@@ -371,7 +371,7 @@ to the inspected ownership design; scripted fixtures themselves retain tuples.
 - `git diff --check` — passed.
 - The malformed stored bool fixture uses `"not-a-bool"`; `"true"` is an accepted string representation for CEL bool parameters.
 
-## Task 4 — Define exact large allowed construction workloads and stress cases [TODO]
+## Task 4 — Define exact large allowed construction workloads and stress cases [DONE]
 
 **Dependency:** task 3. **Commit:** `test(authz): stress construction at supported limits`.
 
@@ -468,7 +468,17 @@ variants. Do not change parser limits or recursive compilation in this task.
 `cargo test -p relgraph-authz --release --test construction_depth`;
 `cargo fmt --all -- --check`; `git diff --check`.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- Added the standard-library workload generators in the required case order,
+  isolated child construction/drop coverage, and public-constructor boundary
+  assertions. Existing excessive-depth and dependency-chain child cases remain
+  unchanged.
+- `cargo test -p relgraph-authz --test construction_depth` — passed (5 passed,
+  0 failed).
+- `cargo test -p relgraph-authz --release --test construction_depth` — passed
+  (5 passed, 0 failed).
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
 
 ## Task 5 — Add a reproducible private construction measurement harness [TODO]
 

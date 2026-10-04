@@ -1,8 +1,13 @@
-use relgraph_authz::FgaAuthz;
+#[path = "support/construction_models.rs"]
+mod construction_models;
+
+use construction_models::construction_cases;
+use relgraph_authz::{ConstructionError, FgaAuthz};
 use relgraph_dsl::{ParseErrorCode, parse_fga_schema, validate_schema};
 use std::process::Command;
 
 const CHILD_CASE_ENV: &str = "RELGRAPH_CONSTRUCTION_DEPTH_CHILD";
+const ALLOWED_CASE_ENV: &str = "RELGRAPH_ALLOWED_CONSTRUCTION_CASE";
 
 #[test]
 fn flat_expression_below_construction_limit_validates() {
@@ -32,6 +37,104 @@ fn declaration_limit_is_enforced_at_the_boundary() {
     assert_eq!(error.code, ParseErrorCode::ConstructionLimitExceeded);
     assert_eq!(error.span.start, expected_start);
     assert_eq!(error.span.end, expected_start + "type".len());
+}
+
+#[test]
+fn allowed_construction_cases_compile_in_child_processes() {
+    if let Ok(case_name) = std::env::var(ALLOWED_CASE_ENV) {
+        let case = construction_cases()
+            .into_iter()
+            .find(|case| case.name == case_name)
+            .unwrap_or_else(|| panic!("unknown allowed construction case: {case_name}"));
+        compile_allowed_case(&case);
+        return;
+    }
+
+    for case in construction_cases() {
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .arg("--exact")
+            .arg("allowed_construction_cases_compile_in_child_processes")
+            .arg("--nocapture")
+            .env(ALLOWED_CASE_ENV, case.name)
+            .output()
+            .expect("allowed construction child starts");
+
+        assert!(
+            output.status.success(),
+            "allowed construction case '{}' failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+            case.name,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+#[test]
+fn construction_unit_boundaries_are_exact() {
+    drop(
+        FgaAuthz::new(&construction_models::union_model(256, true))
+            .expect("a 512-unit union compiles"),
+    );
+    drop(
+        FgaAuthz::new(&construction_models::target_fanout_model(511))
+            .expect("a 512-unit target fanout compiles"),
+    );
+
+    assert!(matches!(
+        FgaAuthz::new(&construction_models::union_model(257, false)),
+        Err(ConstructionError::Parse(error))
+            if error.code == ParseErrorCode::ConstructionLimitExceeded
+    ));
+    assert!(matches!(
+        FgaAuthz::new(&construction_models::target_fanout_model(512)),
+        Err(ConstructionError::Parse(error))
+            if error.code == ParseErrorCode::ConstructionLimitExceeded
+    ));
+
+    drop(
+        FgaAuthz::new(&construction_models::nested_model(128))
+            .expect("128 nested parentheses compile"),
+    );
+    assert!(matches!(
+        FgaAuthz::new(&construction_models::nested_model(129)),
+        Err(ConstructionError::Parse(error))
+            if error.code == ParseErrorCode::ConstructionLimitExceeded
+    ));
+
+    drop(
+        FgaAuthz::new(&construction_models::wide_index_model(2047))
+            .expect("4,095 declarations compile"),
+    );
+    assert!(matches!(
+        FgaAuthz::new(&construction_models::wide_index_model(2048)),
+        Err(ConstructionError::Parse(error))
+            if error.code == ParseErrorCode::ConstructionLimitExceeded
+    ));
+}
+
+/// Parses, validates, compiles, and drops one allowed construction case.
+fn compile_allowed_case(case: &construction_models::ConstructionCase) {
+    let schema = parse_fga_schema(&case.source)
+        .unwrap_or_else(|error| panic!("case '{}' did not parse: {error}", case.name));
+    let declarations = schema.type_definitions.len()
+        + schema
+            .type_definitions
+            .iter()
+            .map(|type_definition| type_definition.relations.len())
+            .sum::<usize>();
+    assert!(schema.condition_definitions.is_empty());
+    assert_eq!(case.declarations, declarations, "case '{}'", case.name);
+    assert!(
+        case.maximum_relation_units <= 512,
+        "case '{}' exceeds the declared relation-unit limit",
+        case.name
+    );
+    validate_schema(&schema)
+        .unwrap_or_else(|errors| panic!("case '{}' did not validate: {errors:?}", case.name));
+    let authorizer = FgaAuthz::new(&case.source)
+        .unwrap_or_else(|error| panic!("case '{}' did not compile: {error}", case.name));
+    drop(authorizer);
 }
 
 #[test]
