@@ -6,14 +6,32 @@ use super::request::{
     RelationName,
 };
 use super::store::{
-    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreError, StoreErrorKind,
-    TupleSubject,
+    RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor,
+    StoreError, StoreErrorKind, TupleSubject,
 };
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
 type EvalFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AuthorizationError>> + Send + 'a>>;
+
+/// Maximum tuple count requested for one relationship page.
+const EVALUATION_PAGE_SIZE: usize = 128;
+
+/// Pagination state retained while one relation's tuples are evaluated.
+#[derive(Default)]
+struct TuplePageState {
+    cursor: Option<StoreCursor>,
+    seen_cursors: HashSet<StoreCursor>,
+    exhausted: bool,
+}
+
+/// Tuple metadata validated before evaluating a tupleset page.
+struct PreparedTuplesetTuple {
+    condition_context: Option<super::conditions::PreparedConditionContext>,
+    target_object: ObjectRef,
+    computed_relation_id: Option<usize>,
+}
 
 /// Evaluates one structured check against one tenant-scoped store snapshot.
 pub(crate) async fn check<S: RelationshipStore>(
@@ -244,7 +262,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         })
     }
 
-    /// Reads and validates every tuple for a direct assignment expression.
+    /// Streams direct-assignment pages after validating each whole fetched page.
     fn evaluate_direct_assignment(
         &mut self,
         object: ObjectRef,
@@ -253,42 +271,46 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let tuples = self.load_tuples(object.clone(), relation_id).await?;
-            let mut allowed = false;
+            let mut state = TuplePageState::default();
             let mut first_error = None;
-            for tuple in tuples.iter().flatten() {
-                let prepared_context = self.validate_tuple(tuple, &object, relation_id)?;
-                self.validate_assignment_subject(tuple, &targets)?;
-
-                let membership = match tuple.subject() {
-                    TupleSubject::Direct(tuple_subject) => Ok(tuple_subject.type_name()
-                        == self.request.subject().type_name()
-                        && tuple_subject.id() == self.request.subject().id()),
-                    TupleSubject::TypedWildcard(type_name) => {
-                        Ok(type_name == self.request.subject().type_name())
-                    }
-                    TupleSubject::Userset { object, relation } => {
-                        self.evaluate_relation(object.clone(), relation.clone(), depth + 1)
-                            .await
-                    }
+            loop {
+                let Some(page) = self
+                    .load_tuple_page(&object, relation_id, &mut state)
+                    .await?
+                else {
+                    break;
                 };
-                let result = match membership {
-                    Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
-                    other => other,
-                };
-                match result {
-                    Ok(true) => allowed = true,
-                    Ok(false) => {}
-                    Err(error) => {
-                        if first_error.is_none() {
-                            first_error = Some(error);
+                let prepared_contexts =
+                    self.prepare_assignment_page(&page.tuples, &object, relation_id, &targets)?;
+                for (tuple, prepared_context) in page.tuples.iter().zip(prepared_contexts) {
+                    let membership = match tuple.subject() {
+                        TupleSubject::Direct(tuple_subject) => Ok(tuple_subject.type_name()
+                            == self.request.subject().type_name()
+                            && tuple_subject.id() == self.request.subject().id()),
+                        TupleSubject::TypedWildcard(type_name) => {
+                            Ok(type_name == self.request.subject().type_name())
+                        }
+                        TupleSubject::Userset { object, relation } => {
+                            self.evaluate_relation(object.clone(), relation.clone(), depth + 1)
+                                .await
+                        }
+                    };
+                    let result = match membership {
+                        Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
+                        other => other,
+                    };
+                    match result {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => {
+                            if first_error.is_none() {
+                                first_error = Some(error);
+                            }
                         }
                     }
                 }
             }
-            if allowed {
-                Ok(true)
-            } else if let Some(error) = first_error {
+            if let Some(error) = first_error {
                 Err(error)
             } else {
                 Ok(false)
@@ -296,7 +318,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         })
     }
 
-    /// Traverses a direct tupleset and unions the computed relation checks.
+    /// Streams a direct tupleset and unions computed relation checks by page.
     fn evaluate_tuple_to_userset(
         &mut self,
         object: ObjectRef,
@@ -305,9 +327,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let tuples = self
-                .load_tuples(object.clone(), tupleset_relation_id)
-                .await?;
             let tupleset_expression_id = self.compiled.relation_expression_id(tupleset_relation_id);
             let CompiledExpression::DirectAssignment(_) =
                 self.compiled.expression(tupleset_expression_id)
@@ -317,66 +336,61 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 ));
             };
 
-            let mut allowed = false;
+            let mut state = TuplePageState::default();
             let mut first_error = None;
-            for tuple in tuples.iter().flatten() {
-                let prepared_context = self.validate_tuple(tuple, &object, tupleset_relation_id)?;
-                let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
-                    return Err(AuthorizationError::InvalidTuple(
-                        "tupleset tuple subject must be a direct object",
-                    ));
+            loop {
+                let Some(page) = self
+                    .load_tuple_page(&object, tupleset_relation_id, &mut state)
+                    .await?
+                else {
+                    break;
                 };
-                let subject_type = tuple_subject.type_name().as_str();
-                let subject_type_id = self.compiled.type_id(subject_type);
-                let compatible_edge = (edge_range.start..edge_range.start + edge_range.len)
-                    .map(|edge_id| self.compiled.tuple_to_userset_edge(edge_id))
-                    .find(|edge| {
-                        let target = self.compiled.target(edge.target_id);
-                        Some(target.type_id) == subject_type_id
-                            && matches!(target.restriction, CompiledTargetRestriction::Direct)
-                            && self.condition_matches(target.condition_id, tuple)
-                    });
-                let Some(edge) = compatible_edge else {
-                    return Err(AuthorizationError::InvalidTuple(
-                        "tupleset subject type is incompatible with the relation",
-                    ));
-                };
-                let target_object = ObjectRef::new(
-                    subject_type.to_owned(),
-                    tuple_subject.id().as_str().to_owned(),
-                )
-                .map_err(|_| AuthorizationError::InvalidTuple("invalid tupleset subject"))?;
-                let membership = match edge.computed_relation_id {
-                    Some(computed_relation_id) => {
-                        self.evaluate_relation_by_id(target_object, computed_relation_id, depth + 1)
+                let prepared_tuples = self.prepare_tupleset_page(
+                    &page.tuples,
+                    &object,
+                    tupleset_relation_id,
+                    edge_range,
+                )?;
+                for (tuple, prepared) in page.tuples.iter().zip(prepared_tuples) {
+                    let PreparedTuplesetTuple {
+                        condition_context,
+                        target_object,
+                        computed_relation_id,
+                    } = prepared;
+                    let membership = match computed_relation_id {
+                        Some(computed_relation_id) => {
+                            self.evaluate_relation_by_id(
+                                target_object,
+                                computed_relation_id,
+                                depth + 1,
+                            )
                             .await
-                    }
-                    None => Err(AuthorizationError::UnknownRelation {
-                        object_type: subject_type.to_owned(),
-                        relation: self
-                            .compiled
-                            .tuple_to_userset_computed_name(edge_range)
-                            .expect("validated tupleset has a computed relation target")
-                            .to_owned(),
-                    }),
-                };
-                let result = match membership {
-                    Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
-                    other => other,
-                };
-                match result {
-                    Ok(true) => allowed = true,
-                    Ok(false) => {}
-                    Err(error) => {
-                        if first_error.is_none() {
-                            first_error = Some(error);
+                        }
+                        None => Err(AuthorizationError::UnknownRelation {
+                            object_type: target_object.type_name().as_str().to_owned(),
+                            relation: self
+                                .compiled
+                                .tuple_to_userset_computed_name(edge_range)
+                                .expect("validated tupleset has a computed relation target")
+                                .to_owned(),
+                        }),
+                    };
+                    let result = match membership {
+                        Ok(true) => self.evaluate_tuple_condition(tuple, condition_context),
+                        other => other,
+                    };
+                    match result {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => {
+                            if first_error.is_none() {
+                                first_error = Some(error);
+                            }
                         }
                     }
                 }
             }
-            if allowed {
-                Ok(true)
-            } else if let Some(error) = first_error {
+            if let Some(error) = first_error {
                 Err(error)
             } else {
                 Ok(false)
@@ -429,7 +443,69 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         }
     }
 
-    /// Validates tuple ownership and rejects condition metadata until Task 4.
+    /// Validates and prepares every tuple's context and assignment restriction.
+    fn prepare_assignment_page(
+        &mut self,
+        tuples: &[RelationshipTuple],
+        object: &ObjectRef,
+        relation_id: usize,
+        targets: &CompiledTargetRange,
+    ) -> Result<Vec<Option<super::conditions::PreparedConditionContext>>, AuthorizationError> {
+        let mut prepared_contexts = Vec::with_capacity(tuples.len());
+        for tuple in tuples {
+            let condition_context = self.validate_tuple(tuple, object, relation_id)?;
+            self.validate_assignment_subject(tuple, targets)?;
+            prepared_contexts.push(condition_context);
+        }
+        Ok(prepared_contexts)
+    }
+
+    /// Validates and prepares every tuple's context, edge, and target object.
+    fn prepare_tupleset_page(
+        &mut self,
+        tuples: &[RelationshipTuple],
+        object: &ObjectRef,
+        tupleset_relation_id: usize,
+        edge_range: CompiledTargetRange,
+    ) -> Result<Vec<PreparedTuplesetTuple>, AuthorizationError> {
+        let mut prepared_tuples = Vec::with_capacity(tuples.len());
+        for tuple in tuples {
+            let condition_context = self.validate_tuple(tuple, object, tupleset_relation_id)?;
+            let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
+                return Err(AuthorizationError::InvalidTuple(
+                    "tupleset tuple subject must be a direct object",
+                ));
+            };
+            let subject_type = tuple_subject.type_name().as_str();
+            let subject_type_id = self.compiled.type_id(subject_type);
+            let compatible_edge = (edge_range.start..edge_range.start + edge_range.len)
+                .map(|edge_id| self.compiled.tuple_to_userset_edge(edge_id))
+                .find(|edge| {
+                    let target = self.compiled.target(edge.target_id);
+                    Some(target.type_id) == subject_type_id
+                        && matches!(target.restriction, CompiledTargetRestriction::Direct)
+                        && self.condition_matches(target.condition_id, tuple)
+                });
+            let Some(edge) = compatible_edge else {
+                return Err(AuthorizationError::InvalidTuple(
+                    "tupleset subject type is incompatible with the relation",
+                ));
+            };
+            let target_object = ObjectRef::new(
+                subject_type.to_owned(),
+                tuple_subject.id().as_str().to_owned(),
+            )
+            .map_err(|_| AuthorizationError::InvalidTuple("invalid tupleset subject"))?;
+            prepared_tuples.push(PreparedTuplesetTuple {
+                condition_context,
+                target_object,
+                computed_relation_id: edge.computed_relation_id,
+            });
+        }
+        Ok(prepared_tuples)
+    }
+
+    /// Validates tuple ownership and prepares its stored condition context.
     fn validate_tuple(
         &mut self,
         tuple: &RelationshipTuple,
@@ -493,65 +569,57 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         Ok(evaluation.allowed)
     }
 
-    /// Reads every page while enforcing the per-check tuple and call budgets.
-    async fn load_tuples(
+    /// Fetches, accounts for, and validates one bounded page for a relation.
+    async fn load_tuple_page(
         &mut self,
-        object: ObjectRef,
+        object: &ObjectRef,
         relation_id: usize,
-    ) -> Result<Vec<Vec<RelationshipTuple>>, AuthorizationError> {
+        state: &mut TuplePageState,
+    ) -> Result<Option<RelationshipPage>, AuthorizationError> {
+        if state.exhausted {
+            return Ok(None);
+        }
         let relation = relation_name(self.compiled.relation_name(relation_id))?;
         let maximum_tuples = self.limits.max_tuples_scanned();
-        // Keep page allocations until pagination completes so a late read error
-        // still precedes tuple validation without growing a second flat buffer.
-        let mut pages = Vec::new();
-        let mut cursor = None;
-        let mut seen_cursors = HashSet::new();
-        loop {
-            if self.store_calls >= self.limits.max_store_calls() {
-                return Err(AuthorizationError::StoreCallLimitExceeded {
-                    maximum_calls: self.limits.max_store_calls(),
-                });
-            }
-            let remaining = maximum_tuples.saturating_sub(self.tuples_scanned);
-            if remaining == 0 {
-                return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
-            }
-            self.store_calls += 1;
-            self.charge_work(1)?;
-            let page = self
-                .session
-                .tuples_page(&object, &relation, cursor.clone(), remaining)
-                .await
-                .map_err(|error| map_store_error(error, maximum_tuples))?;
-            if page.tuples.len() > remaining {
-                return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
-            }
-            let page_is_empty = page.tuples.is_empty();
-            self.charge_work(page.tuples.len())?;
-            self.tuples_scanned += page.tuples.len();
-            let next_cursor = page.next_cursor;
-            pages.push(page.tuples);
-            match next_cursor {
-                None => break,
-                Some(next_cursor) => {
-                    if page_is_empty {
-                        return Err(AuthorizationError::InvalidTuple(
-                            "relationship page continued without returning tuples",
-                        ));
-                    }
-                    if !seen_cursors.insert(next_cursor.clone()) {
-                        return Err(AuthorizationError::InvalidTuple(
-                            "relationship page cursor repeated",
-                        ));
-                    }
-                    if self.tuples_scanned >= maximum_tuples {
-                        return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
-                    }
-                    cursor = Some(next_cursor);
+        if self.store_calls >= self.limits.max_store_calls() {
+            return Err(AuthorizationError::StoreCallLimitExceeded {
+                maximum_calls: self.limits.max_store_calls(),
+            });
+        }
+        let remaining = maximum_tuples.saturating_sub(self.tuples_scanned);
+        if remaining == 0 {
+            return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
+        }
+        let requested_maximum = remaining.min(EVALUATION_PAGE_SIZE);
+        self.store_calls += 1;
+        self.charge_work(1)?;
+        let page = self
+            .session
+            .tuples_page(object, &relation, state.cursor.clone(), requested_maximum)
+            .await
+            .map_err(|error| map_store_error(error, maximum_tuples))?;
+        if page.tuples.len() > requested_maximum {
+            return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
+        }
+        self.charge_work(page.tuples.len())?;
+        self.tuples_scanned += page.tuples.len();
+        match page.next_cursor.clone() {
+            None => state.exhausted = true,
+            Some(next_cursor) => {
+                if page.tuples.is_empty() {
+                    return Err(AuthorizationError::InvalidTuple(
+                        "relationship page continued without returning tuples",
+                    ));
                 }
+                if !state.seen_cursors.insert(next_cursor.clone()) {
+                    return Err(AuthorizationError::InvalidTuple(
+                        "relationship page cursor repeated",
+                    ));
+                }
+                state.cursor = Some(next_cursor);
             }
         }
-        Ok(pages)
+        Ok(Some(page))
     }
 
     /// Looks up one validated relation expression from the immutable model.

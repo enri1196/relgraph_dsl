@@ -171,6 +171,7 @@ fn tuple() -> RelationshipTuple {
     )
 }
 
+#[allow(dead_code)]
 fn run_check(pages: Vec<PageScript>) -> Result<AuthorizationDecision, AuthorizationError> {
     let expected_pages = pages.clone();
     let limits = EvaluationLimits::new(10)
@@ -238,119 +239,484 @@ fn run_scripted_check(
 fn evaluator_rejects_a_cursor_that_repeats_after_other_tokens() {
     let a = StoreCursor::from_bytes(vec![1]);
     let b = StoreCursor::from_bytes(vec![2]);
-    let tuple = tuple();
-    let result = run_check(vec![
-        scripted_page("42", "viewer", None, vec![tuple.clone()], Some(a.clone())),
-        scripted_page(
-            "42",
-            "viewer",
-            Some(a.clone()),
-            vec![tuple.clone()],
-            Some(b.clone()),
-        ),
-        scripted_page("42", "viewer", Some(b), vec![tuple], Some(a)),
-    ]);
+    let nonmatching = page_tuple("other-user", "42");
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![nonmatching.clone()],
+                Some(a.clone()),
+            ),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(a.clone()),
+                vec![nonmatching.clone()],
+                Some(b.clone()),
+            ),
+            scripted_page("42", "viewer", Some(b), vec![nonmatching], Some(a)),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
     assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+    assert_eq!(calls.len(), 3);
 }
 
 #[test]
 fn evaluator_rejects_empty_pages_that_claim_a_continuation() {
-    let result = run_check(vec![scripted_page(
-        "42",
-        "viewer",
-        None,
-        Vec::new(),
-        Some(StoreCursor::from_bytes(vec![9])),
-    )]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            Vec::new(),
+            Some(StoreCursor::from_bytes(vec![9])),
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
     assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+    assert_eq!(calls.len(), 1);
 }
 
 #[test]
-fn evaluator_allows_a_grant_on_the_first_page_after_reading_later_pages() {
+fn evaluator_allows_a_grant_without_reading_later_pages() {
     let cursor = StoreCursor::from_bytes(vec![3]);
-    let result = run_check(vec![
-        scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
-        scripted_page(
-            "42",
-            "viewer",
-            Some(cursor),
-            vec![page_tuple("other-user", "42")],
-            None,
-        ),
-    ]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(cursor),
+                vec![page_tuple("other-user", "42")],
+                None,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
     assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 1);
 }
 
 #[test]
 fn evaluator_allows_a_grant_on_a_later_page() {
     let cursor = StoreCursor::from_bytes(vec![4]);
-    let result = run_check(vec![
-        scripted_page(
-            "42",
-            "viewer",
-            None,
-            vec![page_tuple("other-user", "42")],
-            Some(cursor.clone()),
-        ),
-        scripted_page("42", "viewer", Some(cursor), vec![tuple()], None),
-    ]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![page_tuple("other-user", "42")],
+                Some(cursor.clone()),
+            ),
+            scripted_page("42", "viewer", Some(cursor), vec![tuple()], None),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
     assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 2);
 }
 
 #[test]
-fn late_page_store_error_prevents_an_earlier_grant() {
+fn unrequested_store_error_does_not_defeat_an_earlier_grant() {
     let cursor = StoreCursor::from_bytes(vec![5]);
-    let result = run_check(vec![
-        scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
-        scripted_error("42", "viewer", Some(cursor), StoreErrorKind::IncompleteRead),
-    ]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
+            scripted_error("42", "viewer", Some(cursor), StoreErrorKind::IncompleteRead),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
-    assert!(matches!(result, Err(AuthorizationError::Store(_))));
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 1);
 }
 
 #[test]
-fn late_invalid_tuple_prevents_an_earlier_grant() {
+fn unrequested_invalid_tuple_does_not_defeat_an_earlier_grant() {
     let cursor = StoreCursor::from_bytes(vec![6]);
-    let result = run_check(vec![
-        scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
-        scripted_page(
-            "42",
-            "viewer",
-            Some(cursor),
-            vec![page_tuple("anne", "other-object")],
-            None,
-        ),
-    ]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page("42", "viewer", None, vec![tuple()], Some(cursor.clone())),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(cursor),
+                vec![page_tuple("anne", "other-object")],
+                None,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn fetched_invalid_tuple_precedes_an_unrequested_store_error() {
+    let first_cursor = StoreCursor::from_bytes(vec![7]);
+    let second_cursor = StoreCursor::from_bytes(vec![8]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![page_tuple("other-user", "42")],
+                Some(first_cursor.clone()),
+            ),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(first_cursor),
+                vec![page_tuple("anne", "other-object")],
+                Some(second_cursor.clone()),
+            ),
+            scripted_error(
+                "42",
+                "viewer",
+                Some(second_cursor),
+                StoreErrorKind::IncompleteRead,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
     assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+    assert_eq!(calls.len(), 2);
 }
 
 #[test]
-fn page_read_error_precedes_validation_of_buffered_tuples() {
-    let first_cursor = StoreCursor::from_bytes(vec![7]);
-    let missing_page_cursor = StoreCursor::from_bytes(vec![8]);
-    let result = run_check(vec![
-        scripted_page(
+fn fetched_invalid_tuple_defeats_a_same_page_grant() {
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            vec![tuple(), page_tuple("anne", "other-object")],
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Err(AuthorizationError::InvalidTuple(_))));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn requested_store_error_is_not_a_deny() {
+    let cursor = StoreCursor::from_bytes(vec![10]);
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![page_tuple("other-user", "42")],
+                Some(cursor.clone()),
+            ),
+            scripted_error("42", "viewer", Some(cursor), StoreErrorKind::IncompleteRead),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Err(AuthorizationError::Store(_))));
+    assert_eq!(calls.len(), 2);
+}
+
+#[test]
+fn streaming_rejects_pages_larger_than_the_requested_maximum() {
+    let limits = EvaluationLimits::new(1_000)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            (0..129).map(|_| page_tuple("other-user", "42")).collect(),
+            None,
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::EvaluationLimitExceeded {
+            maximum_tuples: 1_000
+        })
+    ));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].3, 128);
+}
+
+#[test]
+fn grant_at_the_tuple_limit_skips_continuation() {
+    let limits = EvaluationLimits::new(1)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
             "42",
             "viewer",
             None,
             vec![tuple()],
-            Some(first_cursor.clone()),
-        ),
-        scripted_page(
+            Some(StoreCursor::from_bytes(vec![11])),
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].3, 1);
+}
+
+#[test]
+fn nonmatching_page_at_the_tuple_limit_requires_more_budget() {
+    let limits = EvaluationLimits::new(1)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
             "42",
             "viewer",
-            Some(first_cursor),
-            vec![page_tuple("anne", "other-object")],
-            Some(missing_page_cursor),
-        ),
-    ]);
+            None,
+            vec![page_tuple("other-user", "42")],
+            Some(StoreCursor::from_bytes(vec![12])),
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
 
-    assert!(matches!(result, Err(AuthorizationError::Store(_))));
+    assert!(matches!(
+        result,
+        Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples: 1 })
+    ));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn grant_at_the_store_call_limit_skips_continuation() {
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(1)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page(
+            "42",
+            "viewer",
+            None,
+            vec![tuple()],
+            Some(StoreCursor::from_bytes(vec![13])),
+        )],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Allow)));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn streaming_deny_drains_pages_with_decreasing_maximum() {
+    let cursor = StoreCursor::from_bytes(vec![14]);
+    let limits = EvaluationLimits::new(3)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![
+            scripted_page(
+                "42",
+                "viewer",
+                None,
+                vec![
+                    page_tuple("other-user", "42"),
+                    page_tuple("other-user-2", "42"),
+                ],
+                Some(cursor.clone()),
+            ),
+            scripted_page(
+                "42",
+                "viewer",
+                Some(cursor),
+                vec![page_tuple("other-user-3", "42")],
+                None,
+            ),
+        ],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Deny)));
+    assert_eq!(
+        calls.iter().map(|call| call.3).collect::<Vec<_>>(),
+        vec![3, 1]
+    );
+}
+
+#[test]
+fn terminal_empty_page_denies_without_another_read() {
+    let limits = EvaluationLimits::new(10)
+        .unwrap()
+        .with_max_store_calls(10)
+        .unwrap();
+    let (result, reads) = run_scripted_check(
+        MODEL,
+        vec![scripted_page("42", "viewer", None, Vec::new(), None)],
+        limits,
+        check_request("tenant-a", "user", "anne", "document", "42", "viewer"),
+    );
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(result, Ok(AuthorizationDecision::Deny)));
+    assert_eq!(calls.len(), 1);
 }
 
 fn page_tuple(subject_id: &str, object_id: &str) -> RelationshipTuple {

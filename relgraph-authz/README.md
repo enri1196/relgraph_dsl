@@ -185,9 +185,25 @@ middleware responds with:
 | Relationship-store failure or exhausted evaluation budget | `503 Service Unavailable` |
 | Invalid trusted server state or internal failure | `500 Internal Server Error` |
 
-Authorization errors remain distinct from a normal deny decision. A failed
-store read, malformed tuple, missing applicable condition value, or exhausted
-budget cannot become an allow. The protected handler runs only after an allow.
+Authorization errors remain distinct from a normal deny decision. Tuple reads
+are processed in pages of at most 128 tuples, further limited by the remaining
+tuple budget. Before membership is evaluated, every tuple in the fetched page
+must pass ownership, condition-context, and relation-restriction validation.
+An invalid tuple or preparation-budget error anywhere in that page defeats a
+possible grant from the same page.
+
+After a page passes preparation, tuples are evaluated in returned order. A
+successful membership check and any applicable true condition grant access
+immediately, so the evaluator does not request a later page. A malformed tuple
+or store error that exists only in an unrequested later page cannot defeat that
+grant. Without a grant, evaluation continues through the required pages and
+propagates a requested store error. A membership or condition evaluation error
+can be masked by a later grant; if evaluation reaches the end without a grant,
+it returns the first such error or a normal deny. For a corrupt custom store,
+the decision can therefore depend on its page boundaries; the evaluator does
+not scan later pages as an integrity check. This behavior makes no
+upstream-equivalence claim for malformed custom-store results. The protected
+handler runs only after an allow.
 
 `EvaluationLimits::default()` bounds each check to 10,000 tuples scanned, 64
 relation traversal steps, 1,024 store page reads, 100,000 expression/tuple work
@@ -197,8 +213,13 @@ Condition contexts accepted by the in-memory and PostgreSQL stores are limited t
 65,536 serialized JSON bytes and 10,000 collection entries. Evaluation also
 accounts for request and custom-store context conversion against the condition
 budget.
-These local budgets bound this runtime's work and do not claim to reproduce
-OpenFGA server CEL cost accounting.
+Tuple, store-call, work, and CEL budgets are shared across nested traversals.
+Every tuple in a fetched page counts against the tuple and work budgets, even
+when an earlier tuple in that page grants access. Each active traversal holds
+at most one tuple page and its prepared metadata, plus bounded cursor history;
+parent pages can remain live while nested checks run. Backend snapshot memory
+is outside this bound. These local budgets bound this runtime's work and do not
+claim to reproduce OpenFGA server CEL cost accounting.
 
 ## Supported runtime profile
 

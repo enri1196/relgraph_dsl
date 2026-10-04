@@ -138,7 +138,7 @@ are supported for task 2.
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 
-## Task 2 — Stream and validate bounded pages in both tuple traversals [TODO]
+## Task 2 — Stream and validate bounded pages in both tuple traversals [DONE]
 
 **Dependency:** task 1. **Commit:** `feat(authz): evaluate tuple pages incrementally`.
 
@@ -268,7 +268,19 @@ no all-pages collection; unchanged operator combiners preserve their behavior.
 `cargo test -p relgraph-authz --test authz_conditions`;
 `cargo fmt --all -- --check`; `git diff --check`.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- Implemented bounded 128-tuple page loading, full fetched-page preparation, and
+  incremental evaluation in both tuple traversals. Grants skip later pages;
+  malformed data in the fetched page remains fatal. Updated the README page
+  contract and scripted page regressions.
+- `cargo test -p relgraph-authz --test authz_page_contract` — passed (15 passed,
+  0 failed).
+- `cargo test -p relgraph-authz --test authz_relations` — passed (10 passed,
+  0 failed).
+- `cargo test -p relgraph-authz --test authz_conditions` — passed (11 passed,
+  0 failed).
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
 
 ## Task 3 — Cover nested traversal, condition preparation, and short circuit [TODO]
 
