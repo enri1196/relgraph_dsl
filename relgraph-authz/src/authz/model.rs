@@ -25,6 +25,9 @@ pub(crate) struct CompiledModel {
     condition_index: HashMap<String, usize>,
 }
 
+#[cfg(test)]
+mod construction_costs;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CompiledTargetRange {
     pub(crate) start: usize,

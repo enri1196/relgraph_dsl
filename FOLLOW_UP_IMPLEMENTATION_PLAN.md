@@ -480,7 +480,7 @@ variants. Do not change parser limits or recursive compilation in this task.
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 
-## Task 5 — Add a reproducible private construction measurement harness [TODO]
+## Task 5 — Add a reproducible private construction measurement harness [DONE]
 
 **Dependency:** task 4. **Commit:** `perf(authz): add construction cost measurement harness`.
 
@@ -569,7 +569,22 @@ count assertions validate that the intended workload reached compilation.
 `RELGRAPH_CONSTRUCTION_COST_CASE=union_exact_512 cargo test -p relgraph-authz --release --lib authz::model::construction_costs::measure_construction_costs -- --ignored --exact --nocapture --test-threads=1`;
 `cargo fmt --all -- --check`; `git diff --check`.
 
-**Execution record:** unstarted.
+**Execution record:** 2026-10-04
+- Added the ignored test-only harness, workload count assertions, six phase
+  timers, CSV output, and the initial construction-cost report with empty
+  result tables. No Cargo manifest or dependency changes.
+- `cargo check -p relgraph-authz --all-targets` — passed (default features).
+- `cargo check -p relgraph-authz --all-targets --all-features` — passed.
+- `cargo test -p relgraph-authz --lib authz::model::construction_costs::measure_construction_costs -- --exact`
+  — passed; one test ignored as intended.
+- `RELGRAPH_CONSTRUCTION_COST_CASE=union_exact_512 cargo test -p relgraph-authz --release --lib authz::model::construction_costs::measure_construction_costs -- --ignored --exact --nocapture --test-threads=1`
+  — passed (1 passed, 0 failed); emitted the CSV header and six phase rows.
+  The observed median/p95/max values in ns were parse 216458/219583/221916,
+  validate 34000/41875/46042, compile 57250/96583/109542, indexes
+  14833/16917/17125, full 171292/192625/239666, and drop
+  21000/22500/30541. These are harness smoke output, not the Task 6 report.
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
 
 ## Task 6 — Measure costs and record evidence on available platforms [TODO]
 
