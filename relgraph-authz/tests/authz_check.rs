@@ -136,7 +136,7 @@ fn store_failure_is_not_a_denial() {
 }
 
 #[test]
-fn tuple_limit_exhaustion_is_an_error() {
+fn early_grant_at_tuple_limit_succeeds() {
     let store = InMemoryRelationshipStore::new();
     for id in ["anne", "bea"] {
         store
@@ -157,7 +157,7 @@ fn tuple_limit_exhaustion_is_an_error() {
         block_on(authz.check(request(
             "tenant-a", "user", "anne", "document", "42", "viewer",
         ))),
-        Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples: 1 })
+        Ok(AuthorizationDecision::Allow)
     ));
     assert!(EvaluationLimits::new(0).is_err());
     assert!(EvaluationLimits::new(EvaluationLimits::MAX_TUPLES_SCANNED + 1).is_err());

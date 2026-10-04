@@ -143,7 +143,8 @@ are supported for task 2.
 **Dependency:** task 1. **Commit:** `feat(authz): evaluate tuple pages incrementally`.
 
 **Owned files:** `relgraph-authz/src/authz/evaluator.rs`,
-`relgraph-authz/tests/authz_page_contract.rs`, and `relgraph-authz/README.md`.
+`relgraph-authz/tests/authz_page_contract.rs`,
+`relgraph-authz/tests/authz_check.rs`, and `relgraph-authz/README.md`.
 
 Add these private evaluator symbols, with exactly these responsibilities:
 
@@ -278,6 +279,16 @@ no all-pages collection; unchanged operator combiners preserve their behavior.
 - `cargo test -p relgraph-authz --test authz_relations` — passed (10 passed,
   0 failed).
 - `cargo test -p relgraph-authz --test authz_conditions` — passed (11 passed,
+  0 failed).
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
+- Task 7's required all-target gate exposed a stale Task 2 migration assertion
+  in `authz_check.rs`: its fixture inserted `anne` first but expected a tuple
+  limit error at `max_tuples_scanned = 1`. Renamed it to
+  `early_grant_at_tuple_limit_succeeds` and changed only the expectation to
+  `Allow`, matching the fetched-page early-grant contract.
+- `cargo test -p relgraph-authz --test authz_check` — passed (7 passed, 0 failed).
+- `cargo test -p relgraph-authz --test authz_page_contract` — passed (25 passed,
   0 failed).
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
