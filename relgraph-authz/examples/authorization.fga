@@ -1,3 +1,4 @@
+// Rules for the Axum example. The Rust program inserts the actual tuples.
 model
   schema 1.1
 
@@ -5,10 +6,15 @@ type user
 
 type document
   relations
+    // A direct, unconditional viewer grant.
     define viewer: [user]
+    // A viewer grant that must pass the valid_grant condition.
     define time_limited_viewer: [user with valid_grant]
+    // The protected route allows either kind of viewer grant.
     define can_view: viewer or time_limited_viewer
 
+// grant_time and grant_duration are stored with Bob's tuple. The Rust route
+// supplies current_time from the server for each authorization check.
 condition valid_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
   current_time < grant_time + grant_duration
 }

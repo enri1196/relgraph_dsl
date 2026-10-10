@@ -26,3 +26,9 @@ the compatibility target.
 
 See each crate's README and API documentation for usage, supported features,
 and runtime limits.
+
+## Application examples
+
+The [Drive API](examples/drive-api/README.md) is a runnable Axum application
+demonstrating workspace, folder, and file permissions, team sharing, inherited
+access, revocation, and revision-checked editing. Run `cargo run -p drive-api`.

@@ -1,3 +1,21 @@
+//! # Axum authorization example
+//!
+//! Run it with `cargo run -p relgraph-authz --example axum_authz --features axum`.
+//! The adjacent `authorization.fga` file defines the authorization rules; this
+//! Rust program provides demo grants, maps demo bearer tokens to trusted
+//! identities, and protects the document route with those rules.
+//!
+//! At startup, [`main`] inserts Anne's direct viewer grant and Bob's
+//! time-limited grant, then compiles the model and builds a route policy. For
+//! each request, [`authenticate`] adds a principal and tenant to the request
+//! extensions. The policy reads the document ID from the path, supplies the
+//! server's current time to the condition, and runs `document#can_view`. Axum
+//! calls [`read_document`] only when that check allows access. Missing or
+//! unknown demo tokens receive `401`; a valid token without an active grant
+//! receives `403`.
+//!
+//! The tokens and in-memory relationship store are demonstration fixtures.
+
 use std::{collections::BTreeMap, error::Error};
 
 use axum::{
@@ -19,6 +37,7 @@ use serde_json::json;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Clone)]
+/// Principal extension inserted by the example authentication middleware.
 struct AuthenticatedPrincipal(Subject);
 
 impl PrincipalIdentity for AuthenticatedPrincipal {
@@ -28,6 +47,7 @@ impl PrincipalIdentity for AuthenticatedPrincipal {
 }
 
 #[derive(Clone)]
+/// Tenant extension inserted by the example authentication middleware.
 struct AuthenticatedTenant(TenantId);
 
 impl TenantIdentity for AuthenticatedTenant {
@@ -36,6 +56,7 @@ impl TenantIdentity for AuthenticatedTenant {
     }
 }
 
+/// Resolve the condition's current time from the server clock, never the URL.
 fn server_current_time(_: &Parts) -> Result<ContextValue, PolicyInputError> {
     let current_time = OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -43,6 +64,7 @@ fn server_current_time(_: &Parts) -> Result<ContextValue, PolicyInputError> {
     ContextValue::new(ContextValueType::Timestamp, json!(current_time))
 }
 
+/// Map a fixed demo bearer token to trusted request extensions.
 async fn authenticate(mut request: Request<Body>, next: Next) -> Response {
     // Demo credentials stand in for a real authentication layer. The client
     // cannot choose a subject ID directly; each accepted token maps to one.
@@ -66,12 +88,15 @@ async fn authenticate(mut request: Request<Body>, next: Next) -> Response {
     next.run(request).await
 }
 
+/// Return the protected resource after its route policy has allowed access.
 async fn read_document() -> &'static str {
     "document access allowed"
 }
 
 #[tokio::main]
+/// Seed the demo store, build the authorization layer, and serve one route.
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Seed one direct grant for Anne on document:42 in the demo tenant.
     let store = InMemoryRelationshipStore::new();
     store.insert(RelationshipTuple::new(
         TenantId::new("demo")?,
@@ -90,6 +115,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             ("grant_duration".to_owned(), json!("30m")),
         ]),
     )?;
+    // Bob's grant carries its start time and duration with the tuple. The
+    // route supplies only current_time when it evaluates valid_grant.
     store.insert(
         RelationshipTuple::new(
             TenantId::new("demo")?,
@@ -100,8 +127,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_condition(grant_context),
     )?;
 
+    // Compile the adjacent model once, then bind the relationship store.
     let authz = FgaAuthz::new(include_str!("authorization.fga"))?
         .with_store(store, EvaluationLimits::default());
+    // Fix the check to document#can_view. Identity comes from trusted
+    // extensions, the object ID from the named path segment, and current_time
+    // from the server clock.
     let view_document = authz.middleware(
         RoutePolicy::new("document", "can_view")
             .principal(PrincipalSource::extension::<AuthenticatedPrincipal>())
@@ -117,6 +148,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )),
     )?;
 
+    // The app-wide authentication middleware supplies extensions before the
+    // route policy runs; the handler runs only after the policy allows.
     let app = Router::new()
         .route(
             "/documents/{document_id}",

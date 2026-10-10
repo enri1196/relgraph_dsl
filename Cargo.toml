@@ -1,4 +1,4 @@
 [workspace]
-members = ["relgraph-dsl", "relgraph-authz", "relgraph-authz-postgres"]
+members = ["relgraph-dsl", "relgraph-authz", "relgraph-authz-postgres", "examples/drive-api"]
 default-members = ["relgraph-dsl", "relgraph-authz"]
 resolver = "3"

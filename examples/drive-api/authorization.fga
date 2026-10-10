@@ -1,0 +1,38 @@
+model
+  schema 1.1
+
+type user
+
+type team
+  relations
+    define member: [user]
+
+# A workspace is the root of this deliberately bounded hierarchy.
+type workspace
+  relations
+    define owner: [user]
+    define editor: [user, team#member]
+    define viewer: [user, team#member]
+    define can_manage: owner
+    define can_edit: owner or editor
+    define can_view: can_edit or viewer
+
+type folder
+  relations
+    define parent: [workspace]
+    define owner: [user]
+    define editor: [user, team#member]
+    define viewer: [user, team#member]
+    define can_manage: owner or can_manage from parent
+    define can_edit: owner or editor or can_edit from parent
+    define can_view: can_edit or viewer or can_view from parent
+
+type file
+  relations
+    define parent: [folder]
+    define owner: [user]
+    define editor: [user, team#member]
+    define viewer: [user, team#member]
+    define can_manage: owner or can_manage from parent
+    define can_edit: owner or editor or can_edit from parent
+    define can_view: can_edit or viewer or can_view from parent
