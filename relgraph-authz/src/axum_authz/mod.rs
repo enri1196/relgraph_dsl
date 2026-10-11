@@ -158,7 +158,7 @@ async fn authorize_request<S: RelationshipStore>(
     // authentication follows the application's established 401 contract.
     let subject = policy
         .resolve_principal(&parts)
-        .map_err(|error| Rejection::from_principal_error(error))?;
+        .map_err(Rejection::from_principal_error)?;
     let tenant = policy
         .resolve_tenant(&parts)
         .map_err(|_| Rejection::Internal)?;

@@ -2,8 +2,7 @@ use super::model::{
     CompiledExpression, CompiledModel, CompiledTargetRange, CompiledTargetRestriction,
 };
 use super::request::{
-    AuthorizationDecision, AuthorizationError, CheckRequest, EvaluationLimits, ObjectRef,
-    RelationName,
+    AuthorizationDecision, AuthorizationError, CheckRequest, EntityId, EvaluationLimits, ObjectRef,
 };
 use super::store::{
     RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor,
@@ -24,6 +23,23 @@ struct TuplePageState {
     cursor: Option<StoreCursor>,
     seen_cursors: HashSet<StoreCursor>,
     exhausted: bool,
+}
+
+/// How a validated assignment tuple's subject relates to the checked subject.
+enum AssignmentMembership {
+    /// A direct subject or typed wildcard, matched against the checked subject.
+    Known(bool),
+    /// A userset subject whose membership requires evaluating its relation.
+    Userset {
+        object: ObjectRef,
+        relation_id: usize,
+    },
+}
+
+/// Tuple metadata validated before evaluating an assignment page.
+struct PreparedAssignmentTuple {
+    condition_context: Option<super::conditions::PreparedConditionContext>,
+    membership: AssignmentMembership,
 }
 
 /// Tuple metadata validated before evaluating a tupleset page.
@@ -65,7 +81,7 @@ pub(crate) async fn check<S: RelationshipStore>(
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
     let mut evaluator = Evaluator::new(compiled, session, limits, request);
     let allowed = evaluator
-        .evaluate_relation_by_id(request.object().clone(), relation_id, 0)
+        .evaluate_relation(request.object().clone(), relation_id, 0)
         .await?;
     Ok(if allowed {
         AuthorizationDecision::Allow
@@ -75,21 +91,24 @@ pub(crate) async fn check<S: RelationshipStore>(
 }
 
 /// One memo key; tenant and subject are fixed for this evaluator's single check.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// A relation ID identifies its owner type, so the object type is implied.
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct EvaluationKey {
-    object_type: String,
-    object_id: String,
-    relation: String,
+    relation_id: usize,
+    object_id: EntityId,
 }
 
 /// Per-check state for bounded graph traversal and decision memoization.
+///
+/// Construction rejects recursive model dependencies, so a relation key never
+/// recurs while it is being evaluated; the depth limit bounds traversal.
 struct Evaluator<'a, S> {
     compiled: &'a CompiledModel,
     session: S,
     limits: EvaluationLimits,
     request: &'a CheckRequest,
     completed: HashMap<EvaluationKey, bool>,
-    in_flight: HashSet<EvaluationKey>,
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
@@ -110,7 +129,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             limits,
             request,
             completed: HashMap::new(),
-            in_flight: HashSet::new(),
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
@@ -118,41 +136,14 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         }
     }
 
-    /// Resolves one relation for the checked subject and tracks recursive work.
+    /// Resolves one relation for the checked subject and memoizes its decision.
     fn evaluate_relation(
-        &mut self,
-        object: ObjectRef,
-        relation: RelationName,
-        depth: usize,
-    ) -> EvalFuture<'_> {
-        self.evaluate_relation_resolved(object, Some(relation), None, depth)
-    }
-
-    fn evaluate_relation_by_id(
         &mut self,
         object: ObjectRef,
         relation_id: usize,
         depth: usize,
     ) -> EvalFuture<'_> {
-        self.evaluate_relation_resolved(object, None, Some(relation_id), depth)
-    }
-
-    fn evaluate_relation_resolved(
-        &mut self,
-        object: ObjectRef,
-        relation: Option<RelationName>,
-        known_relation_id: Option<usize>,
-        depth: usize,
-    ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let relation_name = match known_relation_id {
-                Some(relation_id) => self.compiled.relation_name(relation_id).to_owned(),
-                None => relation
-                    .as_ref()
-                    .expect("unresolved relation names are supplied by callers")
-                    .as_str()
-                    .to_owned(),
-            };
             if depth > self.limits.max_relation_depth() {
                 return Err(AuthorizationError::RelationDepthExceeded {
                     maximum_depth: self.limits.max_relation_depth(),
@@ -160,34 +151,17 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             }
             self.charge_work(1)?;
             let key = EvaluationKey {
-                object_type: object.type_name().as_str().to_owned(),
-                object_id: object.id().as_str().to_owned(),
-                relation: relation_name.clone(),
+                relation_id,
+                object_id: object.id().clone(),
             };
             if let Some(decision) = self.completed.get(&key) {
                 return Ok(*decision);
             }
-            if !self.in_flight.insert(key.clone()) {
-                return Err(AuthorizationError::TupleGraphCycle {
-                    object_type: key.object_type,
-                    object_id: key.object_id,
-                    relation: key.relation,
-                });
-            }
 
-            let relation_id = match known_relation_id {
-                Some(relation_id) => Ok(relation_id),
-                None => self.resolve_relation_id(object.type_name().as_str(), &relation_name),
-            };
-            let result = match relation_id {
-                Ok(relation_id) => {
-                    let expression_id = self.compiled.relation_expression_id(relation_id);
-                    self.evaluate_expression(object.clone(), relation_id, expression_id, depth)
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            self.in_flight.remove(&key);
+            let expression_id = self.compiled.relation_expression_id(relation_id);
+            let result = self
+                .evaluate_expression(object, relation_id, expression_id, depth)
+                .await;
             if let Ok(decision) = &result {
                 self.completed.insert(key, *decision);
             }
@@ -211,7 +185,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         .await
                 }
                 CompiledExpression::ComputedUserset(target_relation_id) => {
-                    self.evaluate_relation_by_id(object, target_relation_id, depth + 1)
+                    self.evaluate_relation(object, target_relation_id, depth + 1)
                         .await
                 }
                 CompiledExpression::TupleToUserset {
@@ -279,23 +253,20 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 else {
                     break;
                 };
-                let prepared_contexts =
+                let prepared_tuples =
                     self.prepare_assignment_page(&page.tuples, &object, relation_id, &targets)?;
-                for (tuple, prepared_context) in page.tuples.iter().zip(prepared_contexts) {
-                    let membership = match tuple.subject() {
-                        TupleSubject::Direct(tuple_subject) => Ok(tuple_subject.type_name()
-                            == self.request.subject().type_name()
-                            && tuple_subject.id() == self.request.subject().id()),
-                        TupleSubject::TypedWildcard(type_name) => {
-                            Ok(type_name == self.request.subject().type_name())
-                        }
-                        TupleSubject::Userset { object, relation } => {
-                            self.evaluate_relation(object.clone(), relation.clone(), depth + 1)
-                                .await
-                        }
+                for (tuple, prepared) in page.tuples.iter().zip(prepared_tuples) {
+                    let membership = match prepared.membership {
+                        AssignmentMembership::Known(matches) => Ok(matches),
+                        AssignmentMembership::Userset {
+                            object,
+                            relation_id,
+                        } => self.evaluate_relation(object, relation_id, depth + 1).await,
                     };
                     let result = match membership {
-                        Ok(true) => self.evaluate_tuple_condition(tuple, prepared_context),
+                        Ok(true) => {
+                            self.evaluate_tuple_condition(tuple, prepared.condition_context)
+                        }
                         other => other,
                     };
                     match result {
@@ -326,15 +297,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         depth: usize,
     ) -> EvalFuture<'_> {
         Box::pin(async move {
-            let tupleset_expression_id = self.compiled.relation_expression_id(tupleset_relation_id);
-            let CompiledExpression::DirectAssignment(_) =
-                self.compiled.expression(tupleset_expression_id)
-            else {
-                return Err(AuthorizationError::InvalidTuple(
-                    "tupleset relation is not a direct assignment",
-                ));
-            };
-
             let mut state = TuplePageState::default();
             let mut first_error = None;
             loop {
@@ -362,7 +324,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         continue;
                     };
                     let membership = self
-                        .evaluate_relation_by_id(target_object, computed_relation_id, depth + 1)
+                        .evaluate_relation(target_object, computed_relation_id, depth + 1)
                         .await;
                     let result = match membership {
                         Ok(true) => self.evaluate_tuple_condition(tuple, condition_context),
@@ -394,14 +356,35 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         object: &ObjectRef,
         relation_id: usize,
         targets: &CompiledTargetRange,
-    ) -> Result<Vec<Option<super::conditions::PreparedConditionContext>>, AuthorizationError> {
-        let mut prepared_contexts = Vec::with_capacity(tuples.len());
+    ) -> Result<Vec<PreparedAssignmentTuple>, AuthorizationError> {
+        let mut prepared_tuples = Vec::with_capacity(tuples.len());
+        let checked = self.request.subject();
         for tuple in tuples {
             let condition_context = self.validate_tuple(tuple, object, relation_id)?;
-            self.compiled.validate_assignment_subject(tuple, targets)?;
-            prepared_contexts.push(condition_context);
+            let restriction = self.compiled.validate_assignment_subject(tuple, targets)?;
+            let membership = match tuple.subject() {
+                TupleSubject::Direct(subject) => AssignmentMembership::Known(
+                    subject.type_name() == checked.type_name() && subject.id() == checked.id(),
+                ),
+                TupleSubject::TypedWildcard(type_name) => {
+                    AssignmentMembership::Known(type_name == checked.type_name())
+                }
+                TupleSubject::Userset { object, .. } => {
+                    let CompiledTargetRestriction::Userset(relation_id) = restriction else {
+                        unreachable!("a userset subject validates as a userset restriction");
+                    };
+                    AssignmentMembership::Userset {
+                        object: object.clone(),
+                        relation_id,
+                    }
+                }
+            };
+            prepared_tuples.push(PreparedAssignmentTuple {
+                condition_context,
+                membership,
+            });
         }
-        Ok(prepared_contexts)
+        Ok(prepared_tuples)
     }
 
     /// Validates and prepares every tuple's context, edge, and target object.
@@ -519,7 +502,9 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         if state.exhausted {
             return Ok(None);
         }
-        let relation = relation_name(self.compiled.relation_name(relation_id))?;
+        let relation = self.compiled.checked_relation_name(relation_id).ok_or(
+            AuthorizationError::InvalidTuple("model contains an invalid relation reference"),
+        )?;
         let maximum_tuples = self.limits.max_tuples_scanned();
         if self.store_calls >= self.limits.max_store_calls() {
             return Err(AuthorizationError::StoreCallLimitExceeded {
@@ -535,7 +520,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         self.charge_work(1)?;
         let page = self
             .session
-            .tuples_page(object, &relation, state.cursor.clone(), requested_maximum)
+            .tuples_page(object, relation, state.cursor.clone(), requested_maximum)
             .await
             .map_err(|error| map_store_error(error, maximum_tuples))?;
         if page.tuples.len() > requested_maximum {
@@ -560,24 +545,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             }
         }
         Ok(Some(page))
-    }
-
-    /// Looks up one validated relation expression from the immutable model.
-    fn resolve_relation_id(
-        &self,
-        object_type: &str,
-        relation: &str,
-    ) -> Result<usize, AuthorizationError> {
-        let type_id = self
-            .compiled
-            .type_id(object_type)
-            .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type.to_owned()))?;
-        self.compiled.relation_id(type_id, relation).ok_or_else(|| {
-            AuthorizationError::UnknownRelation {
-                object_type: object_type.to_owned(),
-                relation: relation.to_owned(),
-            }
-        })
     }
 
     /// Charges a bounded unit of evaluator work.
@@ -630,13 +597,6 @@ fn combine_difference(
         (Err(error), Ok(false)) => Err(error),
         (Ok(true), Err(error)) | (Err(error), Err(_)) => Err(error),
     }
-}
-
-/// Converts a model relation name into the checked runtime representation.
-fn relation_name(value: &str) -> Result<RelationName, AuthorizationError> {
-    RelationName::new(value.to_owned()).map_err(|_| {
-        AuthorizationError::InvalidTuple("model contains an invalid relation reference")
-    })
 }
 
 /// Maps bounded-store failures without turning incomplete reads into denial.

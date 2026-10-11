@@ -367,7 +367,7 @@ where
     assert!(store.remove_tuple(&tenant_a, &first_old).await.unwrap());
     assert_eq!(
         snapshot.tuples(&first_object, &viewer, 10).await.unwrap(),
-        [first_old.clone()]
+        std::slice::from_ref(&first_old)
     );
 
     // A second query key must use the same snapshot despite writes between reads.

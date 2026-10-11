@@ -658,12 +658,6 @@ pub enum AuthorizationError {
     WorkLimitExceeded {
         maximum_work_units: usize,
     },
-    /// A relation was encountered again before its current evaluation completed.
-    TupleGraphCycle {
-        object_type: String,
-        object_id: String,
-        relation: String,
-    },
     Store(super::store::StoreError),
     /// A required parameter was absent from both the tuple and check contexts.
     MissingConditionContext {
@@ -735,14 +729,6 @@ impl std::fmt::Display for AuthorizationError {
             Self::WorkLimitExceeded { maximum_work_units } => write!(
                 f,
                 "authorization check exceeded its work limit of {maximum_work_units} units"
-            ),
-            Self::TupleGraphCycle {
-                object_type,
-                object_id,
-                relation,
-            } => write!(
-                f,
-                "relationship traversal revisited {object_type}:{object_id}#{relation}"
             ),
             Self::Store(error) => write!(f, "relationship store failed: {error}"),
             Self::MissingConditionContext {

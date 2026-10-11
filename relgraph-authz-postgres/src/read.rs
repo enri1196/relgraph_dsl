@@ -54,7 +54,8 @@ impl RelationshipStore for PostgresRelationshipStore {
         tenant: &'a TenantId,
     ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>> {
         Box::pin(async move {
-            let mut transaction = (&self.pool)
+            let mut transaction = self
+                .pool
                 .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 .await
                 .map_err(|error| map_sqlx_error(&error))?;

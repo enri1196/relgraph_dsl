@@ -887,10 +887,11 @@ impl<State> FgaAuthz<State> {
         if policy.object_id.is_none() {
             return Err(PolicyError::MissingObjectIdSource);
         }
-        if let Some(object_id) = &policy.object_id {
-            if object_id.requires_path_params() && object_id.name().is_empty() {
-                return Err(PolicyError::EmptyPathParameter);
-            }
+        if let Some(object_id) = &policy.object_id
+            && object_id.requires_path_params()
+            && object_id.name().is_empty()
+        {
+            return Err(PolicyError::EmptyPathParameter);
         }
 
         let requirements = self.requirements(&policy.object_type, &policy.relation)?;

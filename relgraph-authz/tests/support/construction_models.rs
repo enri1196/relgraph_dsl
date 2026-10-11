@@ -97,8 +97,7 @@ pub fn union_model(terms: usize, direct_root: bool) -> String {
 
 /// Generates a flat intersection of computed usersets.
 pub fn intersection_model(terms: usize) -> String {
-    let expression = std::iter::repeat("base")
-        .take(terms)
+    let expression = std::iter::repeat_n("base", terms)
         .collect::<Vec<_>>()
         .join(" and ");
 

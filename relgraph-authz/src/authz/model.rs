@@ -8,7 +8,7 @@ use relgraph_dsl::{
 
 use super::conditions::{self, CompiledCondition};
 use super::request::{
-    AuthorizationError, CapabilityDiagnostic, ConstructionError, RelationLocation,
+    AuthorizationError, CapabilityDiagnostic, ConstructionError, RelationLocation, RelationName,
     RuntimeCapability,
 };
 use super::store::{RelationshipTuple, TupleSubject};
@@ -93,7 +93,9 @@ struct CompiledRelation {
     owner_type_id: usize,
     definition_index: usize,
     expression_id: usize,
-    target_range: Option<CompiledTargetRange>,
+    /// The relation name as a store query identifier, or `None` when the model
+    /// name exceeds identifier limits and so can never match a stored tuple.
+    checked_name: Option<RelationName>,
 }
 
 impl CompiledModel {
@@ -139,7 +141,7 @@ impl CompiledModel {
                     owner_type_id: type_id,
                     definition_index: type_relations.len() - 1,
                     expression_id: usize::MAX,
-                    target_range: None,
+                    checked_name: RelationName::new(relation.name.clone()).ok(),
                 });
             }
             relation_index.push(type_relations);
@@ -170,30 +172,30 @@ impl CompiledModel {
                     &mut targets,
                 );
                 target_ranges[relation_id] = Some(range);
-                relations[relation_id].target_range = Some(range);
             }
         }
 
         let mut expressions = Vec::new();
         let mut tuple_to_userset_edges = Vec::new();
+        let mut compiler = ExpressionCompiler {
+            type_index: &type_index,
+            relation_index: &relation_index,
+            condition_index: &condition_index,
+            target_ranges: &target_ranges,
+            targets: &mut targets,
+            tuple_to_userset_edges: &mut tuple_to_userset_edges,
+            expressions: &mut expressions,
+        };
         for (type_id, type_definition) in schema.type_definitions.iter().enumerate() {
             for relation in &type_definition.relations {
                 let relation_id = relation_index[type_id][&relation.name];
-                let expression_id = compile_expression(
-                    &relation.definition.expression,
-                    &relation.definition.expression,
-                    target_ranges[relation_id],
-                    type_id,
-                    relation_id,
-                    &type_index,
-                    &relation_index,
-                    &condition_index,
-                    &target_ranges,
-                    &mut targets,
-                    &mut tuple_to_userset_edges,
-                    &mut expressions,
-                );
-                relations[relation_id].expression_id = expression_id;
+                let root = RootExpression {
+                    expression: &relation.definition.expression,
+                    target_range: target_ranges[relation_id],
+                    owner_type_id: type_id,
+                };
+                relations[relation_id].expression_id =
+                    compiler.compile(&relation.definition.expression, &root);
             }
         }
 
@@ -246,6 +248,11 @@ impl CompiledModel {
             .name
     }
 
+    /// Returns the relation name as a store query identifier, if it is one.
+    pub(crate) fn checked_relation_name(&self, relation_id: usize) -> Option<&RelationName> {
+        self.relations[relation_id].checked_name.as_ref()
+    }
+
     pub(crate) fn relation_owner_type_id(&self, relation_id: usize) -> usize {
         self.relations[relation_id].owner_type_id
     }
@@ -295,7 +302,7 @@ impl CompiledModel {
             match self.expression(expression_id) {
                 CompiledExpression::DirectAssignment(targets) => {
                     match self.validate_assignment_subject(tuple, &targets) {
-                        Ok(()) => {
+                        Ok(_) => {
                             matched = true;
                             break;
                         }
@@ -331,12 +338,13 @@ impl CompiledModel {
         Ok(())
     }
 
-    /// Confirms that a tuple subject is one of the model's declared targets.
+    /// Confirms that a tuple subject is one of the model's declared targets and
+    /// returns the subject's restriction, including a userset's relation ID.
     pub(crate) fn validate_assignment_subject(
         &self,
         tuple: &RelationshipTuple,
         targets: &CompiledTargetRange,
-    ) -> Result<(), AuthorizationError> {
+    ) -> Result<CompiledTargetRestriction, AuthorizationError> {
         let (subject_type, restriction) = match tuple.subject() {
             TupleSubject::Direct(subject) => (subject.type_name().as_str(), None),
             TupleSubject::Userset { object, relation } => {
@@ -366,7 +374,7 @@ impl CompiledModel {
                 && self.condition_matches(target.condition_id, tuple)
         });
         if matches {
-            Ok(())
+            Ok(restriction)
         } else {
             Err(AuthorizationError::InvalidTuple(
                 "tuple subject is incompatible with the relation restriction",
@@ -450,167 +458,105 @@ fn compile_targets(
     range
 }
 
-fn compile_expression(
-    expression: &relgraph_dsl::RelationExpression,
-    root_expression: &relgraph_dsl::RelationExpression,
-    root_target_range: Option<CompiledTargetRange>,
+/// The relation whose expression tree is being compiled.
+struct RootExpression<'a> {
+    expression: &'a relgraph_dsl::RelationExpression,
+    /// Targets of a root direct assignment, compiled before any expression.
+    target_range: Option<CompiledTargetRange>,
     owner_type_id: usize,
-    owner_relation_id: usize,
-    type_index: &HashMap<String, usize>,
-    relation_index: &[HashMap<String, usize>],
-    condition_index: &HashMap<String, usize>,
-    target_ranges: &[Option<CompiledTargetRange>],
-    targets: &mut Vec<CompiledTarget>,
-    tuple_to_userset_edges: &mut Vec<CompiledTupleToUsersetEdge>,
-    expressions: &mut Vec<CompiledExpression>,
-) -> usize {
-    let expression = match expression {
-        relgraph_dsl::RelationExpression::DirectAssignment(ast_targets) => {
-            let range = if std::ptr::eq(expression, root_expression) {
-                root_target_range
-                    .expect("direct-assignment targets are compiled before expressions")
-            } else {
-                compile_targets(
-                    ast_targets,
-                    type_index,
-                    relation_index,
-                    condition_index,
-                    targets,
-                )
-            };
-            CompiledExpression::DirectAssignment(range)
-        }
-        relgraph_dsl::RelationExpression::ComputedUserset(relation) => {
-            let relation_id = *relation_index[owner_type_id]
-                .get(relation)
-                .expect("validated computed userset has a compiled relation");
-            CompiledExpression::ComputedUserset(relation_id)
-        }
-        relgraph_dsl::RelationExpression::TupleToUserset {
-            computed_userset,
-            tupleset_relation,
-        } => {
-            let tupleset_relation_id = *relation_index[owner_type_id]
-                .get(tupleset_relation)
-                .expect("validated tupleset has a compiled relation");
-            let target_range = target_ranges[tupleset_relation_id]
-                .expect("validated tupleset relation is a direct assignment");
-            let edge_range = CompiledTargetRange {
-                start: tuple_to_userset_edges.len(),
-                len: target_range.len,
-            };
-            for target_id in target_range.start..target_range.start + target_range.len {
-                let target = targets[target_id];
-                let computed_relation_id = relation_index[target.type_id]
-                    .get(computed_userset)
-                    .copied();
-                tuple_to_userset_edges.push(CompiledTupleToUsersetEdge {
-                    target_id,
-                    computed_relation_id,
-                });
+}
+
+/// Lookup indexes and output tables shared while compiling expression trees.
+struct ExpressionCompiler<'a> {
+    type_index: &'a HashMap<String, usize>,
+    relation_index: &'a [HashMap<String, usize>],
+    condition_index: &'a HashMap<String, usize>,
+    target_ranges: &'a [Option<CompiledTargetRange>],
+    targets: &'a mut Vec<CompiledTarget>,
+    tuple_to_userset_edges: &'a mut Vec<CompiledTupleToUsersetEdge>,
+    expressions: &'a mut Vec<CompiledExpression>,
+}
+
+impl ExpressionCompiler<'_> {
+    /// Compiles one validated expression node and returns its expression ID.
+    fn compile(
+        &mut self,
+        expression: &relgraph_dsl::RelationExpression,
+        root: &RootExpression<'_>,
+    ) -> usize {
+        let expression = match expression {
+            relgraph_dsl::RelationExpression::DirectAssignment(ast_targets) => {
+                let range = if std::ptr::eq(expression, root.expression) {
+                    root.target_range
+                        .expect("direct-assignment targets are compiled before expressions")
+                } else {
+                    compile_targets(
+                        ast_targets,
+                        self.type_index,
+                        self.relation_index,
+                        self.condition_index,
+                        self.targets,
+                    )
+                };
+                CompiledExpression::DirectAssignment(range)
             }
-            CompiledExpression::TupleToUserset {
-                tupleset_relation_id,
-                edge_range,
+            relgraph_dsl::RelationExpression::ComputedUserset(relation) => {
+                let relation_id = *self.relation_index[root.owner_type_id]
+                    .get(relation)
+                    .expect("validated computed userset has a compiled relation");
+                CompiledExpression::ComputedUserset(relation_id)
             }
-        }
-        relgraph_dsl::RelationExpression::Union(left, right) => {
-            let left = compile_expression(
-                left,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            let right = compile_expression(
-                right,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            CompiledExpression::Union { left, right }
-        }
-        relgraph_dsl::RelationExpression::Intersection(left, right) => {
-            let left = compile_expression(
-                left,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            let right = compile_expression(
-                right,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            CompiledExpression::Intersection { left, right }
-        }
-        relgraph_dsl::RelationExpression::Difference(left, right) => {
-            let left = compile_expression(
-                left,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            let right = compile_expression(
-                right,
-                root_expression,
-                root_target_range,
-                owner_type_id,
-                owner_relation_id,
-                type_index,
-                relation_index,
-                condition_index,
-                target_ranges,
-                targets,
-                tuple_to_userset_edges,
-                expressions,
-            );
-            CompiledExpression::Difference { left, right }
-        }
-    };
-    let expression_id = expressions.len();
-    expressions.push(expression);
-    expression_id
+            relgraph_dsl::RelationExpression::TupleToUserset {
+                computed_userset,
+                tupleset_relation,
+            } => {
+                let tupleset_relation_id = *self.relation_index[root.owner_type_id]
+                    .get(tupleset_relation)
+                    .expect("validated tupleset has a compiled relation");
+                let target_range = self.target_ranges[tupleset_relation_id]
+                    .expect("validated tupleset relation is a direct assignment");
+                let edge_range = CompiledTargetRange {
+                    start: self.tuple_to_userset_edges.len(),
+                    len: target_range.len,
+                };
+                let tupleset_targets =
+                    &self.targets[target_range.start..target_range.start + target_range.len];
+                for (target_id, target) in (target_range.start..).zip(tupleset_targets) {
+                    let computed_relation_id = self.relation_index[target.type_id]
+                        .get(computed_userset)
+                        .copied();
+                    self.tuple_to_userset_edges
+                        .push(CompiledTupleToUsersetEdge {
+                            target_id,
+                            computed_relation_id,
+                        });
+                }
+                CompiledExpression::TupleToUserset {
+                    tupleset_relation_id,
+                    edge_range,
+                }
+            }
+            relgraph_dsl::RelationExpression::Union(left, right) => CompiledExpression::Union {
+                left: self.compile(left, root),
+                right: self.compile(right, root),
+            },
+            relgraph_dsl::RelationExpression::Intersection(left, right) => {
+                CompiledExpression::Intersection {
+                    left: self.compile(left, root),
+                    right: self.compile(right, root),
+                }
+            }
+            relgraph_dsl::RelationExpression::Difference(left, right) => {
+                CompiledExpression::Difference {
+                    left: self.compile(left, root),
+                    right: self.compile(right, root),
+                }
+            }
+        };
+        let expression_id = self.expressions.len();
+        self.expressions.push(expression);
+        expression_id
+    }
 }
 
 /// Collects all model constructs that exceed the initial runtime profile.
@@ -805,19 +751,17 @@ fn collect_relation_edges(
                     .relations
                     .iter()
                     .find(|relation| relation.name == *tupleset_relation)
-                {
-                    if let RelationExpression::DirectAssignment(targets) =
+                    && let RelationExpression::DirectAssignment(targets) =
                         &tupleset.definition.expression
-                    {
-                        for target in targets {
-                            add_edge(
-                                source,
-                                &(target.target_type.clone(), computed_userset.clone()),
-                                ids,
-                                graph,
-                                span.clone(),
-                            );
-                        }
+                {
+                    for target in targets {
+                        add_edge(
+                            source,
+                            &(target.target_type.clone(), computed_userset.clone()),
+                            ids,
+                            graph,
+                            span.clone(),
+                        );
                     }
                 }
             }
@@ -936,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluator_detects_in_flight_tuple_graph_cycles() {
+    fn depth_limit_bounds_a_recursive_model_that_skipped_construction_checks() {
         use crate::authz::evaluator;
         use crate::authz::request::{
             AuthorizationError, CheckRequest, EvaluationLimits, ObjectRef, RelationName, Subject,
@@ -1000,9 +944,11 @@ mod tests {
                 break result;
             }
         };
+        // Construction rejects this model; without that check the self-referencing
+        // tuple recurses until the depth limit rather than looping forever.
         assert!(matches!(
             result,
-            Err(AuthorizationError::TupleGraphCycle { .. })
+            Err(AuthorizationError::RelationDepthExceeded { .. })
         ));
     }
 }

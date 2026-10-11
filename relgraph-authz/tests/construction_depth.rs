@@ -19,15 +19,13 @@ fn flat_expression_below_construction_limit_validates() {
 
 #[test]
 fn declaration_limit_is_enforced_at_the_boundary() {
-    let declarations_at_limit = std::iter::repeat("type user")
-        .take(4_096)
+    let declarations_at_limit = std::iter::repeat_n("type user", 4_096)
         .collect::<Vec<_>>()
         .join("\n");
     let accepted = format!("model\nschema 1.1\n{declarations_at_limit}\n");
     parse_fga_schema(&accepted).expect("the maximum declaration count is accepted");
 
-    let declarations_over_limit = std::iter::repeat("type user")
-        .take(4_097)
+    let declarations_over_limit = std::iter::repeat_n("type user", 4_097)
         .collect::<Vec<_>>()
         .join("\n");
     let rejected = format!("model\nschema 1.1\n{declarations_over_limit}\n");
@@ -199,8 +197,7 @@ fn run_child_case(case: &str) {
 }
 
 fn flat_expression_model(terms: usize) -> String {
-    let expression = std::iter::repeat("base")
-        .take(terms)
+    let expression = std::iter::repeat_n("base", terms)
         .collect::<Vec<_>>()
         .join(" or ");
     format!(
