@@ -450,9 +450,9 @@ impl EvaluationLimits {
     pub const DEFAULT_MAX_WORK_UNITS: usize = 100_000;
     /// Largest work-unit limit accepted by the runtime.
     pub const MAX_WORK_UNITS: usize = 1_000_000;
-    /// Default aggregate CEL condition cost budget for one check.
+    /// Default CEL cost limit for one condition evaluation.
     pub const DEFAULT_MAX_CONDITION_COST: usize = 100;
-    /// Largest CEL condition cost budget accepted by the runtime.
+    /// Largest per-evaluation CEL cost limit accepted by the runtime.
     pub const MAX_CONDITION_COST: usize = 100_000;
 
     /// Creates limits with the supplied tuple budget and defaults for other bounds.
@@ -524,10 +524,12 @@ impl EvaluationLimits {
         Ok(self)
     }
 
-    /// Sets the condition work budget for one check.
+    /// Sets the estimated CEL cost limit for each condition evaluation.
     ///
-    /// The budget includes stored tuple context validation and conversion,
-    /// request value conversion, and CEL evaluation, including failed attempts.
+    /// The estimate covers the expression, its input values, and regex
+    /// matching. Every evaluation, including failed attempts, and all stored
+    /// and request context conversion also consume the check's work budget
+    /// ([`Self::with_max_work_units`]), which bounds condition work per check.
     pub fn with_max_condition_cost(
         mut self,
         maximum: usize,
@@ -559,10 +561,7 @@ impl EvaluationLimits {
         self.max_work_units
     }
 
-    /// Returns the maximum condition work charged during one check.
-    ///
-    /// Stored tuple context is charged even when its parameter is unused or its
-    /// subject does not match the checked subject.
+    /// Returns the estimated CEL cost limit for one condition evaluation.
     pub const fn max_condition_cost(self) -> usize {
         self.max_condition_cost
     }
@@ -642,6 +641,7 @@ pub enum AuthorizationError {
         object_type: String,
         relation: String,
     },
+    /// A tuple does not fit the authorization model or the store contract.
     InvalidTuple(&'static str),
     EvaluationLimitExceeded {
         maximum_tuples: usize,
@@ -688,7 +688,7 @@ pub enum AuthorizationError {
         condition: String,
         message: String,
     },
-    /// The check's aggregate CEL cost estimate exceeded its configured budget.
+    /// One condition evaluation's estimated CEL cost exceeded its configured limit.
     ConditionCostLimitExceeded {
         maximum_cost: usize,
         estimated_cost: usize,
@@ -718,7 +718,7 @@ impl std::fmt::Display for AuthorizationError {
                 "relation '{relation}' is not defined on object type '{object_type}'"
             ),
             Self::InvalidTuple(reason) => {
-                write!(f, "relationship store returned an invalid tuple: {reason}")
+                write!(f, "invalid relationship tuple: {reason}")
             }
             Self::EvaluationLimitExceeded { maximum_tuples } => write!(
                 f,
@@ -780,7 +780,7 @@ impl std::fmt::Display for AuthorizationError {
                 estimated_cost,
             } => write!(
                 f,
-                "condition evaluation cost {estimated_cost} exceeds the remaining budget {maximum_cost}"
+                "condition evaluation cost {estimated_cost} exceeds the limit {maximum_cost}"
             ),
         }
     }

@@ -1144,11 +1144,13 @@ fn page_preparation_budget_error_defeats_a_same_page_grant() {
             serde_json::Value::Bool(true),
         )
     }));
+    // Loading the page costs 131 work units and preparing its 128 stored
+    // contexts another 256, so preparation fails before any tuple is evaluated.
     let limits = EvaluationLimits::new(128)
         .unwrap()
         .with_max_store_calls(10)
         .unwrap()
-        .with_max_condition_cost(1)
+        .with_max_work_units(300)
         .unwrap();
     let (result, reads) = run_scripted_check(
         CONDITION_MODEL,
@@ -1164,9 +1166,8 @@ fn page_preparation_budget_error_defeats_a_same_page_grant() {
 
     assert!(matches!(
         result,
-        Err(AuthorizationError::ConditionCostLimitExceeded {
-            maximum_cost: 1,
-            ..
+        Err(AuthorizationError::WorkLimitExceeded {
+            maximum_work_units: 300
         })
     ));
     assert_eq!(calls.len(), 1);

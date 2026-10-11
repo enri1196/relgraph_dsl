@@ -271,25 +271,36 @@ fn tuple_to_userset_inherits_access_from_parent_objects() {
 }
 
 #[test]
-fn tuple_to_userset_preserves_missing_computed_relation_errors() {
+fn tuple_to_userset_skips_targets_without_the_computed_relation() {
     let definition = "model\nschema 1.1\ntype user\ntype folder\n  relations\n    define viewer: [user]\ntype team\ntype document\n  relations\n    define parent: [folder, team]\n    define viewer: viewer from parent\n";
     let store = InMemoryRelationshipStore::new();
     store
         .insert(tuple("document", "42", "parent", subject("team", "ops")))
         .unwrap();
+    store
+        .insert(tuple("document", "42", "parent", subject("folder", "docs")))
+        .unwrap();
+    store
+        .insert(tuple("folder", "docs", "viewer", subject("user", "bea")))
+        .unwrap();
     let authz = FgaAuthz::new(definition)
         .unwrap()
         .with_store(store, EvaluationLimits::default());
 
-    let error = block_on(authz.check(check_request(
-        "tenant-a", "user", "anne", "document", "42", "viewer",
-    )))
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        relgraph_authz::AuthorizationError::UnknownRelation { object_type, relation }
-            if object_type == "team" && relation == "viewer"
-    ));
+    assert_eq!(
+        block_on(authz.check(check_request(
+            "tenant-a", "user", "anne", "document", "42", "viewer",
+        )))
+        .unwrap(),
+        AuthorizationDecision::Deny
+    );
+    assert_eq!(
+        block_on(authz.check(check_request(
+            "tenant-a", "user", "bea", "document", "42", "viewer",
+        )))
+        .unwrap(),
+        AuthorizationDecision::Allow
+    );
 }
 
 #[test]

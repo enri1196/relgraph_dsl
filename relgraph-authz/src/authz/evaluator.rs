@@ -93,7 +93,7 @@ struct Evaluator<'a, S> {
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
-    condition_budget: super::conditions::ConditionBudget,
+    request_values: super::conditions::RequestValueCache,
 }
 
 impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
@@ -104,7 +104,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         limits: EvaluationLimits,
         request: &'a CheckRequest,
     ) -> Self {
-        let condition_budget = super::conditions::ConditionBudget::new(limits.max_condition_cost());
         Self {
             compiled,
             session,
@@ -115,7 +114,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
-            condition_budget,
+            request_values: super::conditions::RequestValueCache::default(),
         }
     }
 
@@ -357,24 +356,14 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         target_object,
                         computed_relation_id,
                     } = prepared;
-                    let membership = match computed_relation_id {
-                        Some(computed_relation_id) => {
-                            self.evaluate_relation_by_id(
-                                target_object,
-                                computed_relation_id,
-                                depth + 1,
-                            )
-                            .await
-                        }
-                        None => Err(AuthorizationError::UnknownRelation {
-                            object_type: target_object.type_name().as_str().to_owned(),
-                            relation: self
-                                .compiled
-                                .tuple_to_userset_computed_name(edge_range)
-                                .expect("validated tupleset has a computed relation target")
-                                .to_owned(),
-                        }),
+                    // Validation guarantees that some tupleset target type defines
+                    // the computed relation; targets of other types cannot grant.
+                    let Some(computed_relation_id) = computed_relation_id else {
+                        continue;
                     };
+                    let membership = self
+                        .evaluate_relation_by_id(target_object, computed_relation_id, depth + 1)
+                        .await;
                     let result = match membership {
                         Ok(true) => self.evaluate_tuple_condition(tuple, condition_context),
                         other => other,
@@ -398,51 +387,6 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         })
     }
 
-    /// Confirms that a tuple subject is one of the model's declared targets.
-    fn validate_assignment_subject(
-        &self,
-        tuple: &RelationshipTuple,
-        targets: &CompiledTargetRange,
-    ) -> Result<(), AuthorizationError> {
-        let (subject_type, restriction) = match tuple.subject() {
-            TupleSubject::Direct(subject) => (subject.type_name().as_str(), None),
-            TupleSubject::Userset { object, relation } => {
-                (object.type_name().as_str(), Some(relation.as_str()))
-            }
-            TupleSubject::TypedWildcard(type_name) => (type_name.as_str(), Some("*")),
-        };
-        let type_id =
-            self.compiled
-                .type_id(subject_type)
-                .ok_or(AuthorizationError::InvalidTuple(
-                    "tuple subject type is absent from the authorization model",
-                ))?;
-        let restriction = match restriction {
-            None => CompiledTargetRestriction::Direct,
-            Some("*") => CompiledTargetRestriction::Wildcard,
-            Some(relation) => CompiledTargetRestriction::Userset(
-                self.compiled.relation_id(type_id, relation).ok_or(
-                    AuthorizationError::InvalidTuple(
-                        "tuple userset relation is absent from the authorization model",
-                    ),
-                )?,
-            ),
-        };
-        let matches = (targets.start..targets.start + targets.len).any(|target_id| {
-            let target = self.compiled.target(target_id);
-            target.type_id == type_id
-                && target.restriction.matches(restriction)
-                && self.condition_matches(target.condition_id, tuple)
-        });
-        if matches {
-            Ok(())
-        } else {
-            Err(AuthorizationError::InvalidTuple(
-                "tuple subject is incompatible with the relation restriction",
-            ))
-        }
-    }
-
     /// Validates and prepares every tuple's context and assignment restriction.
     fn prepare_assignment_page(
         &mut self,
@@ -454,7 +398,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         let mut prepared_contexts = Vec::with_capacity(tuples.len());
         for tuple in tuples {
             let condition_context = self.validate_tuple(tuple, object, relation_id)?;
-            self.validate_assignment_subject(tuple, targets)?;
+            self.compiled.validate_assignment_subject(tuple, targets)?;
             prepared_contexts.push(condition_context);
         }
         Ok(prepared_contexts)
@@ -484,7 +428,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     let target = self.compiled.target(edge.target_id);
                     Some(target.type_id) == subject_type_id
                         && matches!(target.restriction, CompiledTargetRestriction::Direct)
-                        && self.condition_matches(target.condition_id, tuple)
+                        && self.compiled.condition_matches(target.condition_id, tuple)
                 });
             let Some(edge) = compatible_edge else {
                 return Err(AuthorizationError::InvalidTuple(
@@ -530,21 +474,12 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     "tuple condition is absent from the authorization model",
                 ),
             )?;
-            return condition
-                .validate_stored_context(context.values(), &mut self.condition_budget)
-                .map(Some);
+            let mut work = 0;
+            let prepared = condition.validate_stored_context(context.values(), &mut work);
+            self.charge_work(work)?;
+            return prepared.map(Some);
         }
         Ok(None)
-    }
-
-    fn condition_matches(&self, condition_id: Option<usize>, tuple: &RelationshipTuple) -> bool {
-        match (condition_id, tuple.condition()) {
-            (None, None) => true,
-            (Some(expected), Some(context)) => {
-                self.compiled.condition_id(context.name().as_str()) == Some(expected)
-            }
-            _ => false,
-        }
     }
 
     fn evaluate_tuple_condition(
@@ -560,12 +495,17 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 "tuple condition is absent from the authorization model",
             ),
         )?;
+        let mut work = 0;
         let evaluation = condition.evaluate(
             prepared_context,
             self.request.condition_context(context.name().as_str()),
             self.request.context(),
-            &mut self.condition_budget,
-        )?;
+            &mut self.request_values,
+            self.limits.max_condition_cost(),
+            &mut work,
+        );
+        self.charge_work(work)?;
+        let evaluation = evaluation?;
         Ok(evaluation.allowed)
     }
 

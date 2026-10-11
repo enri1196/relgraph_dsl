@@ -351,7 +351,7 @@ fn oversized_stored_strings_and_maps_are_rejected_before_conversion() {
 }
 
 #[test]
-fn failed_condition_attempts_consume_the_shared_budget() {
+fn condition_cost_limit_applies_to_each_evaluation() {
     let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define broken: [user with broken_check]\n    define valid: [user with valid_check]\n    define viewer: broken or valid\ncondition broken_check(divisor: int) { 1 / divisor > 0 }\ncondition valid_check(enabled: bool) { enabled }\n";
     let store = InMemoryRelationshipStore::new();
     store
@@ -376,9 +376,80 @@ fn failed_condition_attempts_consume_the_shared_budget() {
         .with_condition_context("broken_check", values([("divisor", json!(0))]))
         .with_condition_context("valid_check", values([("enabled", json!(true))]));
 
+    // The failed attempt does not reduce the limit for the next evaluation.
+    assert_eq!(
+        block_on(authz.check(check)).unwrap(),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[test]
+fn default_limits_allow_several_timed_grants_in_one_check() {
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define a: [user with grant]\n    define b: [user with grant]\n    define c: [user with grant]\n    define viewer: a or b or c\ncondition grant(now: timestamp, until: timestamp) {\n  now < until\n}\n";
+    let store = InMemoryRelationshipStore::new();
+    for (relation, until) in [
+        ("a", "2020-01-01T00:00:00Z"),
+        ("b", "2020-01-01T00:00:00Z"),
+        ("c", "2030-01-01T00:00:00Z"),
+    ] {
+        store
+            .insert(tuple(
+                relation,
+                subject("user", "anne"),
+                Some(ConditionContext::new("grant", values([("until", json!(until))])).unwrap()),
+            ))
+            .unwrap();
+    }
+    let authz = FgaAuthz::new(definition)
+        .unwrap()
+        .with_store(store, EvaluationLimits::default());
+
+    assert_eq!(
+        block_on(authz.check(request(values([("now", json!("2026-10-11T00:00:00Z"))])))).unwrap(),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[test]
+fn default_limits_allow_regex_conditions() {
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with slug]\ncondition slug(name: string) {\n  name.matches(\"^[a-z0-9-]+$\")\n}\n";
+    let authz = authz_with_tuple(
+        definition,
+        Some(ConditionContext::new("slug", BTreeMap::new()).unwrap()),
+        EvaluationLimits::default(),
+    );
+
+    assert_eq!(
+        block_on(authz.check(request(values([("name", json!("my-project-name-2026"))])))).unwrap(),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[test]
+fn stored_context_conversion_is_bounded_by_the_check_work_budget() {
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with gate]\ncondition gate(unused: list<int>) { true }\n";
+    let store = InMemoryRelationshipStore::new();
+    // Each context is within the per-context limits; together they exceed the
+    // default work budget of one check.
+    for index in 0..25 {
+        store
+            .insert(tuple(
+                "viewer",
+                subject("user", &format!("other-{index}")),
+                Some(
+                    ConditionContext::new("gate", values([("unused", json!(vec![0_i64; 5_000]))]))
+                        .unwrap(),
+                ),
+            ))
+            .unwrap();
+    }
+    let authz = FgaAuthz::new(definition)
+        .unwrap()
+        .with_store(store, EvaluationLimits::default());
+
     assert!(matches!(
-        block_on(authz.check(check)),
-        Err(AuthorizationError::ConditionEvaluationFailed { .. })
+        block_on(authz.check(request(BTreeMap::new()))),
+        Err(AuthorizationError::WorkLimitExceeded { .. })
     ));
 }
 

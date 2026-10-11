@@ -218,7 +218,12 @@ are processed in pages of at most 128 tuples, further limited by the remaining
 tuple budget. Before membership is evaluated, every tuple in the fetched page
 must pass ownership, condition-context, and relation-restriction validation.
 An invalid tuple or preparation-budget error anywhere in that page defeats a
-possible grant from the same page.
+possible grant from the same page. Stores do not know the model, so call
+`FgaAuthz::validate_tuple` before writing a tuple: it applies the same model
+checks (object type, relation, declared subject targets and conditions, and
+stored context types) and rejects tuples that would make such checks fail.
+For a tuple-to-userset relation, tupleset targets whose type does not define
+the computed relation cannot grant and are skipped.
 
 After a page passes preparation, tuples are evaluated in returned order. A
 successful membership check and any applicable true condition grant access
@@ -234,14 +239,20 @@ upstream-equivalence claim for malformed custom-store results. The protected
 handler runs only after an allow.
 
 `EvaluationLimits::default()` bounds each check to 10,000 tuples scanned, 64
-relation traversal steps, 1,024 store page reads, 100,000 expression/tuple work
-units, and CEL condition cost 100. Applications can configure these limits
-when binding a store; the condition-cost limit can be raised up to 100,000.
-Condition contexts accepted by the in-memory and PostgreSQL stores are limited to
-65,536 serialized JSON bytes and 10,000 collection entries. Evaluation also
-accounts for request and custom-store context conversion against the condition
-budget.
-Tuple, store-call, work, and CEL budgets are shared across nested traversals.
+relation traversal steps, 1,024 store page reads, and 100,000 expression/tuple
+work units, and bounds each condition evaluation to an estimated CEL cost of
+100. Applications can configure these limits when binding a store; the
+condition-cost limit can be raised up to 100,000. A condition's estimated cost
+counts its expression nodes, its input values (one unit per scalar or
+collection entry, one per 10 string bytes), and `matches` calls (input string
+cost times one unit per 4 pattern bytes), after the cost factors used by
+cel-go. Condition contexts accepted by the in-memory and PostgreSQL stores are
+limited to 65,536 serialized JSON bytes and 10,000 collection entries; the same
+limits apply to each custom-store context and request value during evaluation.
+Request values are converted once per check. Context conversion and every
+condition evaluation, including failed attempts, also consume the check's work
+budget, which bounds condition work across the whole check.
+Tuple, store-call, and work budgets are shared across nested traversals.
 Every tuple in a fetched page counts against the tuple and work budgets, even
 when an earlier tuple in that page grants access. Each active traversal holds
 at most one tuple page and its prepared metadata, plus bounded cursor history;

@@ -8,8 +8,10 @@ use relgraph_dsl::{
 
 use super::conditions::{self, CompiledCondition};
 use super::request::{
-    CapabilityDiagnostic, ConstructionError, RelationLocation, RuntimeCapability,
+    AuthorizationError, CapabilityDiagnostic, ConstructionError, RelationLocation,
+    RuntimeCapability,
 };
+use super::store::{RelationshipTuple, TupleSubject};
 
 /// The immutable model shared by all lifecycle handles.
 #[derive(Debug)]
@@ -264,15 +266,127 @@ impl CompiledModel {
         self.tuple_to_userset_edges[edge_id]
     }
 
-    pub(crate) fn tuple_to_userset_computed_name(
+    /// Validates a tuple against this model with the checks a read applies.
+    ///
+    /// The relation must accept directly assigned tuples, the subject and
+    /// condition must match one of its declared targets, and any stored
+    /// condition context must convert to the declared parameter types.
+    pub(crate) fn validate_tuple(
         &self,
-        edge_range: CompiledTargetRange,
-    ) -> Option<&str> {
-        (edge_range.start..edge_range.start + edge_range.len).find_map(|edge_id| {
-            self.tuple_to_userset_edge(edge_id)
-                .computed_relation_id
-                .map(|relation_id| self.relation_name(relation_id))
-        })
+        tuple: &RelationshipTuple,
+    ) -> Result<(), AuthorizationError> {
+        let object_type = tuple.object().type_name().as_str();
+        let type_id = self
+            .type_id(object_type)
+            .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type.to_owned()))?;
+        let relation_id = self
+            .relation_id(type_id, tuple.relation().as_str())
+            .ok_or_else(|| AuthorizationError::UnknownRelation {
+                object_type: object_type.to_owned(),
+                relation: tuple.relation().as_str().to_owned(),
+            })?;
+
+        // A check reads this relation's tuples for each direct assignment in
+        // its expression tree; other operands refer to other relations.
+        let mut pending = vec![self.relation_expression_id(relation_id)];
+        let mut first_error = None;
+        let mut matched = false;
+        while let Some(expression_id) = pending.pop() {
+            match self.expression(expression_id) {
+                CompiledExpression::DirectAssignment(targets) => {
+                    match self.validate_assignment_subject(tuple, &targets) {
+                        Ok(()) => {
+                            matched = true;
+                            break;
+                        }
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                }
+                CompiledExpression::Union { left, right }
+                | CompiledExpression::Intersection { left, right }
+                | CompiledExpression::Difference { left, right } => {
+                    pending.extend([right, left]);
+                }
+                CompiledExpression::ComputedUserset(_)
+                | CompiledExpression::TupleToUserset { .. } => {}
+            }
+        }
+        if !matched {
+            return Err(first_error.unwrap_or(AuthorizationError::InvalidTuple(
+                "relation does not accept directly assigned tuples",
+            )));
+        }
+
+        if let Some(context) = tuple.condition() {
+            let condition =
+                self.condition(context.name().as_str())
+                    .ok_or(AuthorizationError::InvalidTuple(
+                        "tuple condition is absent from the authorization model",
+                    ))?;
+            let mut work = 0;
+            condition.validate_stored_context(context.values(), &mut work)?;
+        }
+        Ok(())
+    }
+
+    /// Confirms that a tuple subject is one of the model's declared targets.
+    pub(crate) fn validate_assignment_subject(
+        &self,
+        tuple: &RelationshipTuple,
+        targets: &CompiledTargetRange,
+    ) -> Result<(), AuthorizationError> {
+        let (subject_type, restriction) = match tuple.subject() {
+            TupleSubject::Direct(subject) => (subject.type_name().as_str(), None),
+            TupleSubject::Userset { object, relation } => {
+                (object.type_name().as_str(), Some(relation.as_str()))
+            }
+            TupleSubject::TypedWildcard(type_name) => (type_name.as_str(), Some("*")),
+        };
+        let type_id = self
+            .type_id(subject_type)
+            .ok_or(AuthorizationError::InvalidTuple(
+                "tuple subject type is absent from the authorization model",
+            ))?;
+        let restriction = match restriction {
+            None => CompiledTargetRestriction::Direct,
+            Some("*") => CompiledTargetRestriction::Wildcard,
+            Some(relation) => CompiledTargetRestriction::Userset(
+                self.relation_id(type_id, relation)
+                    .ok_or(AuthorizationError::InvalidTuple(
+                        "tuple userset relation is absent from the authorization model",
+                    ))?,
+            ),
+        };
+        let matches = (targets.start..targets.start + targets.len).any(|target_id| {
+            let target = self.target(target_id);
+            target.type_id == type_id
+                && target.restriction.matches(restriction)
+                && self.condition_matches(target.condition_id, tuple)
+        });
+        if matches {
+            Ok(())
+        } else {
+            Err(AuthorizationError::InvalidTuple(
+                "tuple subject is incompatible with the relation restriction",
+            ))
+        }
+    }
+
+    /// Returns whether a tuple carries exactly the condition a target declares.
+    pub(crate) fn condition_matches(
+        &self,
+        condition_id: Option<usize>,
+        tuple: &RelationshipTuple,
+    ) -> bool {
+        match (condition_id, tuple.condition()) {
+            (None, None) => true,
+            (Some(expected), Some(context)) => {
+                self.condition_id(context.name().as_str()) == Some(expected)
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn condition_id(&self, name: &str) -> Option<usize> {

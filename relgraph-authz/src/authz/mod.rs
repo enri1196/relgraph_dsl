@@ -149,6 +149,19 @@ impl<State> FgaAuthz<State> {
         self.compiled.schema()
     }
 
+    /// Validates a relationship tuple against this model before it is written.
+    ///
+    /// Checks reject a whole page of tuples when any tuple in it does not fit
+    /// the model, so writers should call this before inserting a tuple. It
+    /// verifies that the object type and relation exist, that the relation
+    /// accepts directly assigned tuples, that the subject and condition match
+    /// one of the relation's declared targets, and that a stored condition
+    /// context converts to the declared parameter types. It does not check the
+    /// tuple's tenant or authorize the write.
+    pub fn validate_tuple(&self, tuple: &RelationshipTuple) -> Result<(), AuthorizationError> {
+        self.compiled.validate_tuple(tuple)
+    }
+
     /// Returns an opaque identity shared by clones of this compiled model.
     pub fn model_identity(&self) -> ModelIdentity {
         self.model_identity.clone()

@@ -6,7 +6,6 @@
     "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
   },
   "model_file": "conditions.fga",
-  "local_max_condition_cost": 512,
   "model": {
     "schema_version": "1.1",
     "type_definitions": [

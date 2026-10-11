@@ -939,14 +939,6 @@ impl<State> FgaAuthz<State> {
     }
 }
 
-enum RequirementDependency {
-    Resolved(usize),
-    MissingRelation {
-        object_type: String,
-        relation: String,
-    },
-}
-
 fn build_requirements(
     compiled: &CompiledModel,
     object_type: &str,
@@ -962,22 +954,10 @@ fn build_requirements(
             object_type: object_type.to_owned(),
             relation: relation.to_owned(),
         })?;
-    let mut pending = vec![RequirementDependency::Resolved(root_relation_id)];
+    let mut pending = vec![root_relation_id];
     let mut visited = std::collections::HashSet::new();
     let mut relations = BTreeMap::new();
-    while let Some(dependency) = pending.pop() {
-        let relation_id = match dependency {
-            RequirementDependency::Resolved(relation_id) => relation_id,
-            RequirementDependency::MissingRelation {
-                object_type,
-                relation,
-            } => {
-                return Err(PolicyError::UnknownRelation {
-                    object_type,
-                    relation,
-                });
-            }
-        };
+    while let Some(relation_id) = pending.pop() {
         if !visited.insert(relation_id) {
             continue;
         }
@@ -998,7 +978,7 @@ fn build_requirements(
 fn describe_compiled_expression(
     compiled: &CompiledModel,
     expression_id: usize,
-    dependencies: &mut Vec<RequirementDependency>,
+    dependencies: &mut Vec<usize>,
 ) -> Result<RequirementExpression, PolicyError> {
     Ok(match compiled.expression(expression_id) {
         CompiledExpression::DirectAssignment(targets) => {
@@ -1008,7 +988,7 @@ fn describe_compiled_expression(
                 let subject_relation = match target.restriction {
                     CompiledTargetRestriction::Direct | CompiledTargetRestriction::Wildcard => None,
                     CompiledTargetRestriction::Userset(relation_id) => {
-                        dependencies.push(RequirementDependency::Resolved(relation_id));
+                        dependencies.push(relation_id);
                         Some(compiled.relation_name(relation_id).to_owned())
                     }
                 };
@@ -1028,7 +1008,7 @@ fn describe_compiled_expression(
             RequirementExpression::DirectAssignment(assignments)
         }
         CompiledExpression::ComputedUserset(relation_id) => {
-            dependencies.push(RequirementDependency::Resolved(relation_id));
+            dependencies.push(relation_id);
             let dependency = RelationKey::new(
                 compiled.type_name(compiled.relation_owner_type_id(relation_id)),
                 compiled.relation_name(relation_id),
@@ -1040,32 +1020,24 @@ fn describe_compiled_expression(
             edge_range,
         } => {
             let tupleset = tupleset_relation_id;
-            dependencies.push(RequirementDependency::Resolved(tupleset));
+            dependencies.push(tupleset);
             let mut computed_usersets = BTreeSet::new();
-            let computed_name = compiled
-                .tuple_to_userset_computed_name(edge_range)
-                .expect("validated tupleset has a computed relation target");
             for edge_id in edge_range.start..edge_range.start + edge_range.len {
                 let edge = compiled.tuple_to_userset_edge(edge_id);
                 let target = compiled.target(edge.target_id);
                 if matches!(target.restriction, CompiledTargetRestriction::Wildcard) {
                     continue;
                 }
-                if let Some(computed_relation_id) = edge.computed_relation_id {
-                    dependencies.push(RequirementDependency::Resolved(computed_relation_id));
-                    computed_usersets.insert(RelationKey::new(
-                        compiled.type_name(compiled.relation_owner_type_id(computed_relation_id)),
-                        compiled.relation_name(computed_relation_id),
-                    ));
-                } else {
-                    let object_type = compiled.type_name(target.type_id).to_owned();
-                    dependencies.push(RequirementDependency::MissingRelation {
-                        object_type: object_type.clone(),
-                        relation: computed_name.to_owned(),
-                    });
-                    computed_usersets
-                        .insert(RelationKey::new(object_type, computed_name.to_owned()));
-                }
+                // Target types without the computed relation cannot grant and
+                // are skipped by evaluation.
+                let Some(computed_relation_id) = edge.computed_relation_id else {
+                    continue;
+                };
+                dependencies.push(computed_relation_id);
+                computed_usersets.insert(RelationKey::new(
+                    compiled.type_name(compiled.relation_owner_type_id(computed_relation_id)),
+                    compiled.relation_name(computed_relation_id),
+                ));
             }
             RequirementExpression::TupleToUserset {
                 tupleset: RelationKey::new(

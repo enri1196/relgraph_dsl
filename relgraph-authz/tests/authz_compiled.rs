@@ -78,13 +78,24 @@ fn public_requirements_follow_compiled_nodes_and_resolved_edges() {
 }
 
 #[test]
-fn requirements_report_tuple_targets_without_the_computed_relation() {
+fn requirements_omit_tuple_targets_without_the_computed_relation() {
     let definition = "model\nschema 1.1\ntype user\ntype folder\n  relations\n    define reader: [user]\ntype team\ntype document\n  relations\n    define parent: [folder, team]\n    define reader: reader from parent\n";
     let model = FgaAuthz::new(definition).unwrap();
-    let error = model.requirements("document", "reader").unwrap_err();
-    assert!(matches!(
-        error,
-        relgraph_authz::PolicyError::UnknownRelation { object_type, relation }
-            if object_type == "team" && relation == "reader"
-    ));
+    let requirements = model.requirements("document", "reader").unwrap();
+    let root = &requirements.relations()[&relgraph_authz::RelationKey::new("document", "reader")];
+    let relgraph_authz::RequirementExpression::TupleToUserset {
+        computed_usersets, ..
+    } = root.expression()
+    else {
+        panic!("document reader is a tuple-to-userset");
+    };
+    assert_eq!(
+        computed_usersets,
+        &[relgraph_authz::RelationKey::new("folder", "reader")]
+    );
+    assert!(
+        requirements
+            .relations()
+            .contains_key(&relgraph_authz::RelationKey::new("folder", "reader"))
+    );
 }

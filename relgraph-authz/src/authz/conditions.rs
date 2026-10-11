@@ -24,182 +24,89 @@ use super::request::{AuthorizationError, ConditionContextSource, ConstructionErr
 
 const MAX_CONDITION_SOURCE_BYTES: usize = 65_536;
 const MAX_CONDITION_AST_NODES: usize = 10_000;
-const MAX_CONTEXT_CONVERSIONS: usize = 10_000;
+/// String bytes per CEL cost unit, after cel-go's string traversal factor.
+const STRING_BYTES_PER_COST_UNIT: usize = 10;
+/// Regex pattern bytes per CEL cost unit, after cel-go's regex length factor.
+const REGEX_PATTERN_BYTES_PER_COST_UNIT: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct CompiledCondition {
     name: String,
     parameters: HashMap<String, ParameterType>,
-    used_parameters: BTreeSet<String>,
+    /// Declared parameters referenced by the expression, in sorted order.
+    used_parameters: Vec<String>,
     program: Program,
     static_cost: usize,
     has_regex: bool,
     regex_pattern_bytes: usize,
 }
 
-/// Per-check accounting for condition input conversion and CEL execution.
+/// Size accounting for one stored tuple context or one request value.
 ///
-/// Work is charged before parsing, cloning, or allocating converted values so
-/// failed attempts and unused persisted values consume the same bounded budget.
-pub(crate) struct ConditionBudget {
-    maximum_cost: usize,
-    cost_used: usize,
-    context_bytes_used: usize,
-    context_elements_used: usize,
-    conversions_used: usize,
+/// Byte and element limits apply to each context independently, so a check
+/// that visits many conditioned tuples is bounded by the evaluator's tuple and
+/// work budgets rather than failing on a sum of individually valid contexts.
+/// Sizes are charged before values are cloned or allocated.
+#[derive(Default)]
+struct ContextBudget {
+    bytes: usize,
+    elements: usize,
+    work: usize,
 }
 
-impl ConditionBudget {
-    pub(crate) fn new(maximum_cost: usize) -> Self {
-        Self {
-            maximum_cost,
-            cost_used: 0,
-            context_bytes_used: 0,
-            context_elements_used: 0,
-            conversions_used: 0,
-        }
-    }
-
-    fn charge_work(&mut self, amount: usize) -> Result<(), AuthorizationError> {
-        let estimated_cost = self.cost_used.saturating_add(amount);
-        if estimated_cost > self.maximum_cost {
-            self.cost_used = self.maximum_cost;
-            return Err(AuthorizationError::ConditionCostLimitExceeded {
-                maximum_cost: self.maximum_cost,
-                estimated_cost,
-            });
-        }
-        self.cost_used = estimated_cost;
-        Ok(())
-    }
-
-    fn ensure_work(&mut self, amount: usize) -> Result<(), AuthorizationError> {
-        let estimated_cost = self.cost_used.saturating_add(amount);
-        if estimated_cost > self.maximum_cost {
-            self.cost_used = self.maximum_cost;
-            return Err(AuthorizationError::ConditionCostLimitExceeded {
-                maximum_cost: self.maximum_cost,
-                estimated_cost,
-            });
-        }
-        Ok(())
-    }
-
-    fn charge_context_bytes(
-        &mut self,
-        amount: usize,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<(), AuthorizationError> {
-        let total = self.context_bytes_used.saturating_add(amount);
+impl ContextBudget {
+    fn charge_bytes(&mut self, amount: usize) -> Result<(), String> {
+        let total = self.bytes.saturating_add(amount);
         if total > super::store::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES {
-            self.context_bytes_used = super::store::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES;
-            return Err(invalid_context(
-                condition,
-                parameter,
-                source,
-                format!(
-                    "condition context totaling at most {} bytes",
-                    super::store::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES
-                ),
+            return Err(format!(
+                "condition context totaling at most {} bytes",
+                super::store::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES
             ));
         }
-        self.context_bytes_used = total;
+        self.bytes = total;
         Ok(())
     }
 
-    fn charge_elements(
-        &mut self,
-        amount: usize,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<(), AuthorizationError> {
-        let total = self.context_elements_used.saturating_add(amount);
+    fn charge_elements(&mut self, amount: usize) -> Result<(), String> {
+        let total = self.elements.saturating_add(amount);
         if total > super::store::MAX_CONDITION_CONTEXT_ELEMENTS {
-            self.context_elements_used = super::store::MAX_CONDITION_CONTEXT_ELEMENTS;
-            return Err(invalid_context(
-                condition,
-                parameter,
-                source,
-                format!(
-                    "condition context with at most {} elements",
-                    super::store::MAX_CONDITION_CONTEXT_ELEMENTS
-                ),
+            return Err(format!(
+                "condition context with at most {} elements",
+                super::store::MAX_CONDITION_CONTEXT_ELEMENTS
             ));
         }
-        self.context_elements_used = total;
+        self.elements = total;
         Ok(())
     }
 
-    fn ensure_conversions(
-        &mut self,
-        amount: usize,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<(), AuthorizationError> {
-        if self.conversions_used.saturating_add(amount) > MAX_CONTEXT_CONVERSIONS {
-            self.conversions_used = MAX_CONTEXT_CONVERSIONS;
-            return Err(invalid_context(
-                condition,
-                parameter,
-                source,
-                format!("at most {MAX_CONTEXT_CONVERSIONS} converted condition values"),
-            ));
-        }
-        Ok(())
-    }
-
-    fn charge_conversion(
-        &mut self,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<(), AuthorizationError> {
-        self.ensure_conversions(1, condition, parameter, source)?;
-        self.conversions_used += 1;
-        Ok(())
-    }
-
-    fn charge_string(
-        &mut self,
-        length: usize,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<InputCost, AuthorizationError> {
-        self.charge_context_bytes(length, condition, parameter, source)?;
-        self.charge_work(length.max(1))?;
+    fn charge_string(&mut self, length: usize) -> Result<InputCost, String> {
+        self.charge_bytes(length)?;
+        let units = string_cost(length);
+        self.work = self.work.saturating_add(units);
         Ok(InputCost {
-            units: length.max(1),
+            units,
             string_bytes: length,
         })
     }
 
-    fn charge_map_key(
-        &mut self,
-        key: &str,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<usize, AuthorizationError> {
-        self.charge_context_bytes(key.len(), condition, parameter, source)?;
-        self.charge_work(key.len().max(1))?;
-        Ok(key.len().max(1))
+    fn charge_scalar(&mut self) -> InputCost {
+        self.work = self.work.saturating_add(1);
+        InputCost {
+            units: 1,
+            string_bytes: 0,
+        }
     }
+}
 
-    fn charge_parameter_key(
-        &mut self,
-        key: &str,
-        condition: &str,
-        parameter: &str,
-        source: ConditionContextSource,
-    ) -> Result<(), AuthorizationError> {
-        self.charge_context_bytes(key.len(), condition, parameter, source)?;
-        self.charge_work(1)
-    }
+/// Request values converted once per check, keyed by condition name and the
+/// index of the parameter in [`CompiledCondition::used_parameters`].
+///
+/// A request is immutable for the duration of a check, so each value resolves
+/// identically for every tuple that uses the condition. Conversion failures are
+/// cached as the expected-type description of the resulting error.
+#[derive(Default)]
+pub(crate) struct RequestValueCache {
+    conditions: HashMap<String, Vec<Option<Result<PreparedConditionValue, String>>>>,
 }
 
 #[derive(Debug)]
@@ -207,7 +114,7 @@ pub(crate) struct PreparedConditionContext {
     values: BTreeMap<String, PreparedConditionValue>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct PreparedConditionValue {
     value: Value,
     input_cost: InputCost,
@@ -297,7 +204,9 @@ fn compile_one(definition: &ConditionDefinition) -> Result<CompiledCondition, St
         parameters: parameter_types,
         used_parameters,
         program,
-        static_cost: profile.nodes.saturating_add(profile.literal_bytes),
+        static_cost: profile
+            .nodes
+            .saturating_add(profile.literal_bytes.div_ceil(STRING_BYTES_PER_COST_UNIT)),
         has_regex: profile.has_regex,
         regex_pattern_bytes: profile.regex_pattern_bytes,
     })
@@ -392,11 +301,9 @@ fn inspect_expression(
             }
             if function == "matches" {
                 profile.has_regex = true;
-                profile.regex_pattern_bytes = profile.regex_pattern_bytes.saturating_add(
-                    args.iter()
-                        .map(|arg| expression_literal_bytes(arg))
-                        .sum::<usize>(),
-                );
+                profile.regex_pattern_bytes = profile
+                    .regex_pattern_bytes
+                    .saturating_add(args.iter().map(expression_literal_bytes).sum::<usize>());
             }
             inspect_expression(expr, profile)?;
             for argument in args {
@@ -517,47 +424,43 @@ pub(super) fn cel_type(parameter_type: &ParameterType) -> Option<CelType> {
 impl CompiledCondition {
     /// Validates all supplied tuple metadata while allowing the request to fill
     /// parameters that the persisted context omitted.
+    ///
+    /// Conversion work is added to `work` whether or not validation succeeds.
     pub(crate) fn validate_stored_context(
         &self,
         values: &BTreeMap<String, JsonValue>,
-        budget: &mut ConditionBudget,
+        work: &mut usize,
     ) -> Result<PreparedConditionContext, AuthorizationError> {
-        budget.charge_elements(
-            values.len(),
-            &self.name,
-            "<context>",
-            ConditionContextSource::StoredTuple,
-        )?;
-        budget.ensure_conversions(
-            values.len(),
-            &self.name,
-            "<context>",
-            ConditionContextSource::StoredTuple,
-        )?;
-        budget.ensure_work(values.len())?;
+        let mut budget = ContextBudget::default();
+        let prepared = self.prepare_stored_context(values, &mut budget);
+        *work = work.saturating_add(budget.work);
+        prepared
+    }
+
+    fn prepare_stored_context(
+        &self,
+        values: &BTreeMap<String, JsonValue>,
+        budget: &mut ContextBudget,
+    ) -> Result<PreparedConditionContext, AuthorizationError> {
+        let source = ConditionContextSource::StoredTuple;
+        budget
+            .charge_elements(values.len())
+            .map_err(|expected| invalid_context(&self.name, "<context>", source, expected))?;
         let mut prepared = BTreeMap::new();
         for (name, value) in values {
-            budget.charge_parameter_key(
-                name,
-                &self.name,
-                name,
-                ConditionContextSource::StoredTuple,
-            )?;
+            budget
+                .charge_bytes(name.len())
+                .map_err(|expected| invalid_context(&self.name, name, source, expected))?;
+            budget.work = budget.work.saturating_add(1);
             let Some(parameter_type) = self.parameters.get(name) else {
                 return Err(AuthorizationError::UndeclaredConditionContext {
                     condition: self.name.clone(),
                     parameter: name.clone(),
-                    source: ConditionContextSource::StoredTuple,
+                    source,
                 });
             };
-            let (converted, input_cost) = convert_value(
-                value,
-                parameter_type,
-                &self.name,
-                name,
-                ConditionContextSource::StoredTuple,
-                budget,
-            )?;
+            let (converted, input_cost) = convert_value(value, parameter_type, budget)
+                .map_err(|expected| invalid_context(&self.name, name, source, expected))?;
             prepared.insert(
                 name.clone(),
                 PreparedConditionValue {
@@ -569,66 +472,63 @@ impl CompiledCondition {
         Ok(PreparedConditionContext { values: prepared })
     }
 
+    /// Evaluates the condition with stored values taking precedence over
+    /// condition-scoped and then global request values.
+    ///
+    /// `maximum_cost` bounds this one evaluation. Its estimated cost and any
+    /// request conversion work are added to `work` even when evaluation fails,
+    /// so the evaluator's work budget bounds the check as a whole.
     pub(crate) fn evaluate(
         &self,
         mut tuple_values: Option<PreparedConditionContext>,
         condition_request_values: Option<&BTreeMap<String, JsonValue>>,
         request_values: &BTreeMap<String, JsonValue>,
-        budget: &mut ConditionBudget,
+        request_cache: &mut RequestValueCache,
+        maximum_cost: usize,
+        work: &mut usize,
     ) -> Result<ConditionEvaluation, AuthorizationError> {
         // A failed CEL attempt still consumes its static evaluation work.
-        budget.charge_work(self.static_cost)?;
+        *work = work.saturating_add(self.static_cost);
+        check_cost(self.static_cost, maximum_cost)?;
         let mut activation = MapActivation::new();
         let mut input_cost = InputCost::default();
-        for name in &self.used_parameters {
-            let parameter_type = self
-                .parameters
-                .get(name)
-                .expect("used CEL variable is declared in the condition schema");
-            let (converted, contribution) = if let Some(value) = tuple_values
+        for (index, name) in self.used_parameters.iter().enumerate() {
+            let prepared = if let Some(value) = tuple_values
                 .as_mut()
                 .and_then(|context| context.values.remove(name))
             {
-                (value.value, value.input_cost)
-            } else if let Some(value) = condition_request_values.and_then(|values| values.get(name))
-            {
-                convert_value(
-                    value,
-                    parameter_type,
-                    &self.name,
-                    name,
-                    ConditionContextSource::Request,
-                    budget,
-                )?
-            } else if let Some(value) = request_values.get(name) {
-                convert_value(
-                    value,
-                    parameter_type,
-                    &self.name,
-                    name,
-                    ConditionContextSource::Request,
-                    budget,
-                )?
+                value
             } else {
-                return Err(AuthorizationError::MissingConditionContext {
-                    condition: self.name.clone(),
-                    parameter: name.clone(),
-                });
+                let Some(value) = condition_request_values
+                    .and_then(|values| values.get(name))
+                    .or_else(|| request_values.get(name))
+                else {
+                    return Err(AuthorizationError::MissingConditionContext {
+                        condition: self.name.clone(),
+                        parameter: name.clone(),
+                    });
+                };
+                self.cached_request_value(index, value, request_cache, work)?
             };
-            input_cost.units = input_cost.units.saturating_add(contribution.units);
+            input_cost.units = input_cost.units.saturating_add(prepared.input_cost.units);
             input_cost.string_bytes = input_cost
                 .string_bytes
-                .saturating_add(contribution.string_bytes);
-            activation.insert(name.clone(), converted);
+                .saturating_add(prepared.input_cost.string_bytes);
+            activation.insert(name.clone(), prepared.value);
         }
 
+        let mut cost = self.static_cost.saturating_add(input_cost.units);
         if self.has_regex {
-            let regex_cost = self
-                .regex_pattern_bytes
-                .max(1)
-                .saturating_mul(input_cost.string_bytes.max(1));
-            budget.charge_work(regex_cost)?;
+            cost = cost.saturating_add(
+                string_cost(input_cost.string_bytes).saturating_mul(
+                    self.regex_pattern_bytes
+                        .div_ceil(REGEX_PATTERN_BYTES_PER_COST_UNIT)
+                        .max(1),
+                ),
+            );
         }
+        *work = work.saturating_add(cost - self.static_cost);
+        check_cost(cost, maximum_cost)?;
 
         let result = self.program.eval(&activation);
         let allowed = match result {
@@ -648,56 +548,87 @@ impl CompiledCondition {
         };
         Ok(ConditionEvaluation { allowed })
     }
+
+    /// Converts one request value on first use in a check and reuses it after.
+    fn cached_request_value(
+        &self,
+        index: usize,
+        value: &JsonValue,
+        cache: &mut RequestValueCache,
+        work: &mut usize,
+    ) -> Result<PreparedConditionValue, AuthorizationError> {
+        if !cache.conditions.contains_key(self.name.as_str()) {
+            cache
+                .conditions
+                .insert(self.name.clone(), vec![None; self.used_parameters.len()]);
+        }
+        let slot = &mut cache
+            .conditions
+            .get_mut(self.name.as_str())
+            .expect("condition cache entry was inserted above")[index];
+        let name = &self.used_parameters[index];
+        let cached = slot.get_or_insert_with(|| {
+            let parameter_type = self
+                .parameters
+                .get(name)
+                .expect("used CEL variable is declared in the condition schema");
+            let mut budget = ContextBudget::default();
+            let converted = convert_value(value, parameter_type, &mut budget);
+            *work = work.saturating_add(budget.work);
+            converted.map(|(value, input_cost)| PreparedConditionValue { value, input_cost })
+        });
+        cached.clone().map_err(|expected| {
+            invalid_context(&self.name, name, ConditionContextSource::Request, expected)
+        })
+    }
 }
 
+/// Rejects an evaluation whose estimated cost exceeds the per-evaluation limit.
+fn check_cost(estimated_cost: usize, maximum_cost: usize) -> Result<(), AuthorizationError> {
+    if estimated_cost > maximum_cost {
+        return Err(AuthorizationError::ConditionCostLimitExceeded {
+            maximum_cost,
+            estimated_cost,
+        });
+    }
+    Ok(())
+}
+
+/// CEL cost of traversing a string of `length` bytes; never less than one.
+fn string_cost(length: usize) -> usize {
+    length.div_ceil(STRING_BYTES_PER_COST_UNIT).max(1)
+}
+
+/// Converts one JSON value to its declared CEL type.
+///
+/// Errors describe the expected value for an `InvalidConditionContext` error.
 fn convert_value(
     value: &JsonValue,
     parameter_type: &ParameterType,
-    condition: &str,
-    parameter: &str,
-    source: ConditionContextSource,
-    budget: &mut ConditionBudget,
-) -> Result<(Value, InputCost), AuthorizationError> {
-    budget.charge_conversion(condition, parameter, source)?;
+    budget: &mut ContextBudget,
+) -> Result<(Value, InputCost), String> {
     match parameter_type {
         ParameterType::Simple(name) => {
-            let expected = format!("a {name} value");
-            let input_cost = if let Some(text) = value.as_str() {
-                budget.charge_string(text.len(), condition, parameter, source)?
-            } else {
-                budget.charge_work(1)?;
-                InputCost {
-                    units: 1,
-                    string_bytes: 0,
-                }
+            let expected = || format!("a {name} value");
+            let input_cost = match value.as_str() {
+                Some(text) => budget.charge_string(text.len())?,
+                None => budget.charge_scalar(),
             };
-            match name.as_str() {
+            let converted = match name.as_str() {
                 "bool" => match value {
-                    JsonValue::Bool(value) => Ok((Value::Bool(*value), input_cost)),
-                    JsonValue::String(value) if value == "true" => {
-                        Ok((Value::Bool(true), input_cost))
-                    }
-                    JsonValue::String(value) if value == "false" => {
-                        Ok((Value::Bool(false), input_cost))
-                    }
-                    _ => Err(invalid_context(condition, parameter, source, expected)),
+                    JsonValue::Bool(value) => Some(Value::Bool(*value)),
+                    JsonValue::String(value) if value == "true" => Some(Value::Bool(true)),
+                    JsonValue::String(value) if value == "false" => Some(Value::Bool(false)),
+                    _ => None,
                 },
-                "int" => {
-                    let value = value
-                        .as_i64()
-                        .or_else(|| value.as_str().and_then(|text| text.parse().ok()));
-                    value
-                        .map(|value| (Value::Int(value), input_cost))
-                        .ok_or_else(|| invalid_context(condition, parameter, source, expected))
-                }
-                "uint" => {
-                    let value = value
-                        .as_u64()
-                        .or_else(|| value.as_str().and_then(|text| text.parse().ok()));
-                    value
-                        .map(|value| (Value::UInt(value), input_cost))
-                        .ok_or_else(|| invalid_context(condition, parameter, source, expected))
-                }
+                "int" => value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+                    .map(Value::Int),
+                "uint" => value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+                    .map(Value::UInt),
                 "double" => {
                     let value = match value {
                         JsonValue::Number(number) => exact_double(number),
@@ -706,75 +637,46 @@ fn convert_value(
                         }
                         _ => None,
                     };
-                    value
+                    return value
                         .map(|value| (Value::Double(value), input_cost))
-                        .ok_or_else(|| {
-                            invalid_context(
-                                condition,
-                                parameter,
-                                source,
-                                "a finite double value without a lossy conversion".into(),
-                            )
-                        })
+                        .ok_or_else(|| "a finite double value without a lossy conversion".into());
                 }
                 "string" => value
                     .as_str()
-                    .map(|value| (Value::String(value.to_owned().into()), input_cost))
-                    .ok_or_else(|| invalid_context(condition, parameter, source, expected)),
-                "duration" => value
-                    .as_str()
-                    .and_then(|value| cel_core::time::parse_duration(value).ok())
-                    .map(|value| (Value::from(value), input_cost))
-                    .ok_or_else(|| {
-                        invalid_context(
-                            condition,
-                            parameter,
-                            source,
-                            "a valid CEL duration string".into(),
-                        )
-                    }),
-                "timestamp" => value
-                    .as_str()
-                    .and_then(|value| cel_core::time::parse_timestamp(value).ok())
-                    .map(|value| (Value::from(value), input_cost))
-                    .ok_or_else(|| {
-                        invalid_context(
-                            condition,
-                            parameter,
-                            source,
-                            "an RFC3339 timestamp string".into(),
-                        )
-                    }),
-                _ => Err(invalid_context(
-                    condition,
-                    parameter,
-                    source,
-                    "a value with a supported CEL scalar type".into(),
-                )),
-            }
+                    .map(|value| Value::String(value.to_owned().into())),
+                "duration" => {
+                    return value
+                        .as_str()
+                        .and_then(|value| cel_core::time::parse_duration(value).ok())
+                        .map(|value| (Value::from(value), input_cost))
+                        .ok_or_else(|| "a valid CEL duration string".into());
+                }
+                "timestamp" => {
+                    return value
+                        .as_str()
+                        .and_then(|value| cel_core::time::parse_timestamp(value).ok())
+                        .map(|value| (Value::from(value), input_cost))
+                        .ok_or_else(|| "an RFC3339 timestamp string".into());
+                }
+                _ => return Err("a value with a supported CEL scalar type".into()),
+            };
+            converted
+                .map(|value| (value, input_cost))
+                .ok_or_else(expected)
         }
         ParameterType::Generic { container, inner } => {
             let inner_type = ParameterType::Simple(inner.clone());
             match (container.as_str(), value) {
                 ("list", JsonValue::Array(values)) => {
-                    budget.charge_work(1)?;
-                    budget.charge_elements(values.len(), condition, parameter, source)?;
-                    budget.ensure_conversions(values.len(), condition, parameter, source)?;
-                    budget.ensure_work(values.len())?;
-                    let mut converted = Vec::new();
+                    budget.charge_elements(values.len())?;
+                    budget.work = budget.work.saturating_add(1);
+                    let mut converted = Vec::with_capacity(values.len());
                     let mut total = InputCost {
                         units: 1,
                         string_bytes: 0,
                     };
                     for value in values {
-                        let (value, cost) = convert_value(
-                            value,
-                            &inner_type,
-                            condition,
-                            parameter,
-                            source,
-                            budget,
-                        )?;
+                        let (value, cost) = convert_value(value, &inner_type, budget)?;
                         total.units = total.units.saturating_add(cost.units);
                         total.string_bytes = total.string_bytes.saturating_add(cost.string_bytes);
                         converted.push(value);
@@ -782,55 +684,31 @@ fn convert_value(
                     Ok((Value::list(converted), total))
                 }
                 ("map", JsonValue::Object(values)) => {
-                    budget.charge_work(1)?;
-                    budget.charge_elements(values.len(), condition, parameter, source)?;
-                    budget.ensure_conversions(values.len(), condition, parameter, source)?;
-                    budget.ensure_work(values.len().saturating_mul(2))?;
-                    let mut converted = Vec::new();
+                    budget.charge_elements(values.len())?;
+                    budget.work = budget.work.saturating_add(1);
+                    let mut converted = Vec::with_capacity(values.len());
                     let mut total = InputCost {
                         units: 1,
                         string_bytes: 0,
                     };
                     for (key, value) in values {
-                        let key_cost = budget.charge_map_key(key, condition, parameter, source)?;
-                        let (value, cost) = convert_value(
-                            value,
-                            &inner_type,
-                            condition,
-                            parameter,
-                            source,
-                            budget,
-                        )?;
+                        let key_cost = budget.charge_string(key.len())?;
+                        let (value, cost) = convert_value(value, &inner_type, budget)?;
                         total.units = total
                             .units
-                            .saturating_add(key_cost)
+                            .saturating_add(key_cost.units)
                             .saturating_add(cost.units);
                         total.string_bytes = total
                             .string_bytes
-                            .saturating_add(key.len())
+                            .saturating_add(key_cost.string_bytes)
                             .saturating_add(cost.string_bytes);
                         converted.push((key.clone(), value));
                     }
                     Ok((Value::map(converted), total))
                 }
-                ("list", _) => Err(invalid_context(
-                    condition,
-                    parameter,
-                    source,
-                    "a list value".into(),
-                )),
-                ("map", _) => Err(invalid_context(
-                    condition,
-                    parameter,
-                    source,
-                    "a string-keyed map value".into(),
-                )),
-                _ => Err(invalid_context(
-                    condition,
-                    parameter,
-                    source,
-                    "a value with a supported CEL collection type".into(),
-                )),
+                ("list", _) => Err("a list value".into()),
+                ("map", _) => Err("a string-keyed map value".into()),
+                _ => Err("a value with a supported CEL collection type".into()),
             }
         }
     }
@@ -853,7 +731,9 @@ fn invalid_context(
 fn exact_double(number: &serde_json::Number) -> Option<f64> {
     if let Some(value) = number.as_i64() {
         const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_992;
-        return (value >= -MAX_EXACT_INTEGER && value <= MAX_EXACT_INTEGER).then_some(value as f64);
+        return (-MAX_EXACT_INTEGER..=MAX_EXACT_INTEGER)
+            .contains(&value)
+            .then_some(value as f64);
     }
     if let Some(value) = number.as_u64() {
         const MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_992;
