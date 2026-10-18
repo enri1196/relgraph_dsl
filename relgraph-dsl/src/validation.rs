@@ -1,8 +1,9 @@
 //! Bounded static validation for standalone OpenFGA DSL schemas.
 //!
-//! This module checks declaration uniqueness and local references. It does
-//! not compile CEL, validate runtime tuples, or analyze cycles and
-//! authorization entrypoints.
+//! This module checks names, declaration uniqueness, local references, repeated
+//! restrictions and operands, relation entry points, and condition use. It does
+//! not compile CEL, validate runtime tuples, or decide which cycles the
+//! authorization runtime can evaluate.
 
 use std::collections::HashMap;
 
@@ -52,6 +53,25 @@ pub enum ValidationIssue {
     UnknownExtensionType,
     /// A module extends the same type more than once.
     DuplicateExtension,
+    /// A type is named `self` or `this`.
+    ReservedTypeName,
+    /// A relation is named `self` or `this`.
+    ReservedRelationName,
+    /// A type or relation name breaks the OpenFGA naming rule: 1 to 254
+    /// (type) or 1 to 50 (relation) characters, none of them `:`, `#`, `@`,
+    /// `*` or whitespace.
+    InvalidName,
+    /// A direct assignment lists the same type restriction more than once.
+    DuplicateTypeRestriction,
+    /// A relation's top-level union, intersection or difference repeats an
+    /// operand (`viewer or viewer`, `x from parent but not x from parent`).
+    DuplicateOperand,
+    /// No relationship tuple can ever satisfy the relation: every path
+    /// through its definition needs the relation itself or another relation
+    /// without an entry point. Only checked when no other rule failed.
+    NoEntryPoint,
+    /// A declared condition is not referenced by any type restriction.
+    UnusedCondition,
 }
 
 impl ValidationIssue {
@@ -77,6 +97,13 @@ impl ValidationIssue {
             Self::InvalidComposition => "InvalidComposition",
             Self::UnknownExtensionType => "UnknownExtensionType",
             Self::DuplicateExtension => "DuplicateExtension",
+            Self::ReservedTypeName => "ReservedTypeName",
+            Self::ReservedRelationName => "ReservedRelationName",
+            Self::InvalidName => "InvalidName",
+            Self::DuplicateTypeRestriction => "DuplicateTypeRestriction",
+            Self::DuplicateOperand => "DuplicateOperand",
+            Self::NoEntryPoint => "NoEntryPoint",
+            Self::UnusedCondition => "UnusedCondition",
         }
     }
 }
@@ -86,15 +113,24 @@ impl ValidationIssue {
 /// A module header returns only [`ValidationIssue::ModuleRequiresComposition`].
 /// Applies the crate's bounded static checks to a standalone schema.
 ///
-/// Supports exact schema versions `1.1` and `1.2`. Checks declaration
-/// uniqueness, supported parameter types, references, and tuple-to-userset
-/// structure, with deterministic diagnostic ordering. A module document returns
-/// `ModuleRequiresComposition` and must be checked with
-/// [`crate::validate_modular_model`].
+/// Supports exact schema versions `1.1` and `1.2`. Checks reserved and
+/// malformed type and relation names, declaration uniqueness, supported
+/// parameter types, references, tuple-to-userset structure, repeated type
+/// restrictions and top-level operands, and unused conditions, with
+/// deterministic diagnostic ordering. When all of those pass, it also checks
+/// that every relation has an entry point
+/// ([`ValidationIssue::NoEntryPoint`]), as OpenFGA does; the check is skipped
+/// otherwise because unresolved references would make it report follow-on
+/// errors. A module document returns `ModuleRequiresComposition` and must be
+/// checked with [`crate::validate_modular_model`].
 ///
-/// This function does not compile, evaluate, or type-check CEL; check cycles or
-/// entrypoints; enforce server resource limits; or guarantee that a server will
-/// accept every syntactically valid construct, including `$expression`.
+/// A cycle that has an entry point (`define viewer: [user] or editor` with
+/// `define editor: viewer`) passes; the authorization runtime decides
+/// separately which cycles it can evaluate.
+///
+/// This function does not compile, evaluate, or type-check CEL; enforce server
+/// resource limits; or guarantee that a server will accept every syntactically
+/// valid construct, including `$expression`.
 pub fn validate_schema(schema: &Schema) -> Result<(), Vec<ValidationError>> {
     validate_schema_with_context(schema, false, None, &[])
 }
@@ -343,6 +379,8 @@ fn validate_schema_with_context(
             );
         }
     }
+
+    validator.check_names(schema, origins);
 
     let result = validator.finish();
     if !modular {
@@ -599,6 +637,59 @@ impl Validator {
         );
     }
 
+    /// Reserved (`self`, `this`) and malformed type and relation names.
+    fn check_names(&mut self, schema: &Schema, origins: Option<ValidationOrigins<'_>>) {
+        for (type_index, type_definition) in schema.type_definitions.iter().enumerate() {
+            let type_location = declared_type_location(origins, type_index, type_definition);
+            let name = type_definition.name.as_str();
+            if RESERVED_NAMES.contains(&name) {
+                self.push(
+                    ValidationIssue::ReservedTypeName,
+                    type_location.clone(),
+                    Vec::new(),
+                    format!("type name '{name}' is reserved"),
+                );
+            }
+            if !is_valid_name(name, MAX_TYPE_NAME_CHARS) {
+                self.push(
+                    ValidationIssue::InvalidName,
+                    type_location,
+                    Vec::new(),
+                    format!(
+                        "type name '{name}' must have 1 to {MAX_TYPE_NAME_CHARS} characters \
+                         and none of ':', '#', '@', '*' or whitespace"
+                    ),
+                );
+            }
+
+            for (relation_index, relation) in type_definition.relations.iter().enumerate() {
+                let relation_location =
+                    declared_relation_location(origins, type_index, relation_index, relation);
+                let relation_name = relation.name.as_str();
+                if RESERVED_NAMES.contains(&relation_name) {
+                    self.push(
+                        ValidationIssue::ReservedRelationName,
+                        relation_location.clone(),
+                        Vec::new(),
+                        format!("relation name '{relation_name}' of type '{name}' is reserved"),
+                    );
+                }
+                if !is_valid_name(relation_name, MAX_RELATION_NAME_CHARS) {
+                    self.push(
+                        ValidationIssue::InvalidName,
+                        relation_location,
+                        Vec::new(),
+                        format!(
+                            "relation name '{relation_name}' of type '{name}' must have 1 to \
+                             {MAX_RELATION_NAME_CHARS} characters and none of ':', '#', '@', \
+                             '*' or whitespace"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> Result<(), Vec<ValidationError>> {
         if self.errors.is_empty() {
             return Ok(());
@@ -635,6 +726,50 @@ fn origin_location(origin: Option<&SourceLocation>, span: Option<&SourceSpan>) -
         },
         None => location(span),
     }
+}
+
+/// Names OpenFGA reserves for types and relations.
+const RESERVED_NAMES: &[&str] = &["self", "this"];
+/// OpenFGA's type name rule is `^[^:#@\*\s]{1,254}$`.
+const MAX_TYPE_NAME_CHARS: usize = 254;
+/// OpenFGA's relation name rule is `^[^:#@\*\s]{1,50}$`.
+const MAX_RELATION_NAME_CHARS: usize = 50;
+
+/// Applies OpenFGA's type/relation naming rule, counting Unicode scalar values.
+fn is_valid_name(name: &str, max_chars: usize) -> bool {
+    let mut count = 0usize;
+    for character in name.chars() {
+        if matches!(character, ':' | '#' | '@' | '*') || character.is_whitespace() {
+            return false;
+        }
+        count += 1;
+    }
+    (1..=max_chars).contains(&count)
+}
+
+fn declared_type_location(
+    origins: Option<ValidationOrigins<'_>>,
+    type_index: usize,
+    type_definition: &TypeDefinition,
+) -> SourceLocation {
+    origin_location(
+        origins.and_then(|origins| origins.type_origins.get(type_index)),
+        type_definition.span.as_ref(),
+    )
+}
+
+fn declared_relation_location(
+    origins: Option<ValidationOrigins<'_>>,
+    type_index: usize,
+    relation_index: usize,
+    relation: &Relation,
+) -> SourceLocation {
+    origin_location(
+        origins
+            .and_then(|origins| origins.relation_origins.get(type_index))
+            .and_then(|relations| relations.get(relation_index)),
+        relation.span.as_ref(),
+    )
 }
 
 fn manifest_index(location: &SourceLocation, manifest_paths: &[std::path::PathBuf]) -> usize {

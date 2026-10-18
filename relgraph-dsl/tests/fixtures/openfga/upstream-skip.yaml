@@ -123,21 +123,6 @@ entries:
   tag: validation
   task: '5'
   justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::invalid relation name
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [invalid-name]; Relgraph accepts. Relgraph validation has no identifier naming rule (upstream `^[^:#@\*\s]{1,50}$`) yet
-- case: dsl-semantic-validation-cases.yaml::invalid relation name for self
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [reserved-relation-keywords]; Relgraph accepts. Relgraph validation has no reserved `self` / `this` name rule yet
-- case: dsl-semantic-validation-cases.yaml::invalid relation name for this
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [reserved-relation-keywords]; Relgraph accepts. Relgraph validation has no reserved `self` / `this` name rule yet
 - case: dsl-semantic-validation-cases.yaml::invalid schema version with a trailing comment on the schema line
   reason: semantic-divergence
   tag: bug
@@ -148,21 +133,6 @@ entries:
   tag: bug
   task: '12'
   justification: 'upstream expects [invalid-type]; Relgraph parse error UnexpectedToken at 3:10. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::invalid type name
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [invalid-name]; Relgraph accepts. Relgraph validation has no identifier naming rule (upstream `^[^:#@\*\s]{1,50}$`) yet
-- case: dsl-semantic-validation-cases.yaml::invalid type name for self
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [reserved-type-keywords]; Relgraph accepts. Relgraph validation has no reserved `self` / `this` name rule yet
-- case: dsl-semantic-validation-cases.yaml::invalid type name for this
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [reserved-type-keywords]; Relgraph accepts. Relgraph validation has no reserved `self` / `this` name rule yet
 - case: dsl-semantic-validation-cases.yaml::missing relation reference with a trailing comment on the type line
   reason: semantic-divergence
   tag: bug

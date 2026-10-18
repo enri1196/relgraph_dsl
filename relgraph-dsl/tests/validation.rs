@@ -382,3 +382,76 @@ fn checks_manually_constructed_ast_invariants_and_missing_spans() {
     assert_standalone_location(issue(&errors, ValidationIssue::EmptyDirectAssignment), None);
     assert_standalone_location(issue(&errors, ValidationIssue::InvalidParameterType), None);
 }
+
+#[test]
+fn rejects_reserved_type_and_relation_names_at_their_declarations() {
+    let source = "model\nschema 1.1\ntype user\ntype self\n  relations\n    define this: [user]\n";
+    let schema = parse(source);
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(codes(&errors), ["ReservedTypeName", "ReservedRelationName"]);
+    assert_standalone_location(
+        issue(&errors, ValidationIssue::ReservedTypeName),
+        schema.type_definitions[1].span.clone(),
+    );
+    assert_standalone_location(
+        issue(&errors, ValidationIssue::ReservedRelationName),
+        schema.type_definitions[1].relations[0].span.clone(),
+    );
+}
+
+#[test]
+fn applies_openfga_name_length_and_character_rules() {
+    let long_relation = "r".repeat(51);
+    let source = format!(
+        "model\nschema 1.1\ntype user\ntype {}\n  relations\n    define {long_relation}: [user]\n    define {}: [user]\n",
+        "t".repeat(255),
+        "r".repeat(50),
+    );
+    let errors = validate_source(&source).unwrap_err();
+    assert_eq!(codes(&errors), ["InvalidName", "InvalidName"]);
+    assert!(errors[0].message.contains("1 to 254 characters"));
+    assert!(errors[1].message.contains(&long_relation));
+
+    let accepted = format!(
+        "model\nschema 1.1\ntype user\ntype {}\n  relations\n    define {}: [user]\n",
+        "t".repeat(254),
+        "r".repeat(50),
+    );
+    validate_source(&accepted).expect("names at the length limits are valid");
+
+    let schema = Schema {
+        header: SchemaHeader::ModelSchema {
+            version: "1.1".to_string(),
+        },
+        header_span: None,
+        type_definitions: vec![TypeDefinition {
+            is_extended: false,
+            name: "bad:type".to_string(),
+            relations: vec![
+                manual_relation("", RelationExpression::ComputedUserset("ok".to_string())),
+                manual_relation(
+                    "has space",
+                    RelationExpression::ComputedUserset("ok".to_string()),
+                ),
+                manual_relation("ok", RelationExpression::ComputedUserset("ok".to_string())),
+            ],
+            comments_before: Vec::new(),
+            span: None,
+        }],
+        condition_definitions: Vec::new(),
+    };
+    let errors = validate_schema(&schema).unwrap_err();
+    let invalid: Vec<&str> = errors
+        .iter()
+        .filter(|error| error.issue == ValidationIssue::InvalidName)
+        .map(|error| error.message.as_str())
+        .collect();
+    assert_eq!(invalid.len(), 3, "{errors:#?}");
+    assert!(invalid.iter().any(|message| message.contains("'bad:type'")));
+    assert!(invalid.iter().any(|message| message.contains("''")));
+    assert!(
+        invalid
+            .iter()
+            .any(|message| message.contains("'has space'"))
+    );
+}

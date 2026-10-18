@@ -122,10 +122,16 @@ const ERROR_TYPE_TABLE: &[(&str, ValidationIssue)] = &[
         "invalid-relation-type",
         ValidationIssue::UnknownTuplesetRelation,
     ),
+    ("invalid-name", ValidationIssue::InvalidName),
     ("invalid-schema", ValidationIssue::UnsupportedSchemaVersion),
     ("invalid-type", ValidationIssue::UnknownType),
     // A computed userset naming a relation the type lacks.
     ("missing-definition", ValidationIssue::UnknownRelation),
+    (
+        "reserved-relation-keywords",
+        ValidationIssue::ReservedRelationName,
+    ),
+    ("reserved-type-keywords", ValidationIssue::ReservedTypeName),
     // Upstream reports a lone module validated standalone this way.
     (
         "schema-version-required",
@@ -156,13 +162,8 @@ const LISTENER_STAGE_ISSUES: &[ValidationIssue] = &[
 const CROSS_FILE_ISSUES: &[ValidationIssue] = &[ValidationIssue::UnknownExtensionType];
 
 /// Upstream error types that Relgraph validation does not diagnose at all.
-const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] = &[
-    "condition-not-used",
-    "invalid-name",
-    "relation-no-entry-point",
-    "reserved-relation-keywords",
-    "reserved-type-keywords",
-];
+const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] =
+    &["condition-not-used", "relation-no-entry-point"];
 
 /// Message prefixes of ANTLR parser diagnostics in the syntax corpus.
 const ANTLR_MESSAGE_PREFIXES: &[&str] = &[
