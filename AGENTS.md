@@ -52,7 +52,7 @@ Important public types in `ast.rs`:
 - `load_modular_model`: synchronous reads of the manifest and its listed files, followed by parsing/composition.
 - `validate_modular_model`: recomposes retained public inputs, checks schema/origin invariants, then validates cross-file semantics.
 
-Loading and assembly do **not** implicitly validate semantics. `ModularModel` fields are public and mutable, which explains the recomposition checks. There is currently no public authorization constructor accepting its composed `Schema` directly.
+Loading and assembly do **not** implicitly validate semantics. `ModularModel` fields are public and mutable, which explains the recomposition checks. `FgaAuthz::from_modular_model` (`relgraph-authz/src/authz/mod.rs`, tested by `tests/modular_authorizer.rs`) is the public authorization constructor for a modular model: it takes the whole `ModularModel`, runs `validate_modular_model` (keeping file/module locations in validation errors), then compiles the composed schema. No constructor takes a bare composed `Schema`.
 
 ## Authorization architecture
 
@@ -61,11 +61,12 @@ Loading and assembly do **not** implicitly validate semantics. `ModularModel` fi
 `authz/mod.rs` implements the lifecycle:
 
 ```text
-DSL text
-  → FgaAuthz<Unbound>::new
-  → parse_fga_schema
-  → CompiledModel::compile
+DSL text                              ModularModel
+  → FgaAuthz<Unbound>::new              → FgaAuthz<Unbound>::from_modular_model
+  → parse_fga_schema                    → validate_modular_model
+  → CompiledModel::compile              → ModularModel::into_schema
       → validate_schema
+  → CompiledModel::compile_validated (both paths)
       → capability checks + cycle-shape classification
       → conditions::compile_all
       → type/relation indexes
@@ -149,6 +150,15 @@ cargo test --workspace --all-targets --all-features
 For feature isolation, check/test `relgraph-authz` without features as well as with `--features axum`. Do not claim a clean workspace baseline by running only default members.
 
 DSL tests cover parser behavior, validation, manifests, modular composition/origins, and a 64-case syntax corpus in `relgraph-dsl/tests/fixtures/openfga`. Authz tests cover model construction, conditions, relation operators, batch checks, contextual tuples, policy mapping, paging, store contracts, Axum, and offline compatibility fixtures (also replayed as batches). `relgraph-authz/tests/support/store_contract.rs` is shared by in-memory and PostgreSQL adapter tests.
+
+Upstream corpora are replayed offline as ordinary test targets (see `CONFORMANCE_PLAN.md`):
+
+| Test target | Vendored corpus | Skip list |
+| --- | --- | --- |
+| `cargo test -p relgraph_dsl --test upstream_corpus` | `relgraph-dsl/tests/fixtures/openfga/upstream/` (`openfga/language` syntax, semantic and `fga.mod` cases) | `relgraph-dsl/tests/fixtures/openfga/upstream-skip.yaml` |
+| `cargo test -p relgraph-authz --test upstream_check` | `relgraph-authz/tests/fixtures/authz/upstream/` (`openfga/openfga` `v1.21.0` Check corpora) | `relgraph-authz/tests/fixtures/authz/upstream-skip.yaml` |
+
+`upstream_checksums` in each crate recomputes the vendored files' SHA-256 `CHECKSUMS` and rejects unlisted files, so keep runners and skip lists outside `upstream/`. A runner fails on a non-passing case without a skip entry and on an entry that no longer covers a non-passing case: remove entries as cases start passing. Every entry has a `reason`, a `tag` from `SkipReason::TAGS` in `tests/support/skip_list.rs` (the two crates keep copies that differ only in a header paragraph), a `justification` and a `task`. Run with `-- --nocapture` for per-file totals; the fixtures READMEs record the pass rates and the pin-bump procedure.
 
 Live PostgreSQL tests in `relgraph-authz-postgres/tests/postgres.rs` require `OPENFGA_POSTGRES_TEST_URL` pointing to a disposable server with database-creation privileges. They create/drop generated databases and may create roles; they fail on missing configuration, rather than silently skipping. Do not run them against an arbitrary user database or print the URL. They are `#[ignore]`d, so a plain workspace test run does not exercise them.
 
