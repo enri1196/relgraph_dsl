@@ -1,0 +1,42 @@
+model
+  schema 1.1
+
+type user
+
+type group
+  relations
+    define member: [user, group#member]
+
+type folder
+  relations
+    define parent: [folder]
+    define viewer: [user] or viewer from parent
+
+type org
+  relations
+    define member: [user, team#member]
+
+type team
+  relations
+    define member: [user, org#member]
+
+type circle
+  relations
+    define member: [user with active, circle#member]
+
+type project
+  relations
+    define parent: [project]
+    define active: [user]
+    define viewer: ([user] or viewer from parent) and active
+
+type node
+  relations
+    define x: [user]
+    define a: [node#b] or x
+    define b: [node#a]
+    define both: a and b
+
+condition active(enabled: bool) {
+  enabled
+}

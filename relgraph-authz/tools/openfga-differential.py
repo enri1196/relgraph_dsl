@@ -20,7 +20,8 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "authz"
 PINNED_VERSION = "v1.21.0"
 PINNED_IMAGE = "openfga/openfga:v1.21.0"
 PINNED_COMMIT = "ab557c5592670c899de35297e7aa067015f06502"
-FIXTURES = ("relationships.json", "conditions.json", "branch_errors.json")
+FIXTURES = ("relationships.json", "conditions.json", "branch_errors.json", "recursion.json")
+MODEL_FIXTURES = ("recursion_models.json",)
 
 
 def docker(command: list[str], env: dict[str, str]) -> str:
@@ -122,19 +123,81 @@ def start_pinned_server(env: dict[str, str]) -> tuple[str, str]:
         raise
 
 
+def load_fixture(fixture_name: str) -> dict:
+    fixture_path = FIXTURE_DIR / fixture_name
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    server = fixture["server"]
+    if server["version"] != PINNED_VERSION or server["image"] != PINNED_IMAGE:
+        raise RuntimeError(f"{fixture_name} is not pinned to {PINNED_VERSION}")
+    return fixture
+
+
+def create_store(base_url: str, name: str) -> str:
+    status, store_body = http_json(base_url, "/stores", {"name": name})
+    if status != 201:
+        raise RuntimeError(f"could not create store for {name}: {status} {store_body}")
+    return store_body["id"]
+
+
+def write_tuples(base_url: str, store_id: str, model_id: str, tuples: list, label: str) -> None:
+    if not tuples:
+        return
+    status, tuple_body = http_json(
+        base_url,
+        f"/stores/{store_id}/write",
+        {
+            "authorization_model_id": model_id,
+            "writes": {"tuple_keys": tuples},
+        },
+    )
+    if status != 200:
+        raise RuntimeError(f"could not write tuples for {label}: {status} {tuple_body}")
+
+
+def run_cases(base_url: str, store_id: str, model_id: str, cases: list, label_prefix: str) -> int:
+    passed = 0
+    for case in cases:
+        request = case["request"]
+        body = {
+            "authorization_model_id": model_id,
+            "tuple_key": {
+                "user": request["user"],
+                "relation": request["relation"],
+                "object": request["object"],
+            },
+        }
+        if "context" in request:
+            body["context"] = request["context"]
+        if "contextual_tuples" in request:
+            body["contextual_tuples"] = {"tuple_keys": request["contextual_tuples"]}
+
+        status, response = http_json(base_url, f"/stores/{store_id}/check", body)
+        expected = case["expected"]
+        label = f"{label_prefix}/{case['id']}"
+        if "server_error_contains" in expected:
+            expected_text = expected["server_error_contains"].lower()
+            actual_text = body_text(response).lower()
+            if status < 400 or expected_text not in actual_text:
+                raise AssertionError(
+                    f"{label}: expected HTTP error containing {expected_text!r}, "
+                    f"got HTTP {status}: {body_text(response)}"
+                )
+        else:
+            wanted = expected["server"] == "allow"
+            if status != 200 or response.get("allowed") is not wanted:
+                raise AssertionError(
+                    f"{label}: expected allowed={wanted}, got HTTP {status}: {body_text(response)}"
+                )
+        passed += 1
+        print(f"PASS {label}")
+    return passed
+
+
 def execute_fixtures(base_url: str) -> int:
     passed = 0
     for fixture_name in FIXTURES:
-        fixture_path = FIXTURE_DIR / fixture_name
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        server = fixture["server"]
-        if server["version"] != PINNED_VERSION or server["image"] != PINNED_IMAGE:
-            raise RuntimeError(f"{fixture_name} is not pinned to {PINNED_VERSION}")
-
-        status, store_body = http_json(base_url, "/stores", {"name": f"authz-{fixture_name}"})
-        if status != 201:
-            raise RuntimeError(f"could not create store for {fixture_name}: {status} {store_body}")
-        store_id = store_body["id"]
+        fixture = load_fixture(fixture_name)
+        store_id = create_store(base_url, f"authz-{fixture_name}")
 
         status, model_body = http_json(
             base_url,
@@ -145,52 +208,44 @@ def execute_fixtures(base_url: str) -> int:
             raise RuntimeError(f"could not create model for {fixture_name}: {status} {model_body}")
         model_id = model_body["authorization_model_id"]
 
-        if fixture["tuples"]:
-            status, tuple_body = http_json(
+        write_tuples(base_url, store_id, model_id, fixture["tuples"], fixture_name)
+        passed += run_cases(base_url, store_id, model_id, fixture["cases"], fixture_name)
+    return passed
+
+
+def execute_model_fixtures(base_url: str) -> int:
+    """Checks model acceptance, then any recorded checks on accepted models."""
+    passed = 0
+    for fixture_name in MODEL_FIXTURES:
+        fixture = load_fixture(fixture_name)
+        for entry in fixture["models"]:
+            label = f"{fixture_name}/{entry['id']}"
+            store_id = create_store(base_url, f"authz-{entry['id']}")
+            status, model_body = http_json(
                 base_url,
-                f"/stores/{store_id}/write",
-                {
-                    "authorization_model_id": model_id,
-                    "writes": {"tuple_keys": fixture["tuples"]},
-                },
+                f"/stores/{store_id}/authorization-models",
+                entry["model"],
             )
-            if status != 200:
-                raise RuntimeError(f"could not write tuples for {fixture_name}: {status} {tuple_body}")
-
-        for case in fixture["cases"]:
-            request = case["request"]
-            body = {
-                "authorization_model_id": model_id,
-                "tuple_key": {
-                    "user": request["user"],
-                    "relation": request["relation"],
-                    "object": request["object"],
-                },
-            }
-            if "context" in request:
-                body["context"] = request["context"]
-            if "contextual_tuples" in request:
-                body["contextual_tuples"] = {"tuple_keys": request["contextual_tuples"]}
-
-            status, response = http_json(base_url, f"/stores/{store_id}/check", body)
-            expected = case["expected"]
-            label = f"{fixture_name}/{case['id']}"
-            if "server_error_contains" in expected:
-                expected_text = expected["server_error_contains"].lower()
-                actual_text = body_text(response).lower()
-                if status < 400 or expected_text not in actual_text:
+            expected = entry["expected"]
+            if "server_model_error_contains" in expected:
+                expected_text = expected["server_model_error_contains"].lower()
+                if status < 400 or expected_text not in body_text(model_body).lower():
                     raise AssertionError(
-                        f"{label}: expected HTTP error containing {expected_text!r}, "
-                        f"got HTTP {status}: {body_text(response)}"
+                        f"{label}: expected model rejection containing {expected_text!r}, "
+                        f"got HTTP {status}: {body_text(model_body)}"
                     )
-            else:
-                wanted = expected["server"] == "allow"
-                if status != 200 or response.get("allowed") is not wanted:
-                    raise AssertionError(
-                        f"{label}: expected allowed={wanted}, got HTTP {status}: {body_text(response)}"
-                    )
+                passed += 1
+                print(f"PASS {label} (model rejected)")
+                continue
+            if status != 201:
+                raise AssertionError(
+                    f"{label}: expected model acceptance, got HTTP {status}: {body_text(model_body)}"
+                )
             passed += 1
-            print(f"PASS {label}")
+            print(f"PASS {label} (model accepted)")
+            model_id = model_body["authorization_model_id"]
+            write_tuples(base_url, store_id, model_id, entry.get("tuples", []), label)
+            passed += run_cases(base_url, store_id, model_id, entry.get("cases", []), label)
     return passed
 
 
@@ -208,7 +263,7 @@ def main() -> int:
         env["DOCKER_CONFIG"] = docker_config
         try:
             container_id, base_url = start_pinned_server(env)
-            count = execute_fixtures(base_url)
+            count = execute_fixtures(base_url) + execute_model_fixtures(base_url)
             print(f"Passed {count} differential cases against {PINNED_VERSION}.")
             return 0
         finally:

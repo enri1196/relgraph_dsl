@@ -1,0 +1,506 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "tenant": "tenant-a",
+  "models": [
+    {
+      "id": "same-object-computed-union-cycle",
+      "definition": "model\n  schema 1.1\n\ntype user\n\ntype pair\n  relations\n    define x: [user]\n    define y: [user]\n    define a: b or x\n    define b: a or y\n",
+      "model": {
+        "schema_version": "1.1",
+        "type_definitions": [
+          {
+            "type": "user"
+          },
+          {
+            "metadata": {
+              "relations": {
+                "a": {},
+                "b": {},
+                "x": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                },
+                "y": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                }
+              }
+            },
+            "relations": {
+              "a": {
+                "union": {
+                  "child": [
+                    {
+                      "computedUserset": {
+                        "relation": "b"
+                      }
+                    },
+                    {
+                      "computedUserset": {
+                        "relation": "x"
+                      }
+                    }
+                  ]
+                }
+              },
+              "b": {
+                "union": {
+                  "child": [
+                    {
+                      "computedUserset": {
+                        "relation": "a"
+                      }
+                    },
+                    {
+                      "computedUserset": {
+                        "relation": "y"
+                      }
+                    }
+                  ]
+                }
+              },
+              "x": {
+                "this": {}
+              },
+              "y": {
+                "this": {}
+              }
+            },
+            "type": "pair"
+          }
+        ]
+      },
+      "expected": {
+        "server_model_error_contains": "cannot contain a cycle"
+      },
+      "local_capabilities": [
+        "SameObjectRelationCycle"
+      ]
+    },
+    {
+      "id": "same-object-computed-intersection-cycle",
+      "definition": "model\n  schema 1.1\n\ntype user\n\ntype doc\n  relations\n    define a: [user] and b\n    define b: [user] or a\n",
+      "model": {
+        "schema_version": "1.1",
+        "type_definitions": [
+          {
+            "type": "user"
+          },
+          {
+            "metadata": {
+              "relations": {
+                "a": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                },
+                "b": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                }
+              }
+            },
+            "relations": {
+              "a": {
+                "intersection": {
+                  "child": [
+                    {
+                      "this": {}
+                    },
+                    {
+                      "computedUserset": {
+                        "relation": "b"
+                      }
+                    }
+                  ]
+                }
+              },
+              "b": {
+                "union": {
+                  "child": [
+                    {
+                      "this": {}
+                    },
+                    {
+                      "computedUserset": {
+                        "relation": "a"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "type": "doc"
+          }
+        ]
+      },
+      "expected": {
+        "server_model_error_contains": "cannot contain a cycle"
+      },
+      "local_capabilities": [
+        "SameObjectRelationCycle"
+      ]
+    },
+    {
+      "id": "difference-through-computed-cycle",
+      "definition": "model\n  schema 1.1\n\ntype user\n\ntype document\n  relations\n    define a: [user] but not b\n    define b: [user] or a\n",
+      "model": {
+        "schema_version": "1.1",
+        "type_definitions": [
+          {
+            "type": "user"
+          },
+          {
+            "metadata": {
+              "relations": {
+                "a": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                },
+                "b": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                }
+              }
+            },
+            "relations": {
+              "a": {
+                "difference": {
+                  "base": {
+                    "this": {}
+                  },
+                  "subtract": {
+                    "computedUserset": {
+                      "relation": "b"
+                    }
+                  }
+                }
+              },
+              "b": {
+                "union": {
+                  "child": [
+                    {
+                      "this": {}
+                    },
+                    {
+                      "computedUserset": {
+                        "relation": "a"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "type": "document"
+          }
+        ]
+      },
+      "expected": {
+        "server_model_error_contains": "cannot contain a cycle"
+      },
+      "local_capabilities": [
+        "RecursiveDifference",
+        "SameObjectRelationCycle"
+      ]
+    },
+    {
+      "id": "difference-through-tuple-to-userset-cycle",
+      "definition": "model\n  schema 1.1\n\ntype user\n\ntype folder\n  relations\n    define parent: [folder]\n    define blocked: [user] or viewer from parent\n    define viewer: [user] but not blocked\n",
+      "model": {
+        "schema_version": "1.1",
+        "type_definitions": [
+          {
+            "type": "user"
+          },
+          {
+            "metadata": {
+              "relations": {
+                "blocked": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                },
+                "parent": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "folder"
+                    }
+                  ]
+                },
+                "viewer": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                }
+              }
+            },
+            "relations": {
+              "blocked": {
+                "union": {
+                  "child": [
+                    {
+                      "this": {}
+                    },
+                    {
+                      "tupleToUserset": {
+                        "computedUserset": {
+                          "relation": "viewer"
+                        },
+                        "tupleset": {
+                          "relation": "parent"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "parent": {
+                "this": {}
+              },
+              "viewer": {
+                "difference": {
+                  "base": {
+                    "this": {}
+                  },
+                  "subtract": {
+                    "computedUserset": {
+                      "relation": "blocked"
+                    }
+                  }
+                }
+              }
+            },
+            "type": "folder"
+          }
+        ]
+      },
+      "expected": {
+        "server_model": "accepted"
+      },
+      "local_capabilities": [
+        "RecursiveDifference"
+      ],
+      "tuples": [
+        {
+          "user": "user:anne",
+          "relation": "viewer",
+          "object": "folder:f"
+        },
+        {
+          "user": "folder:f",
+          "relation": "parent",
+          "object": "folder:c"
+        },
+        {
+          "user": "user:anne",
+          "relation": "viewer",
+          "object": "folder:c"
+        },
+        {
+          "user": "folder:x",
+          "relation": "parent",
+          "object": "folder:x"
+        },
+        {
+          "user": "user:anne",
+          "relation": "viewer",
+          "object": "folder:x"
+        }
+      ],
+      "cases": [
+        {
+          "id": "data-acyclic-root-allows",
+          "request": {
+            "user": "user:anne",
+            "relation": "viewer",
+            "object": "folder:f"
+          },
+          "expected": {
+            "server": "allow"
+          }
+        },
+        {
+          "id": "data-acyclic-child-blocked",
+          "request": {
+            "user": "user:anne",
+            "relation": "viewer",
+            "object": "folder:c"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        },
+        {
+          "id": "data-cycle-viewer-denies",
+          "request": {
+            "user": "user:anne",
+            "relation": "viewer",
+            "object": "folder:x"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        },
+        {
+          "id": "data-cycle-blocked-also-denies",
+          "request": {
+            "user": "user:anne",
+            "relation": "blocked",
+            "object": "folder:x"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        }
+      ]
+    },
+    {
+      "id": "difference-through-userset-cycle",
+      "definition": "model\n  schema 1.1\n\ntype user\n\ntype group\n  relations\n    define banned: [user, group#member]\n    define member: [user] but not banned\n",
+      "model": {
+        "schema_version": "1.1",
+        "type_definitions": [
+          {
+            "type": "user"
+          },
+          {
+            "metadata": {
+              "relations": {
+                "banned": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    },
+                    {
+                      "relation": "member",
+                      "type": "group"
+                    }
+                  ]
+                },
+                "member": {
+                  "directly_related_user_types": [
+                    {
+                      "type": "user"
+                    }
+                  ]
+                }
+              }
+            },
+            "relations": {
+              "banned": {
+                "this": {}
+              },
+              "member": {
+                "difference": {
+                  "base": {
+                    "this": {}
+                  },
+                  "subtract": {
+                    "computedUserset": {
+                      "relation": "banned"
+                    }
+                  }
+                }
+              }
+            },
+            "type": "group"
+          }
+        ]
+      },
+      "expected": {
+        "server_model": "accepted"
+      },
+      "local_capabilities": [
+        "RecursiveDifference"
+      ],
+      "tuples": [
+        {
+          "user": "user:anne",
+          "relation": "member",
+          "object": "group:g"
+        },
+        {
+          "user": "group:g#member",
+          "relation": "banned",
+          "object": "group:g"
+        },
+        {
+          "user": "user:bob",
+          "relation": "member",
+          "object": "group:h"
+        },
+        {
+          "user": "group:h#member",
+          "relation": "banned",
+          "object": "group:k"
+        },
+        {
+          "user": "user:bob",
+          "relation": "member",
+          "object": "group:k"
+        }
+      ],
+      "cases": [
+        {
+          "id": "data-cycle-member-denies",
+          "request": {
+            "user": "user:anne",
+            "relation": "member",
+            "object": "group:g"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        },
+        {
+          "id": "data-cycle-banned-also-denies",
+          "request": {
+            "user": "user:anne",
+            "relation": "banned",
+            "object": "group:g"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        },
+        {
+          "id": "data-acyclic-ban-denies",
+          "request": {
+            "user": "user:bob",
+            "relation": "member",
+            "object": "group:k"
+          },
+          "expected": {
+            "server": "deny"
+          }
+        }
+      ]
+    }
+  ]
+}

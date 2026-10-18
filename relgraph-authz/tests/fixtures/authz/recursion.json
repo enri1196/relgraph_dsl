@@ -1,0 +1,739 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "model_file": "recursion.fga",
+  "model": {
+    "schema_version": "1.1",
+    "type_definitions": [
+      {
+        "type": "user"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "member": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                },
+                {
+                  "relation": "member",
+                  "type": "group"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "member": {
+            "this": {}
+          }
+        },
+        "type": "group"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "parent": {
+              "directly_related_user_types": [
+                {
+                  "type": "folder"
+                }
+              ]
+            },
+            "viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "parent": {
+            "this": {}
+          },
+          "viewer": {
+            "union": {
+              "child": [
+                {
+                  "this": {}
+                },
+                {
+                  "tupleToUserset": {
+                    "computedUserset": {
+                      "relation": "viewer"
+                    },
+                    "tupleset": {
+                      "relation": "parent"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "type": "folder"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "member": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                },
+                {
+                  "relation": "member",
+                  "type": "team"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "member": {
+            "this": {}
+          }
+        },
+        "type": "org"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "member": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                },
+                {
+                  "relation": "member",
+                  "type": "org"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "member": {
+            "this": {}
+          }
+        },
+        "type": "team"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "member": {
+              "directly_related_user_types": [
+                {
+                  "condition": "active",
+                  "type": "user"
+                },
+                {
+                  "relation": "member",
+                  "type": "circle"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "member": {
+            "this": {}
+          }
+        },
+        "type": "circle"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "active": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                }
+              ]
+            },
+            "parent": {
+              "directly_related_user_types": [
+                {
+                  "type": "project"
+                }
+              ]
+            },
+            "viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "active": {
+            "this": {}
+          },
+          "parent": {
+            "this": {}
+          },
+          "viewer": {
+            "intersection": {
+              "child": [
+                {
+                  "union": {
+                    "child": [
+                      {
+                        "this": {}
+                      },
+                      {
+                        "tupleToUserset": {
+                          "computedUserset": {
+                            "relation": "viewer"
+                          },
+                          "tupleset": {
+                            "relation": "parent"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "computedUserset": {
+                    "relation": "active"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "type": "project"
+      },
+      {
+        "metadata": {
+          "relations": {
+            "a": {
+              "directly_related_user_types": [
+                {
+                  "relation": "b",
+                  "type": "node"
+                }
+              ]
+            },
+            "b": {
+              "directly_related_user_types": [
+                {
+                  "relation": "a",
+                  "type": "node"
+                }
+              ]
+            },
+            "both": {},
+            "x": {
+              "directly_related_user_types": [
+                {
+                  "type": "user"
+                }
+              ]
+            }
+          }
+        },
+        "relations": {
+          "a": {
+            "union": {
+              "child": [
+                {
+                  "this": {}
+                },
+                {
+                  "computedUserset": {
+                    "relation": "x"
+                  }
+                }
+              ]
+            }
+          },
+          "b": {
+            "this": {}
+          },
+          "both": {
+            "intersection": {
+              "child": [
+                {
+                  "computedUserset": {
+                    "relation": "a"
+                  }
+                },
+                {
+                  "computedUserset": {
+                    "relation": "b"
+                  }
+                }
+              ]
+            }
+          },
+          "x": {
+            "this": {}
+          }
+        },
+        "type": "node"
+      }
+    ],
+    "conditions": {
+      "active": {
+        "expression": "enabled",
+        "name": "active",
+        "parameters": {
+          "enabled": {
+            "type_name": "TYPE_NAME_BOOL"
+          }
+        }
+      }
+    }
+  },
+  "tenant": "tenant-a",
+  "tuples": [
+    {
+      "user": "user:anne",
+      "relation": "member",
+      "object": "group:eng"
+    },
+    {
+      "user": "group:eng#member",
+      "relation": "member",
+      "object": "group:all"
+    },
+    {
+      "user": "group:cyc-a#member",
+      "relation": "member",
+      "object": "group:cyc-b"
+    },
+    {
+      "user": "group:cyc-b#member",
+      "relation": "member",
+      "object": "group:cyc-a"
+    },
+    {
+      "user": "user:bob",
+      "relation": "member",
+      "object": "group:cyc-b"
+    },
+    {
+      "user": "user:anne",
+      "relation": "viewer",
+      "object": "folder:root"
+    },
+    {
+      "user": "folder:root",
+      "relation": "parent",
+      "object": "folder:mid"
+    },
+    {
+      "user": "folder:mid",
+      "relation": "parent",
+      "object": "folder:leaf"
+    },
+    {
+      "user": "folder:loop-b",
+      "relation": "parent",
+      "object": "folder:loop-a"
+    },
+    {
+      "user": "folder:loop-a",
+      "relation": "parent",
+      "object": "folder:loop-b"
+    },
+    {
+      "user": "user:carol",
+      "relation": "viewer",
+      "object": "folder:loop-b"
+    },
+    {
+      "user": "user:anne",
+      "relation": "member",
+      "object": "team:core"
+    },
+    {
+      "user": "team:core#member",
+      "relation": "member",
+      "object": "org:acme"
+    },
+    {
+      "user": "org:acme#member",
+      "relation": "member",
+      "object": "team:core"
+    },
+    {
+      "user": "org:acme#member",
+      "relation": "member",
+      "object": "team:all"
+    },
+    {
+      "user": "user:anne",
+      "relation": "member",
+      "object": "circle:inner",
+      "condition": {
+        "name": "active"
+      }
+    },
+    {
+      "user": "circle:inner#member",
+      "relation": "member",
+      "object": "circle:outer"
+    },
+    {
+      "user": "circle:outer#member",
+      "relation": "member",
+      "object": "circle:inner"
+    },
+    {
+      "user": "user:anne",
+      "relation": "viewer",
+      "object": "project:root"
+    },
+    {
+      "user": "project:root",
+      "relation": "parent",
+      "object": "project:child"
+    },
+    {
+      "user": "user:anne",
+      "relation": "active",
+      "object": "project:root"
+    },
+    {
+      "user": "user:anne",
+      "relation": "active",
+      "object": "project:child"
+    },
+    {
+      "user": "user:dave",
+      "relation": "viewer",
+      "object": "project:root"
+    },
+    {
+      "user": "user:dave",
+      "relation": "active",
+      "object": "project:child"
+    },
+    {
+      "user": "user:eve",
+      "relation": "viewer",
+      "object": "project:root"
+    },
+    {
+      "user": "user:eve",
+      "relation": "active",
+      "object": "project:root"
+    },
+    {
+      "user": "node:n#b",
+      "relation": "a",
+      "object": "node:n"
+    },
+    {
+      "user": "node:n#a",
+      "relation": "b",
+      "object": "node:n"
+    },
+    {
+      "user": "user:anne",
+      "relation": "x",
+      "object": "node:n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "nested-group-member-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "group:all"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "nested-group-direct-member-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "group:eng"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "nested-group-non-member-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "member",
+        "object": "group:all"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "group-data-cycle-member-allows",
+      "request": {
+        "user": "user:bob",
+        "relation": "member",
+        "object": "group:cyc-a"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "group-data-cycle-non-member-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "member",
+        "object": "group:cyc-a"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "folder-hierarchy-inherits",
+      "request": {
+        "user": "user:anne",
+        "relation": "viewer",
+        "object": "folder:leaf"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "folder-hierarchy-non-viewer-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "viewer",
+        "object": "folder:leaf"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "folder-parent-cycle-inherits",
+      "request": {
+        "user": "user:carol",
+        "relation": "viewer",
+        "object": "folder:loop-a"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "folder-parent-cycle-non-viewer-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "viewer",
+        "object": "folder:loop-a"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "mutual-recursion-org-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "org:acme"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "mutual-recursion-team-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "team:all"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "mutual-recursion-non-member-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "member",
+        "object": "team:core"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "recursive-condition-true-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "circle:outer",
+        "context": {
+          "enabled": true
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "recursive-condition-false-denies",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "circle:outer",
+        "context": {
+          "enabled": false
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "recursive-condition-non-member-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "member",
+        "object": "circle:outer",
+        "context": {
+          "enabled": true
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "recursive-condition-missing-context-is-an-error",
+      "request": {
+        "user": "user:anne",
+        "relation": "member",
+        "object": "circle:outer"
+      },
+      "expected": {
+        "local_error": "MissingConditionContext",
+        "server_error_contains": "context"
+      }
+    },
+    {
+      "id": "recursive-intersection-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "viewer",
+        "object": "project:child"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "recursive-intersection-inactive-parent-denies",
+      "request": {
+        "user": "user:dave",
+        "relation": "viewer",
+        "object": "project:child"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "recursive-intersection-inactive-child-denies",
+      "request": {
+        "user": "user:eve",
+        "relation": "viewer",
+        "object": "project:child"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "open-cycle-a-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "a",
+        "object": "node:n"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "open-cycle-b-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "b",
+        "object": "node:n"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "open-cycle-intersection-allows",
+      "request": {
+        "user": "user:anne",
+        "relation": "both",
+        "object": "node:n"
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "open-cycle-non-member-denies",
+      "request": {
+        "user": "user:zoe",
+        "relation": "both",
+        "object": "node:n"
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    }
+  ]
+}
