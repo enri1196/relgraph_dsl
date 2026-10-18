@@ -253,34 +253,31 @@ async fn denials_missing_auth_and_bad_path_input_never_call_the_handler() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
-struct UnavailableStore;
+struct FailingStore(StoreErrorKind);
 
-struct UnavailableReadSession;
+struct FailingReadSession(StoreErrorKind);
 
-impl RelationshipStore for UnavailableStore {
-    type ReadSession = UnavailableReadSession;
+impl RelationshipStore for FailingStore {
+    type ReadSession = FailingReadSession;
 
     fn begin_read<'a>(
         &'a self,
         _tenant: &'a TenantId,
     ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>> {
-        Box::pin(async { Ok(UnavailableReadSession) })
+        let kind = self.0;
+        Box::pin(async move { Ok(FailingReadSession(kind)) })
     }
 }
 
-impl RelationshipReadSession for UnavailableReadSession {
+impl RelationshipReadSession for FailingReadSession {
     fn tuples<'a>(
         &'a self,
         _object: &'a ObjectRef,
         _relation: &'a RelationName,
         _maximum: usize,
     ) -> StoreFuture<'a, Result<Vec<RelationshipTuple>, StoreError>> {
-        Box::pin(async {
-            Err(StoreError::new(
-                StoreErrorKind::Unavailable,
-                "test store outage",
-            ))
-        })
+        let kind = self.0;
+        Box::pin(async move { Err(StoreError::new(kind, "scripted store failure")) })
     }
 
     fn tuples_page<'a>(
@@ -290,20 +287,15 @@ impl RelationshipReadSession for UnavailableReadSession {
         _cursor: Option<StoreCursor>,
         _maximum: usize,
     ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
-        Box::pin(async {
-            Err(StoreError::new(
-                StoreErrorKind::Unavailable,
-                "test store outage",
-            ))
-        })
+        let kind = self.0;
+        Box::pin(async move { Err(StoreError::new(kind, "scripted store failure")) })
     }
 }
 
-#[tokio::test]
-async fn store_outage_returns_503_without_calling_the_handler() {
+async fn failing_store_status(kind: StoreErrorKind) -> (StatusCode, usize) {
     let authz = FgaAuthz::new(MODEL)
         .unwrap()
-        .with_store(UnavailableStore, EvaluationLimits::default());
+        .with_store(FailingStore(kind), EvaluationLimits::default());
     let state = AppState::new(authz.model_identity());
     let calls = Arc::clone(&state.calls);
     let app = Router::new()
@@ -318,8 +310,26 @@ async fn store_outage_returns_503_without_calling_the_handler() {
         .oneshot(request(Method::GET, "/documents/42"))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    (response.status(), calls.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn store_outage_returns_503_without_calling_the_handler() {
+    assert_eq!(
+        failing_store_status(StoreErrorKind::Unavailable).await,
+        (StatusCode::SERVICE_UNAVAILABLE, 0)
+    );
+}
+
+#[tokio::test]
+async fn write_error_kinds_surfacing_from_reads_return_500() {
+    for kind in [StoreErrorKind::Conflict, StoreErrorKind::InvalidInput] {
+        assert_eq!(
+            failing_store_status(kind).await,
+            (StatusCode::INTERNAL_SERVER_ERROR, 0),
+            "{kind:?}"
+        );
+    }
 }
 
 async fn authenticate(

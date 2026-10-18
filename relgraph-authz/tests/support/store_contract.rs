@@ -247,16 +247,36 @@ where
 
     assert_store_error(
         store.insert_tuple(&tenant_b, &tuple_a).await,
-        StoreErrorKind::CorruptData,
+        StoreErrorKind::InvalidInput,
     );
     assert_store_error(
         store.remove_tuple(&tenant_b, &tuple_a).await,
-        StoreErrorKind::CorruptData,
+        StoreErrorKind::InvalidInput,
+    );
+    let oversized = conditional_tuple(
+        "contract-writes",
+        "document",
+        "write-contract",
+        "viewer",
+        subject("user", "oversized"),
+        "grant",
+        BTreeMap::from([(
+            "payload".to_owned(),
+            json!("x".repeat(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES)),
+        )]),
+    );
+    assert_store_error(
+        store.insert_tuple(&tenant_a, &oversized).await,
+        StoreErrorKind::InvalidInput,
+    );
+    assert_store_error(
+        store.remove_tuple(&tenant_a, &oversized).await,
+        StoreErrorKind::InvalidInput,
     );
     store.insert_tuple(&tenant_a, &tuple_a).await.unwrap();
     assert_store_error(
         store.insert_tuple(&tenant_a, &tuple_a).await,
-        StoreErrorKind::CorruptData,
+        StoreErrorKind::Conflict,
     );
     store.insert_tuple(&tenant_a, &tuple_b).await.unwrap();
 

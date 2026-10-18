@@ -260,7 +260,12 @@ impl Rejection {
                 StoreErrorKind::Unavailable
                 | StoreErrorKind::IncompleteRead
                 | StoreErrorKind::TupleLimitExceeded => Self::Unavailable,
-                StoreErrorKind::CorruptData | StoreErrorKind::Internal => Self::Internal,
+                // Conflict and InvalidInput describe writes; a read reporting
+                // them is an adapter fault rather than a client error.
+                StoreErrorKind::CorruptData
+                | StoreErrorKind::Internal
+                | StoreErrorKind::Conflict
+                | StoreErrorKind::InvalidInput => Self::Internal,
             },
             AuthorizationError::InvalidConditionContext {
                 source: crate::authz::ConditionContextSource::Request,

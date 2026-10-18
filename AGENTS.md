@@ -101,7 +101,7 @@ Default limits: 10,000 scanned tuples, depth 64, 1,024 store page calls, 100,000
 
 `authz/store.rs` owns `RelationshipTuple`, `TupleSubject` (direct, userset, typed wildcard), `ConditionContext`, `StoreError`, `StoreCursor`, `RelationshipPage`, and boxed `StoreFuture`.
 
-`RelationshipStore::begin_read` creates a tenant-scoped immutable snapshot. `RelationshipReadSession::tuples` returns a complete bounded result; `tuples_page` supports opaque continuation cursors. A cursor belongs to its session and object/relation query. A continuing page cannot be empty. The default page adapter only supports one complete read. `RelationshipWriteStore` provides strict insert and exact removal with explicit tenant ownership.
+`RelationshipStore::begin_read` creates a tenant-scoped immutable snapshot. `RelationshipReadSession::tuples` returns a complete bounded result; `tuples_page` supports opaque continuation cursors. A cursor belongs to its session and object/relation query. A continuing page cannot be empty. The default page adapter only supports one complete read. `RelationshipWriteStore` provides strict insert and exact removal with explicit tenant ownership. Write errors use `StoreErrorKind::Conflict` (duplicate insert) and `InvalidInput` (tenant mismatch, oversized context); `CorruptData` is reserved for malformed stored data. The Axum middleware maps the write-only kinds to 500 if a read ever reports them.
 
 `InMemoryRelationshipStore` shares `Arc<RwLock<Arc<RelationshipSnapshot>>>`. Read sessions cheaply retain an immutable snapshot; current writes clone the snapshot before publishing it. Old readers do not observe later writes. Both synchronous insert/remove and async write-trait methods exist.
 

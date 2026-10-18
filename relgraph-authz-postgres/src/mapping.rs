@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 const CORRUPT_ROW: &str = "persisted relationship tuple is malformed";
 const SERIALIZATION_FAILURE: &str = "relationship tuple serialization failed";
+const OVERSIZED_WRITE_CONTEXT: &str = "relationship tuple condition context exceeds storage limits";
 const IDENTITY_PREFIX: &[u8] = b"relgraph-authz.relationship-tuple";
 const IDENTITY_VERSION: u8 = 1;
 
@@ -52,6 +53,8 @@ impl<'r> FromRow<'r, PgRow> for TupleRow {
 }
 
 impl TupleRow {
+    /// Prepares a caller-supplied tuple for writing. An oversized condition
+    /// context is rejected as invalid input rather than corrupt stored data.
     pub(crate) fn from_tuple(tuple: &RelationshipTuple) -> Result<Self, StoreError> {
         let (subject_kind, subject_type, subject_id, subject_relation) = match tuple.subject() {
             TupleSubject::Direct(subject) => (
@@ -74,7 +77,7 @@ impl TupleRow {
         let (condition_name, context_json) = match tuple.condition() {
             None => (None, None),
             Some(context) => {
-                context.serialized_size()?;
+                context.serialized_size().map_err(oversized_write_context)?;
                 let json = serde_json::to_string(context.values())
                     .map_err(|_| internal_error(SERIALIZATION_FAILURE))?;
                 (Some(context.name().as_str().to_owned()), Some(json))
@@ -288,6 +291,14 @@ fn append_number(bytes: &mut Vec<u8>, number: &Number) -> Result<(), StoreError>
 
 fn corrupt_error() -> StoreError {
     StoreError::new(StoreErrorKind::CorruptData, CORRUPT_ROW)
+}
+
+fn oversized_write_context(error: StoreError) -> StoreError {
+    if error.kind() == StoreErrorKind::CorruptData {
+        StoreError::new(StoreErrorKind::InvalidInput, OVERSIZED_WRITE_CONTEXT)
+    } else {
+        error
+    }
 }
 
 fn internal_error(message: &'static str) -> StoreError {
@@ -567,7 +578,7 @@ mod tests {
         )])));
         assert_eq!(
             TupleRow::from_tuple(&oversized_write).unwrap_err().kind(),
-            StoreErrorKind::CorruptData
+            StoreErrorKind::InvalidInput
         );
 
         let too_many_values = || {
@@ -581,7 +592,7 @@ mod tests {
             TupleRow::from_tuple(&oversized_elements_write)
                 .unwrap_err()
                 .kind(),
-            StoreErrorKind::CorruptData
+            StoreErrorKind::InvalidInput
         );
 
         let empty_condition = fixture.clone().with_condition(context(BTreeMap::new()));

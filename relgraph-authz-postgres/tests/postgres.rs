@@ -566,7 +566,7 @@ async fn concurrent_duplicate_inserts_and_removals_are_strict() {
             assert_ne!(left.is_ok(), right.is_ok());
             for result in [left, right] {
                 if let Err(error) = result {
-                    assert_eq!(error.kind(), StoreErrorKind::CorruptData);
+                    assert_eq!(error.kind(), StoreErrorKind::Conflict);
                 }
             }
 
@@ -647,7 +647,7 @@ async fn context_codec_preserves_nested_json_numbers_and_large_values() {
                 store
                     .insert_tuple(&tenant, &reordered(reordered_b))
                     .await,
-                Err(error) if error.kind() == StoreErrorKind::CorruptData
+                Err(error) if error.kind() == StoreErrorKind::Conflict
             ));
 
             let values = std::collections::BTreeMap::from([
@@ -769,9 +769,11 @@ async fn digest_collisions_and_malformed_persisted_rows_fail_safely() {
             .await
             .expect("bound test update corrupts only the generated database tuple");
 
+            // The insert cannot see the corruption without reading the row;
+            // the identity digest still collides, so it fails as a conflict.
             assert!(matches!(
                 store.insert_tuple(&tenant, &original).await,
-                Err(error) if error.kind() == StoreErrorKind::CorruptData
+                Err(error) if error.kind() == StoreErrorKind::Conflict
             ));
             assert!(matches!(
                 store.remove_tuple(&tenant, &original).await,

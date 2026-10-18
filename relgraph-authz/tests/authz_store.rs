@@ -97,7 +97,7 @@ fn snapshot_mutations_keep_held_readers_immutable_for_sync_and_async_writes() {
 
     assert_eq!(
         store.insert(first.clone()).unwrap_err().kind(),
-        relgraph_authz::StoreErrorKind::CorruptData
+        relgraph_authz::StoreErrorKind::Conflict
     );
     assert!(!store.remove(&missing).unwrap());
     assert!(
@@ -142,7 +142,7 @@ fn snapshot_mutations_keep_held_readers_immutable_for_sync_and_async_writes() {
         ))
         .unwrap_err()
         .kind(),
-        relgraph_authz::StoreErrorKind::CorruptData
+        relgraph_authz::StoreErrorKind::Conflict
     );
     assert!(
         !block_on(relgraph_authz::RelationshipWriteStore::remove_tuple(
@@ -279,10 +279,10 @@ fn assert_in_memory_writes_reject(
         ))
         .unwrap_err()
         .kind(),
-        relgraph_authz::StoreErrorKind::CorruptData
+        relgraph_authz::StoreErrorKind::InvalidInput
     );
     assert_eq!(
         store.insert(tuple).unwrap_err().kind(),
-        relgraph_authz::StoreErrorKind::CorruptData
+        relgraph_authz::StoreErrorKind::InvalidInput
     );
 }

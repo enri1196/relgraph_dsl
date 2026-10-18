@@ -159,13 +159,13 @@ fn in_memory_write_trait_validates_tenant_and_preserves_exact_tuple_identity() {
         block_on(store.insert_tuple(&tenant_b, &tuple_a))
             .unwrap_err()
             .kind(),
-        StoreErrorKind::CorruptData
+        StoreErrorKind::InvalidInput
     );
     assert_eq!(
         block_on(store.remove_tuple(&tenant_b, &tuple_a))
             .unwrap_err()
             .kind(),
-        StoreErrorKind::CorruptData
+        StoreErrorKind::InvalidInput
     );
 
     block_on(store.insert_tuple(&tenant_a, &tuple_a)).unwrap();
@@ -173,7 +173,7 @@ fn in_memory_write_trait_validates_tenant_and_preserves_exact_tuple_identity() {
         block_on(store.insert_tuple(&tenant_a, &tuple_a))
             .unwrap_err()
             .kind(),
-        StoreErrorKind::CorruptData
+        StoreErrorKind::Conflict
     );
     block_on(store.insert_tuple(&tenant_a, &tuple_b)).unwrap();
 

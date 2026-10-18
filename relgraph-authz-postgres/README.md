@@ -252,8 +252,10 @@ limits how long a delayed or abandoned task can leave a snapshot idle.
 
 Pool acquisition, closed-pool, transport, TLS, protocol, server cancellation,
 and selected server-capacity errors map to a fixed `Unavailable` store error.
-Malformed persisted rows and strict duplicate inserts map to `CorruptData`;
-other database failures map to a fixed internal store error. SQL details are
+Malformed persisted rows map to `CorruptData`. A strict duplicate insert (a
+unique violation on the tuple identity) maps to `Conflict`; a tenant mismatch or
+an oversized condition context on a write maps to `InvalidInput` before any
+database I/O. Other database failures map to a fixed internal store error. SQL details are
 not copied into public store messages. The evaluator does not treat a failed
 read as an empty tuple result; it keeps its existing three-valued expression
 combination rules, so whether a branch error is decisive depends on the

@@ -222,9 +222,15 @@ impl RelationshipTuple {
         self.condition.as_ref()
     }
 
+    /// Checks a tuple supplied for writing; an oversized context is caller input.
     fn validate_condition_context_limits(&self) -> Result<(), StoreError> {
         if let Some(condition) = self.condition() {
-            condition.serialized_size()?;
+            condition.serialized_size().map_err(|mut error| {
+                if error.kind == StoreErrorKind::CorruptData {
+                    error.kind = StoreErrorKind::InvalidInput;
+                }
+                error
+            })?;
         }
         Ok(())
     }
@@ -284,6 +290,11 @@ pub enum StoreErrorKind {
     IncompleteRead,
     TupleLimitExceeded,
     Internal,
+    /// A write conflicts with stored state, such as inserting an existing tuple.
+    Conflict,
+    /// A write request is malformed, such as a tenant mismatch or an oversized
+    /// condition context.
+    InvalidInput,
 }
 
 /// A per-check, tenant-scoped snapshot that can read relationship tuples.
@@ -364,8 +375,10 @@ pub trait RelationshipStore: Send + Sync {
 /// Optional tenant-scoped mutation capability for relationship stores.
 ///
 /// Insertions are strict: inserting an exact duplicate tuple returns
-/// [`StoreErrorKind::CorruptData`]. Removals match the complete tuple, including
-/// condition context, and return `false` when no exact tuple exists.
+/// [`StoreErrorKind::Conflict`]. Removals match the complete tuple, including
+/// condition context, and return `false` when no exact tuple exists. A tuple
+/// whose tenant differs from the write tenant, or whose condition context
+/// exceeds the storage limits, returns [`StoreErrorKind::InvalidInput`].
 pub trait RelationshipWriteStore: Send + Sync {
     /// Inserts one tuple for the supplied tenant.
     fn insert_tuple<'a>(
@@ -408,7 +421,7 @@ impl InMemoryRelationshipStore {
             .is_some_and(|values| values.contains(&tuple))
         {
             return Err(StoreError::new(
-                StoreErrorKind::CorruptData,
+                StoreErrorKind::Conflict,
                 "duplicate relationship tuple",
             ));
         }
@@ -619,7 +632,7 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         if tuple.tenant() != tenant {
             return Box::pin(async {
                 Err(StoreError::new(
-                    StoreErrorKind::CorruptData,
+                    StoreErrorKind::InvalidInput,
                     "relationship tuple tenant does not match write tenant",
                 ))
             });
@@ -639,7 +652,7 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         if tuple.tenant() != tenant {
             return Box::pin(async {
                 Err(StoreError::new(
-                    StoreErrorKind::CorruptData,
+                    StoreErrorKind::InvalidInput,
                     "relationship tuple tenant does not match write tenant",
                 ))
             });

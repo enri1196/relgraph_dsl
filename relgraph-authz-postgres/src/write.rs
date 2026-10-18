@@ -65,10 +65,9 @@ impl RelationshipWriteStore for PostgresRelationshipStore {
 
             match result {
                 Ok(_) => Ok(()),
-                Err(error) if is_identity_duplicate(&error) => Err(StoreError::new(
-                    StoreErrorKind::CorruptData,
-                    DUPLICATE_TUPLE,
-                )),
+                Err(error) if is_identity_duplicate(&error) => {
+                    Err(StoreError::new(StoreErrorKind::Conflict, DUPLICATE_TUPLE))
+                }
                 Err(error) => Err(map_sqlx_error(&error)),
             }
         })
@@ -149,7 +148,7 @@ fn is_identity_duplicate(error: &sqlx::Error) -> bool {
 }
 
 fn tenant_mismatch_error() -> StoreError {
-    StoreError::new(StoreErrorKind::CorruptData, TENANT_MISMATCH)
+    StoreError::new(StoreErrorKind::InvalidInput, TENANT_MISMATCH)
 }
 
 #[cfg(test)]
@@ -191,12 +190,12 @@ mod tests {
             .insert_tuple(&requested_tenant, &tuple)
             .await
             .expect_err("mismatched tenant must fail");
-        assert_eq!(insert_error.kind(), StoreErrorKind::CorruptData);
+        assert_eq!(insert_error.kind(), StoreErrorKind::InvalidInput);
 
         let remove_error = store
             .remove_tuple(&requested_tenant, &tuple)
             .await
             .expect_err("mismatched tenant must fail");
-        assert_eq!(remove_error.kind(), StoreErrorKind::CorruptData);
+        assert_eq!(remove_error.kind(), StoreErrorKind::InvalidInput);
     }
 }
