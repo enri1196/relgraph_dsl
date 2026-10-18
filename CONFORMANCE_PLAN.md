@@ -632,7 +632,7 @@ Task 9 (blocked on D1) will change the ABAC row. Validation: `cargo fmt
 --check`, `cargo check --workspace --all-targets --all-features`, and the
 corpus, checksum and `conformance` tests pass (docs-only change).
 
-## Task 12 [TODO]: DSL comment handling parity
+## Task 12 [PROGRESS]: DSL comment handling parity
 
 **Depends on:** Task 4.
 
