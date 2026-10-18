@@ -95,7 +95,9 @@ that repeats within a file gets `#n` appended from its second occurrence
 Each entry is one of: a single case ID, a stage (`…::stage-index`), or a rule
 (for example every `listObjects` / `listUsers` case, or a file such as the JSON
 transformer data). Every entry has `reason` (one of `unsupported-feature`,
-`semantic-divergence`, `harness-gap`), a free-text `justification`, and
+`semantic-divergence`, `harness-gap`), a `tag` from that reason's vocabulary
+(`SkipReason::TAGS` in the test support; for `semantic-divergence` it is `bug`
+or `deliberate`), a free-text `justification`, and
 `task` (the plan task that is expected to remove it, or `permanent`). The test
 fails on (a) any failing case not covered by an entry, and (b) any entry
 whose covered cases all pass. The logic is small; implement it in each crate's
@@ -284,6 +286,23 @@ clippy clean on the crate.
 **Acceptance:** no skip entry has a provisional reason; both READMEs list the
 pass rates; the plan reflects the measured priorities.
 
+## Measured priorities (from Task 4)
+
+Non-passing cases by owner after Task 4 (see the fixtures READMEs for the
+tables). Task numbers are kept stable because skip entries reference them;
+work them in roughly this order of corpus impact:
+
+| Owner | Cases | Area |
+| --- | ---: | --- |
+| Deferred list-API plan | 748 | every `listObjects` / `listUsers` assertion |
+| Task 5 | 40 | missing DSL validation rules (17 entry-point, 14 repeated operand/restriction, 4 reserved names, 3 unused condition, 2 naming rule) |
+| Task 12 (new) | 8 | comments the upstream DSL pipeline strips before parsing |
+| Task 7 | 9 | contextual tuples (plus upstream's `_ctxTuples` replay of every single-stage test, not yet counted) |
+| Task 13 (new) | 6 | userset / wildcard check subjects |
+| Task 6 | 2 | manifest tightening |
+| Tasks 8-9 | 4 | one `ipaddress` stage; no other CEL feature fails in the corpora, so CEL work is low priority by corpus numbers |
+| permanent | 72 | deliberate divergences (24 strict-read checks, 13 negation-cycle cases, 4 DSL) and 30 inline-condition cases, 1 JSON-output rule case |
+
 ## Task 5 [TODO]: Semantic validation parity
 
 **Depends on:** Task 4.
@@ -447,6 +466,51 @@ no-feature / `axum` builds green; docs updated.
    would be circular.
 
 **Acceptance:** docs match the code; links and commands in them work.
+
+## Task 12 [TODO]: DSL comment handling parity
+
+**Depends on:** Task 4.
+
+Added by Task 4. Upstream's `parseDSL` (`pkg/js/transformer/dsltojson.ts` at
+the language pin) blanks every line whose first non-space character is `#` and
+cuts every other line at its first ` #` before running the ANTLR grammar.
+Relgraph parses the raw text with the pinned grammar and rejects a comment
+after a header, schema or type line and an indented comment between `model`
+and `schema` (8 `semantic-divergence/bug` entries in the language skip list).
+
+**Steps:**
+
+1. Decide with the maintainer how far to follow upstream: the preprocessing is
+   lossy (it also cuts ` #` inside a condition's CEL body), and `AGENTS.md`
+   requires keeping original UTF-8 spans and exact CEL bytes. Prefer accepting
+   comments in these positions in the lexer/parser (as hidden tokens) over
+   rewriting the input.
+2. Update the compatibility contract and the 64-fixture syntax corpus metadata
+   deliberately: the grammar-differential runner in `tools/conformance` checks
+   the raw grammar, which rejects these documents.
+3. Remove the skip entries as cases pass; note the accepted syntax in the DSL
+   README.
+
+**Acceptance:** the 8 entries are gone or re-justified as `deliberate`;
+span and CEL-byte preservation tests green; syntax fixtures updated.
+
+## Task 13 [TODO]: Userset and wildcard check subjects
+
+**Depends on:** Task 4.
+
+Added by Task 4. Six corpus checks ask about a userset (`group:x#member`) or a
+typed wildcard (`user:*`) subject, which `CheckRequest` cannot express
+(`unsupported-feature/userset-subject`). Two of them expect a
+`validation_error` for a userset whose type or relation is not in the model.
+
+**Steps:** decide whether `Subject` / `CheckRequest` should accept these
+subjects (OpenFGA semantics: a userset subject is allowed when the userset
+itself is granted; a wildcard subject only by a wildcard tuple). If yes,
+design it with the evaluator's memo key and the Axum principal mapping in
+mind (an HTTP principal must stay a concrete subject); otherwise mark the
+entries `permanent` with a justification.
+
+**Acceptance:** the 6 entries pass or are permanent with a justification.
 
 ## Decisions
 
