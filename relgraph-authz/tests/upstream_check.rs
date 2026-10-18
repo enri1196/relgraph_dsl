@@ -740,6 +740,16 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
         }
     }
 
+    let rule_covers = |rule: &str, id: &str| match rule {
+        CONTEXTUAL_TUPLES_RULE => contextual.contains(id),
+        LIST_OBJECTS_RULE => id.contains("::listObjects::"),
+        LIST_USERS_RULE => id.contains("::listUsers::"),
+        _ => false,
+    };
+    let list = skip_list::load(Path::new(SKIP_LIST), SKIP_LIST_HEADER)
+        .unwrap_or_else(|problems| panic!("{problems}"));
+    let by_reason = skip_list::covered_counts(&list, &results, &rule_covers);
+
     let mut report = String::new();
     for (file, file_stats) in &stats {
         let kinds = file_stats
@@ -770,6 +780,17 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
             file_stats.batch_items,
             file_stats.batches,
         );
+        let reasons = by_reason.get(file).map_or_else(
+            || String::from("none"),
+            |counts| {
+                counts
+                    .iter()
+                    .map(|(label, count)| format!("{label} {count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+        );
+        let _ = writeln!(report, "  skipped by reason/tag: {reasons}");
     }
     println!("{report}");
 
@@ -779,14 +800,6 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
         batch_problems.join("\n")
     );
 
-    let rule_covers = |rule: &str, id: &str| match rule {
-        CONTEXTUAL_TUPLES_RULE => contextual.contains(id),
-        LIST_OBJECTS_RULE => id.contains("::listObjects::"),
-        LIST_USERS_RULE => id.contains("::listUsers::"),
-        _ => false,
-    };
-    let list = skip_list::load(Path::new(SKIP_LIST), SKIP_LIST_HEADER)
-        .unwrap_or_else(|problems| panic!("{problems}"));
     let problems = skip_list::check(&list, &results, KNOWN_RULES, &rule_covers);
     assert!(
         problems.is_empty(),

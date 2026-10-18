@@ -5,11 +5,28 @@
 //! `tests/fixtures/openfga/upstream-skip.yaml`; the shared skip-list rules are in
 //! `tests/support/skip_list.rs`.
 //!
-//! Each DSL case is parsed with `parse_fga_schema`. A `model` document is then
-//! checked with `validate_schema`. A `module` document is composed alone, as
-//! the single file of a schema `1.2` manifest, with `assemble_modular_model`
-//! and then checked with `validate_modular_model`; composition diagnostics
-//! count as validation diagnostics.
+//! Both corpora are driven upstream by `validateDSL`
+//! (`pkg/js/validator/validate-dsl.ts`, exercised by
+//! `pkg/js/tests/validator.test.ts` at the pin). It runs in two stages:
+//! `parseDSL` first strips comment lines and ` #` comment tails, parses, and
+//! lets its listener report file-local structural errors (an `extend` outside a
+//! module, a type extended twice in one file); any of those throws a
+//! `DSLSyntaxError` and stops. Otherwise the model is validated, and a module
+//! document, which has no schema version, yields only `schema-version-required`.
+//! The harness mirrors those stages without copying the comment stripping
+//! (Relgraph parses the raw text):
+//!
+//! - Each DSL case is parsed with `parse_fga_schema`. A `model` document is then
+//!   checked with `validate_schema`.
+//! - A `module` document is first composed alone, as the single file of a
+//!   schema `1.2` manifest, with `assemble_modular_model`. Composition
+//!   diagnostics that depend on other files ([`CROSS_FILE_ISSUES`]) are
+//!   dropped; any remaining (file-local) ones are the result. Otherwise the
+//!   module goes through `validate_schema`, which reports
+//!   `ModuleRequiresComposition`, upstream's `schema-version-required`.
+//! - When Relgraph reports an issue that upstream raises in its listener
+//!   stage ([`LISTENER_STAGE_ISSUES`]), only those issues are compared, because
+//!   upstream never reaches validation for such a document.
 //!
 //! The gate is accept versus reject. For rejected cases the harness compares
 //! diagnostic *kinds*, never message text:
@@ -53,7 +70,7 @@ use std::path::{Path, PathBuf};
 use relgraph_dsl::{
     ModelManifest, ModularModelError, ModuleSource, ParseError, SchemaHeader, SourceSpan,
     ValidationError, ValidationIssue, assemble_modular_model, parse_fga_schema,
-    parse_model_manifest, validate_modular_model, validate_schema,
+    parse_model_manifest, validate_schema,
 };
 use serde::Deserialize;
 use support::skip_list::{self, CaseResult, NotPassingKind, Outcome, SkipReason};
@@ -124,6 +141,19 @@ const ERROR_TYPE_TABLE: &[(&str, ValidationIssue)] = &[
     ),
     (DUPLICATE_EXTENSION, ValidationIssue::DuplicateExtension),
 ];
+
+/// Issues that upstream's parse listener raises as a `DSLSyntaxError` before
+/// semantic validation runs. When Relgraph reports any of them, later-stage
+/// issues (for example `EmptyModel` for a model that only extends a type) are
+/// not compared.
+const LISTENER_STAGE_ISSUES: &[ValidationIssue] = &[
+    ValidationIssue::ExtensionOutsideModule,
+    ValidationIssue::DuplicateExtension,
+];
+
+/// Composition issues that depend on other module files. Upstream checks one
+/// module file at a time, so a lone module is not judged on them.
+const CROSS_FILE_ISSUES: &[ValidationIssue] = &[ValidationIssue::UnknownExtensionType];
 
 /// Upstream error types that Relgraph validation does not diagnose at all.
 const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] = &[
@@ -315,20 +345,41 @@ fn run_dsl(dsl: &str) -> Actual {
         };
         let module = ModuleSource {
             path: PathBuf::from(MODULE_PATH),
-            schema,
+            schema: schema.clone(),
         };
-        return match assemble_modular_model(manifest, vec![module]) {
-            Ok(model) => match validate_modular_model(&model) {
-                Ok(()) => Actual::Accepted,
-                Err(errors) => Actual::Validation(errors),
-            },
-            Err(ModularModelError::Composition { errors }) => Actual::Validation(errors),
-            Err(other) => Actual::Other(other.to_string()),
-        };
+        match assemble_modular_model(manifest, vec![module]) {
+            Ok(_) => {}
+            Err(ModularModelError::Composition { errors }) => {
+                let local: Vec<ValidationError> = errors
+                    .into_iter()
+                    .filter(|error| !CROSS_FILE_ISSUES.contains(&error.issue))
+                    .collect();
+                if !local.is_empty() {
+                    return Actual::Validation(listener_stage(local));
+                }
+            }
+            Err(other) => return Actual::Other(other.to_string()),
+        }
     }
     match validate_schema(&schema) {
         Ok(()) => Actual::Accepted,
-        Err(errors) => Actual::Validation(errors),
+        Err(errors) => Actual::Validation(listener_stage(errors)),
+    }
+}
+
+/// Keeps only the listener-stage issues when there are any (see the module
+/// docs).
+fn listener_stage(errors: Vec<ValidationError>) -> Vec<ValidationError> {
+    if errors
+        .iter()
+        .any(|error| LISTENER_STAGE_ISSUES.contains(&error.issue))
+    {
+        errors
+            .into_iter()
+            .filter(|error| LISTENER_STAGE_ISSUES.contains(&error.issue))
+            .collect()
+    } else {
+        errors
     }
 }
 
@@ -649,6 +700,17 @@ fn rule_covers(rule: &str, id: &str) -> bool {
     }
 }
 
+fn format_counts(counts: Option<&BTreeMap<String, usize>>) -> String {
+    match counts {
+        Some(counts) if !counts.is_empty() => counts
+            .iter()
+            .map(|(label, count)| format!("{label} {count}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::from("none"),
+    }
+}
+
 fn percent(matched: usize, total: usize) -> String {
     if total == 0 {
         String::from("n/a")
@@ -682,6 +744,10 @@ fn upstream_language_corpora_match_or_are_skip_listed() {
         }
     }
 
+    let list = skip_list::load(Path::new(SKIP_LIST), SKIP_LIST_HEADER)
+        .unwrap_or_else(|problems| panic!("{problems}"));
+    let by_reason = skip_list::covered_counts(&list, &results, &rule_covers);
+
     let mut report = String::new();
     for (file, file_stats) in &stats {
         let _ = writeln!(
@@ -706,11 +772,14 @@ fn upstream_language_corpora_match_or_are_skip_listed() {
                 percent(file_stats.symbols_matched, file_stats.symbols_total)
             },
         );
+        let _ = writeln!(
+            report,
+            "  skipped by reason/tag: {}",
+            format_counts(by_reason.get(file))
+        );
     }
     println!("{report}");
 
-    let list = skip_list::load(Path::new(SKIP_LIST), SKIP_LIST_HEADER)
-        .unwrap_or_else(|problems| panic!("{problems}"));
     let problems = skip_list::check(&list, &results, KNOWN_RULES, &rule_covers);
     assert!(
         problems.is_empty(),
@@ -753,8 +822,8 @@ fn skip_list_rejects_stale_uncovered_and_unknown_entries() {
         case: case.map(str::to_owned),
         rule: rule.map(str::to_owned),
         reason: SkipReason::SemanticDivergence,
-        task: String::from("4"),
-        provisional: false,
+        tag: String::from("bug"),
+        task: String::from("5"),
         justification: String::from("test"),
     };
     let failing = |id: &str| CaseResult {

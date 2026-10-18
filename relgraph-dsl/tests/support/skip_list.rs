@@ -3,16 +3,15 @@
 //! A skip list is one YAML file with sorted `entries`. Each entry covers either
 //! one case ID (an exact ID, or an ID prefix that ends at a `::` boundary, such
 //! as a stage) or a named rule that the runner defines. Every entry states a
-//! `reason`, the plan `task` expected to remove it (or `permanent`), and a
-//! `justification`. Entries recorded before their final classification carry
-//! `provisional: true`.
+//! `reason`, a `tag` from that reason's vocabulary ([`SkipReason::TAGS`]), the
+//! plan `task` expected to remove it (or `permanent`), and a `justification`.
 //!
 //! [`check`] fails when a non-passing case is not covered, and when an entry
 //! covers no non-passing case (so the list can only shrink as cases start to
 //! pass). The file must also be in the canonical serialized form, so that
 //! review diffs stay minimal and deterministic.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -32,12 +31,46 @@ pub enum SkipReason {
 }
 
 impl SkipReason {
+    /// Allowed `tag` values per reason.
+    ///
+    /// - `unsupported-feature`: the missing feature area. `validation` and
+    ///   `manifest` are validation rules Relgraph does not implement yet
+    ///   (plan tasks 5 and 6); the others name a runtime or API surface.
+    /// - `semantic-divergence`: `bug` (Relgraph should change; a plan task
+    ///   owns it) or `deliberate` (a recorded design decision, normally
+    ///   `permanent`).
+    /// - `harness-gap`: `harness`.
+    pub const TAGS: &[(SkipReason, &[&str])] = &[
+        (
+            SkipReason::UnsupportedFeature,
+            &[
+                "cel",
+                "contextual-tuples",
+                "inline-condition",
+                "ipaddress",
+                "json-model",
+                "list-api",
+                "manifest",
+                "userset-subject",
+                "validation",
+            ],
+        ),
+        (SkipReason::SemanticDivergence, &["bug", "deliberate"]),
+        (SkipReason::HarnessGap, &["harness"]),
+    ];
+
     fn as_str(self) -> &'static str {
         match self {
             Self::UnsupportedFeature => "unsupported-feature",
             Self::SemanticDivergence => "semantic-divergence",
             Self::HarnessGap => "harness-gap",
         }
+    }
+
+    fn allows_tag(self, tag: &str) -> bool {
+        Self::TAGS
+            .iter()
+            .any(|(reason, tags)| *reason == self && tags.contains(&tag))
     }
 }
 
@@ -53,17 +86,12 @@ pub struct SkipEntry {
     pub rule: Option<String>,
     /// Skip category.
     pub reason: SkipReason,
+    /// Sub-category from [`SkipReason::TAGS`].
+    pub tag: String,
     /// Plan task expected to remove the entry, or `permanent`.
     pub task: String,
-    /// Set while the entry awaits final classification.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub provisional: bool,
     /// Reviewed free-text explanation.
     pub justification: String,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 impl SkipEntry {
@@ -148,6 +176,14 @@ pub fn load(path: &Path, header: &str) -> Result<SkipList, String> {
         }
         if entry.task.trim().is_empty() || entry.justification.trim().is_empty() {
             problems.push(format!("{} needs a task and a justification", entry.key()));
+        }
+        if !entry.reason.allows_tag(&entry.tag) {
+            problems.push(format!(
+                "{} has tag {:?}, which is not allowed for {}",
+                entry.key(),
+                entry.tag,
+                entry.reason.as_str()
+            ));
         }
         if !keys.insert(entry.key()) {
             problems.push(format!("{} is listed twice", entry.key()));
@@ -249,7 +285,7 @@ pub fn check(
         problems.push(format!("{} is not covered: {detail}", result.id));
         let _ = write!(
             suggestions,
-            "- case: {}\n  reason: {}\n  task: '{}'\n  provisional: true\n  justification: {}\n",
+            "- case: {}\n  reason: {}\n  tag: <classify>\n  task: '{}'\n  justification: {}\n",
             yaml_scalar(&result.id),
             suggested_reason.as_str(),
             suggested_task,
@@ -258,10 +294,42 @@ pub fn check(
     }
     if !suggestions.is_empty() {
         problems.push(format!(
-            "suggested provisional entries (review before adding):\n{suggestions}"
+            "suggested entries (classify the tag and review before adding):\n{suggestions}"
         ));
     }
     problems
+}
+
+/// Counts non-passing cases per corpus file by the `reason/tag` of the entry
+/// that covers them. A rule entry takes precedence over a case entry, matching
+/// the runners, which report a rule's cause before a stage's.
+pub fn covered_counts(
+    list: &SkipList,
+    results: &[CaseResult],
+    rule_covers: &dyn Fn(&str, &str) -> bool,
+) -> BTreeMap<&'static str, BTreeMap<String, usize>> {
+    let mut counts = BTreeMap::<&'static str, BTreeMap<String, usize>>::new();
+    for result in results {
+        if !matches!(result.outcome, Outcome::NotPassing { .. }) {
+            continue;
+        }
+        let entry = list
+            .entries
+            .iter()
+            .filter(|entry| entry.rule.is_some())
+            .chain(list.entries.iter().filter(|entry| entry.case.is_some()))
+            .find(|entry| covers(entry, &result.id, rule_covers));
+        let label = entry.map_or_else(
+            || String::from("uncovered"),
+            |entry| format!("{}/{}", entry.reason.as_str(), entry.tag),
+        );
+        *counts
+            .entry(result.file)
+            .or_default()
+            .entry(label)
+            .or_default() += 1;
+    }
+    counts
 }
 
 fn yaml_scalar(value: &str) -> String {
