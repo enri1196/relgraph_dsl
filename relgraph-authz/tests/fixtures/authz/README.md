@@ -18,6 +18,30 @@ The run used for Task 7 executed OpenFGA `v1.21.0`, commit `ab557c5592670c899de3
 
 `recursion.json` (added 2026-10-18 with the same server version and digest) covers nested groups, same-type folder hierarchies, mutual recursion across two types, data cycles for members and non-members, recursion through conditioned tuples (including missing context), recursion under intersection, and an open cycle whose provisional denial must not be memoized. `recursion_models.json` records model acceptance instead of one shared model. Each entry carries its DSL `definition`, its JSON `model`, the expected server model-write outcome, and `local_capabilities`, the diagnostics local construction must report. For the negation cycles that OpenFGA accepts, the entry also records the server's decisions on data cycles. The runner checks those decisions against the server, and the offline test checks only that local construction rejects the model. OpenFGA rejects the implicit self tuple `group:x#member@group:x#member` at write time, so the self-cycle case is covered only by local tests.
 
+## Vendored upstream Check corpora
+
+`upstream/` holds unmodified copies from `openfga/openfga` tag `v1.21.0` (commit
+`ab557c5592670c899de35297e7aa067015f06502`, the same release as the Docker
+reference image):
+
+- [`assets/tests/consolidated_1_1_tests.yaml`](https://github.com/openfga/openfga/blob/v1.21.0/assets/tests/consolidated_1_1_tests.yaml)
+- [`assets/tests/abac_tests.yaml`](https://github.com/openfga/openfga/blob/v1.21.0/assets/tests/abac_tests.yaml)
+- [`LICENSE`](https://github.com/openfga/openfga/blob/v1.21.0/LICENSE), Apache License 2.0
+
+They are data only; no runner consumes them yet. SHA-256 checksums
+(lowercase hex, `shasum -a 256` format) are in
+[`upstream/CHECKSUMS`](upstream/CHECKSUMS). `cargo test -p relgraph-authz --test
+upstream_checksums` recomputes them and fails if a file differs or a vendored
+file is unlisted. To check by hand:
+
+```sh
+cd relgraph-authz/tests/fixtures/authz/upstream && shasum -a 256 -c CHECKSUMS
+```
+
+Raw downloads were also compared with the Git blob IDs reported by the GitHub
+contents API at the tag. Never edit these files; a pin bump replaces the files
+and `CHECKSUMS` together.
+
 ## Compatibility boundary
 
 - The server is used as an evaluator reference for the checked-in acyclic model profile; this does not add a remote OpenFGA store adapter to the Rust library.
