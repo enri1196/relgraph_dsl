@@ -85,7 +85,10 @@ Rules for every task:
 - Where this plan and a vendored file disagree, the file wins; fix the plan.
 
 **Case IDs.** `file::test-name::stage-index::kind::index` where `kind` is
-`check`, `listObjects`, `listUsers` or `model`. For language files:
+`check`, `ctxCheck`, `listObjects`, `listUsers` or `model`. `ctxCheck` (added
+by Task 7) is upstream's `_ctxTuples` replay of a single-stage test's check
+assertions with the stage tuples sent as contextual tuples; stage entries
+cover it, case entries name it separately. For language files:
 `file::case-name`. The pinned syntax file repeats one case name (`mixed
 operators with mixed operations and paren sets`, with different DSL), so a name
 that repeats within a file gets `#n` appended from its second occurrence
