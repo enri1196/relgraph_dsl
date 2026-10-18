@@ -381,7 +381,7 @@ validator summary was updated. Validation: `cargo fmt --check`,
 `cargo check --workspace --all-targets --all-features`, all plan test commands
 and clippy (workspace, all features) pass; live PostgreSQL tests not run.
 
-## Task 6 [PROGRESS]: Manifest (`fga.mod`) parity
+## Task 6 [DONE]: Manifest (`fga.mod`) parity
 
 **Depends on:** Task 4.
 
@@ -404,6 +404,32 @@ traversal is not rejected.
 
 **Acceptance:** `fga-mod` cases pass or have justified skip entries; manifest
 and modular tests green; README documents any tightened behavior.
+
+Result: `parse_model_manifest` now follows upstream's `TransformModFile` /
+`transformModFileToJSON` (`pkg/go/transformer/mod-to-json.go`,
+`pkg/js/transformer/modules/mod-to-json.ts` at the language pin): `schema`
+must be exactly `1.2` (`InvalidSchemaVersion`, also applied to constructed
+manifests by `assemble_modular_model`, so modular `UnsupportedSchemaVersion`
+is now only a defensive check), every path must end in `.fga`, any `..`
+component is rejected instead of normalized, and any `%` is rejected (upstream
+percent-decodes, differently in Go and JS; Relgraph reads paths literally).
+fga.mod corpus: 7 to 9 of 9 manifests pass; the 2 `unsupported-feature/manifest`
+entries are gone (DSL skip list 15 to 13 entries; only the permanent JSON-output
+rule remains for that file). Wrong YAML types were already rejected. Remaining
+differences are deliberate and documented in the DSL fixtures README ("fga.mod
+manifest policy"): Relgraph is stricter on `%`, every backslash, unknown
+fields, empty `contents`, duplicate paths, explicit tags and multiple
+documents, and drops `.` / empty components. Manifest positions stay a
+permanent non-metric (`serde_yaml` has no spans). `tests/manifest.rs` replays
+each entry of upstream's multi-path case on its own. User-visible changes,
+updated deliberately: manifest fixtures (`ordered.yaml`, `aliases.yaml`,
+`normalized_paths.yaml`) no longer use non-`.fga` paths, version `2.0` or
+in-root `..`; modular tests that composed `9.7` / `01.02` / `1.1` manifests now
+assert `InvalidSchemaVersion`. Authz `from_modular_model` tests and examples
+were unaffected. `AGENTS.md` manifest summary updated. Validation:
+`cargo fmt --check`, `cargo check --workspace --all-targets --all-features`,
+all plan test commands and clippy on the DSL crate pass (live PostgreSQL tests
+not run).
 
 ## Task 7 [TODO]: Contextual tuples
 
