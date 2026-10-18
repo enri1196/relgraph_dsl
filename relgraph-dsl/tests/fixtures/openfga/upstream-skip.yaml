@@ -1,0 +1,299 @@
+# Reviewed exceptions for the pinned openfga/language corpora.
+# Checked by `cargo test -p relgraph_dsl --test upstream_corpus`; see the
+# module docs of tests/upstream_corpus.rs and CONFORMANCE_PLAN.md.
+# Keep sorted and canonical; the test prints the expected form on mismatch.
+entries:
+- case: dsl-semantic-validation-cases.yaml::allows extend in modular model
+  reason: harness-gap
+  task: '4'
+  provisional: true
+  justification: upstream expects [schema-version-required]; Relgraph validation [UnknownExtensionType]; no table entry for UnknownExtensionType
+- case: dsl-semantic-validation-cases.yaml::cycle 1 should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::cycle 2 should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::cyclic loop
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::detect loop in TTU dependency
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate difference relationship import in parent relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate in type name
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]
+- case: dsl-semantic-validation-cases.yaml::duplicate intersection relationship import in parent relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relation difference in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relation intersection in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relation union in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in difference relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in intersection relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in union relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate type in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate type in relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate type relation in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate type wildcard in relations
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate union relationship import in parent relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::duplicate wildcard type in relationship definition
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [duplicated-error]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::exclusion base not allow to reference itself in TTU
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::extraneous condition
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [condition-not-used]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::group viewer no entry point
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::handle single name duplicated type and unused condition
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [condition-not-used, duplicated-error x2]; Relgraph validation [DuplicateType]
+- case: dsl-semantic-validation-cases.yaml::intersection child not allow to reference itself in TTU
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid relation name
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [invalid-name]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid relation name for self
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [reserved-relation-keywords]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid relation name for this
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [reserved-relation-keywords]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid schema version with a trailing comment on the schema line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [invalid-schema]; Relgraph parse error UnexpectedToken at 1:13
+- case: dsl-semantic-validation-cases.yaml::invalid type in restriction with a trailing comment on the enclosing type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [invalid-type]; Relgraph parse error UnexpectedToken at 3:10
+- case: dsl-semantic-validation-cases.yaml::invalid type name
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [invalid-name]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid type name for self
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [reserved-type-keywords]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::invalid type name for this
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [reserved-type-keywords]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::missing relation reference with a trailing comment on the type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [missing-definition]; Relgraph parse error UnexpectedToken at 6:9
+- case: dsl-semantic-validation-cases.yaml::model 1.1 should raise error if none of the children has such relation
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [invalid-relation-on-tupleset x4]; Relgraph validation [UnknownComputedRelation, UnknownComputedRelation]
+- case: dsl-semantic-validation-cases.yaml::multiple missing relation references with module comments on every type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [missing-definition x2]; Relgraph parse error UnexpectedToken at 3:10
+- case: dsl-semantic-validation-cases.yaml::no entry point exclusion that relates to itself
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no entry point for multiple type
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no entry point for single type multiple relations
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no entry point if directly assignable value is itself
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no entry point intersection that relates to itself
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no entrypoint relation with a trailing comment on the enclosing type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph parse error UnexpectedToken at 3:11
+- case: dsl-semantic-validation-cases.yaml::no_entrypoint_1 should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no_entrypoint_2 should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no_entrypoint_3a should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::no_entrypoint_3b should fail
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::reserved relation name with a trailing comment on the enclosing type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [reserved-relation-keywords]; Relgraph parse error UnexpectedToken at 3:10
+- case: dsl-semantic-validation-cases.yaml::reserved type name with a trailing comment on the type line
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [reserved-type-keywords]; Relgraph parse error UnexpectedToken at 3:9
+- case: dsl-semantic-validation-cases.yaml::single character relations and types, no entry point
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::supports parsing a modular model but throws schema required error
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects [schema-version-required]; Relgraph accepts
+- case: dsl-semantic-validation-cases.yaml::unused condition whose name is a prefix of an earlier condition points at the correct line
+  reason: unsupported-feature
+  task: '5'
+  provisional: true
+  justification: upstream expects [condition-not-used]; Relgraph accepts
+- case: dsl-syntax-validation-cases.yaml::a valid model with comments should not have errors
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream accepts; Relgraph parse error UnexpectedToken at 2:2
+- case: dsl-syntax-validation-cases.yaml::disallows multiple extends for same type
+  reason: harness-gap
+  task: '4'
+  provisional: true
+  justification: upstream expects [syntax-file:duplicate-extension x2]; Relgraph validation [UnknownExtensionType, DuplicateExtension, UnknownExtensionType, DuplicateExtension, UnknownExtensionType]; no table entry for UnknownExtensionType
+- case: dsl-syntax-validation-cases.yaml::does not allow extend in model
+  reason: harness-gap
+  task: '4'
+  provisional: true
+  justification: upstream expects [syntax-file:extend-outside-model]; Relgraph validation [EmptyModel, ExtensionOutsideModule]; no table entry for EmptyModel
+- case: dsl-syntax-validation-cases.yaml::valid syntax (1)
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream accepts; Relgraph validation [EmptyModel]
+- case: 'dsl-syntax-validation-cases.yaml::valid syntax (2): comment preceding model'
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream accepts; Relgraph validation [EmptyModel]
+- case: fga-mod-transformer-cases.yaml::contents item does not end with `.fga`
+  reason: semantic-divergence
+  task: '6'
+  provisional: true
+  justification: upstream rejects; Relgraph accepts the manifest
+- case: fga-mod-transformer-cases.yaml::invalid schema version
+  reason: semantic-divergence
+  task: '6'
+  provisional: true
+  justification: upstream rejects; Relgraph accepts the manifest
+- rule: fga-mod-json-output
+  reason: unsupported-feature
+  task: permanent
+  justification: Relgraph has no OpenFGA JSON model output, so the expected `json` of fga.mod transformer cases is not compared (plan Task 2 step 4; revisit if Decision D3 adopts JSON models).

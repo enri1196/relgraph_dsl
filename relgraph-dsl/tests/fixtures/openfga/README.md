@@ -93,3 +93,16 @@ claims.
 Manifest YAML examples are under `manifest/`; modular composition examples are
 under `modular/`. Cross-file semantic fixtures are under
 `modular/validation/`.
+
+## Upstream language corpora
+
+`cargo test -p relgraph_dsl --test upstream_corpus` replays the three vendored
+`openfga/language` corpora in `upstream/` (syntax, semantic and `fga.mod`
+cases). The runner's module docs describe what is compared: accept versus
+reject, then the stage (syntax) or the multiset of error types mapped to
+`ValidationIssue` codes, never message text. Positions and symbols are printed
+as metrics only (`-- --nocapture`). Every case that does not pass is covered by
+a reviewed entry in `upstream-skip.yaml`; the test also fails when an entry no
+longer covers a non-passing case, so the list only shrinks. Entries marked
+`provisional: true` still await classification. Measured pass rates are
+recorded by the conformance plan (`CONFORMANCE_PLAN.md`).
