@@ -224,11 +224,11 @@ writes and fixes write error categories.
 
 ### 3.2 Validating write wrapper
 
-- [ ] Add `FgaAuthz<Bound<S>>::write_tuple(&tenant, &tuple)` and
+- [x] Add `FgaAuthz<Bound<S>>::write_tuple(&tenant, &tuple)` and
   `delete_tuple(&tenant, &tuple)` for `S: RelationshipWriteStore`. They check
   the tenant, call `validate_tuple`, then delegate. Return a new `WriteError`
   enum with `Validation(AuthorizationError)` and `Store(StoreError)`.
-- [ ] Document that the wrapper validates against the bound model only; it does
+- [x] Document that the wrapper validates against the bound model only; it does
   not authorize the caller to write.
 
 ### 3.3 Atomic multi-tuple changes

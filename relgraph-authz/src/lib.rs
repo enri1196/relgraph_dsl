@@ -72,7 +72,7 @@ pub use authz::{
     MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, ObjectRef, RelationExpressionKind, RelationLocation,
     RelationName, RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
     RelationshipWriteStore, RuntimeCapability, StoreCursor, StoreError, StoreErrorKind,
-    StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound,
+    StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound, WriteError,
 };
 #[cfg(feature = "axum")]
 pub mod axum_authz;

@@ -7,6 +7,7 @@ mod parameter_profile;
 pub mod policy;
 mod request;
 mod store;
+mod write;
 
 pub use request::{
     AuthorizationDecision, AuthorizationError, CapabilityDiagnostic, CheckRequest,
@@ -20,6 +21,7 @@ pub use store::{
     RelationshipReadSession, RelationshipStore, RelationshipTuple, RelationshipWriteStore,
     StoreCursor, StoreError, StoreErrorKind, StoreFuture, TupleSubject,
 };
+pub use write::WriteError;
 
 use std::fmt;
 use std::sync::Arc;

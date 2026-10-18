@@ -218,10 +218,19 @@ are processed in pages of at most 128 tuples, further limited by the remaining
 tuple budget. Before membership is evaluated, every tuple in the fetched page
 must pass ownership, condition-context, and relation-restriction validation.
 An invalid tuple or preparation-budget error anywhere in that page defeats a
-possible grant from the same page. Stores do not know the model, so call
-`FgaAuthz::validate_tuple` before writing a tuple: it applies the same model
-checks (object type, relation, declared subject targets and conditions, and
-stored context types) and rejects tuples that would make such checks fail.
+possible grant from the same page. Stores do not know the model, so write
+through `FgaAuthz::write_tuple` and `delete_tuple` on a bound authorizer whose
+store implements `RelationshipWriteStore`, or call `FgaAuthz::validate_tuple`
+before writing directly. Validation applies the same model checks (object
+type, relation, declared subject targets and conditions, and stored context
+types) and rejects tuples that would make such checks fail with
+`WriteError::Validation`; the tenant check and store outcomes, including
+`Conflict` for a duplicate, are `WriteError::Store`. These wrappers validate
+against the bound model only: they do not authorize the caller to write, so
+the application still decides who may create or remove a relationship. Checks
+fail closed on a stored tuple that no longer fits the model after a model
+change; remove such a tuple through the store directly, because the validating
+delete rejects it too.
 For a tuple-to-userset relation, tupleset targets whose type does not define
 the computed relation cannot grant and are skipped.
 
