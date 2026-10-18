@@ -562,7 +562,7 @@ asserts a cost limit.
 **Acceptance:** CEL skip entries shrink as recorded in D1; all authz tests and
 no-feature / `axum` builds green; docs updated.
 
-## Task 10 [PROGRESS]: Record permanent divergences
+## Task 10 [DONE]: Record permanent divergences
 
 **Depends on:** Task 4.
 
@@ -579,6 +579,21 @@ no-feature / `axum` builds green; docs updated.
 3. Document the permanent entries in the authz README's compatibility boundary.
 
 **Acceptance:** no permanent divergence lacks a justification; README lists them.
+
+Result: every permanent entry already had a justification; no skip entry
+changed. Negation cycles: 3 `semantic-divergence/deliberate` stage entries (15
+cases: 3 models, 10 checks, 2 `ctxCheck` replays), each stating that upstream
+accepts the model and that the memoization relies on the rejection. Inline
+conditions: 9 `unsupported-feature/inline-condition` stage entries (51 cases),
+`task: permanent`. The crate README has a new "Permanent differences from
+OpenFGA" section (negation cycles, inline condition expressions, strict reads
+of drifted tuples; the inline syntax and `InlineConditionExpression` rejection
+were undocumented there before), and the fixtures README's compatibility
+boundary lists the entries with counts. The 4 DSL permanent entries and the
+JSON-output rule were already justified and listed in the DSL fixtures README.
+Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
+--all-features`, authz doc tests and the Check corpus test pass (docs-only
+change).
 
 ## Task 11 [TODO]: Documentation and maintenance procedure
 
