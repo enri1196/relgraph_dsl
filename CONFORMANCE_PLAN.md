@@ -331,7 +331,7 @@ work them in roughly this order of corpus impact:
 | Tasks 8-9 | 4 | one `ipaddress` stage; no other CEL feature fails in the corpora, so CEL work is low priority by corpus numbers |
 | permanent | 72 | deliberate divergences (24 strict-read checks, 13 negation-cycle cases, 4 DSL) and 30 inline-condition cases, 1 JSON-output rule case |
 
-## Task 5 [PROGRESS]: Semantic validation parity
+## Task 5 [DONE]: Semantic validation parity
 
 **Depends on:** Task 4.
 
@@ -352,6 +352,34 @@ work them in roughly this order of corpus impact:
 
 **Acceptance:** semantic corpus skip list shrinks (record before/after counts);
 all existing DSL and authz tests green; DSL README documents new diagnostics.
+
+Result: seven `ValidationIssue` rules, following `pkg/js/validator/validate-dsl.ts`
+at the language pin: `ReservedTypeName` / `ReservedRelationName` (`self`,
+`this`), `InvalidName` (type 1-254, relation 1-50 characters, no `:#@*` or
+whitespace), `DuplicateTypeRestriction`, `DuplicateOperand` (top-level
+operator only; a left-nested chain of one operator counts as one, so
+`(a or b) or a` is stricter than upstream), `UnusedCondition`, and
+`NoEntryPoint` (least fixed point; difference needs both operands, as
+upstream; runs only when every other rule passed, like upstream). All map in
+the runner's table; `UPSTREAM_TYPES_WITHOUT_COUNTERPART` is now empty. Semantic
+corpus: 37 to 77 of 86 run cases pass, skip list 55 to 15 entries (the 40
+`unsupported-feature/validation` entries are gone; 7 Task 12 comment bugs and
+2 permanent deliberate entries remain in that file). Check corpora unchanged
+(481/1094, 147/368). User-visible rejections, each checked: the
+`valid/cyclic.fga` validation fixture (a cycle with no entry point) moved to
+`invalid/no-entry-point-cycle.fga` and was replaced by a cycle with an entry
+point; the main `modular/` fixture now uses its two conditions and is asserted
+to validate; authz tests that used `member or member`, a no-entry-point cycle,
+and the construction stress workloads (`base or base ...`) now use distinct
+relations (construction counts updated; `union_exact_512` / `repeated_128`
+remeasured in the authz README). Grammar fixtures `valid/computed-userset.fga`
+and `valid/types-before-conditions.fga` (syntax-only) now fail validation;
+noted in the fixtures README. Examples, authz fixtures and
+`recursion_models.json` models still validate. The DSL crate has no README of
+its own, so the rules are documented in the crate docs (`lib.rs`); `AGENTS.md`'s
+validator summary was updated. Validation: `cargo fmt --check`,
+`cargo check --workspace --all-targets --all-features`, all plan test commands
+and clippy (workspace, all features) pass; live PostgreSQL tests not run.
 
 ## Task 6 [TODO]: Manifest (`fga.mod`) parity
 
