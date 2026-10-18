@@ -1,6 +1,6 @@
 # Agent guide to Relgraph
 
-This guide describes the architecture inspected on 2026-10-03. Verify the current code before relying on a symbol or dependency version. The separate [adversarial review](ADVERSARIAL_REVIEW.md) records findings and validation results from that snapshot; it is not a list of implemented changes.
+This guide describes the architecture inspected on 2026-10-03. Verify the current code before relying on a symbol or dependency version.
 
 ## Project and ownership boundaries
 
@@ -95,7 +95,7 @@ Boolean expressions use deliberate three-valued rules. A decisive allow can mask
 
 The runtime profile supports the six relation-expression forms on acyclic dependencies; CEL scalar bool/int/uint/double/string/duration/timestamp and one-level scalar lists/maps. Map keys are strings. Inline conditions, IP-address parameters, nested containers, comprehension macros, and other unsupported features are rejected by runtime construction even where DSL syntax accepts them. Consult the authz README and fixtures before extending this profile.
 
-Default limits: 10,000 scanned tuples, depth 25 (OpenFGA's resolve depth), 1,024 store page calls, 100,000 work units per check (per item in a batch), condition cost 100 per condition evaluation, and 100 batch items (maximum 1,000). Stored condition contexts are limited to 65,536 serialized JSON bytes and 10,000 collection entries; evaluation applies the same limits to each custom-store context and request value. Request values are converted once per check or batch (`RequestValueCache`). Context conversion and condition evaluations, including failed attempts, are charged to the check's work budget. These are local accounting limits, not OpenFGA-equivalent CEL cost accounting or a wall-clock timeout; other resource-bound concerns are recorded in the review.
+Default limits: 10,000 scanned tuples, depth 25 (OpenFGA's resolve depth), 1,024 store page calls, 100,000 work units per check (per item in a batch), condition cost 100 per condition evaluation, and 100 batch items (maximum 1,000). Stored condition contexts are limited to 65,536 serialized JSON bytes and 10,000 collection entries; evaluation applies the same limits to each custom-store context and request value. Request values are converted once per check or batch (`RequestValueCache`). Context conversion and condition evaluations, including failed attempts, are charged to the check's work budget. These are local accounting limits, not OpenFGA-equivalent CEL cost accounting or a wall-clock timeout.
 
 ## Store contracts and adapters
 
@@ -115,7 +115,7 @@ PostgreSQL modules:
 | `src/mapping.rs` | `TupleRow`, `from_tuple`, `into_tuple`, versioned canonical identity encoding, SHA-256 digest, exact JSON preservation |
 | `migrations/0001_relationship_tuples.sql` | Fixed schema/table, field/subject/condition constraints, identity uniqueness, lookup index |
 
-PostgreSQL checks and batches use one read-only repeatable-read transaction and establish its snapshot before returning the session. Keyset pages order by `tuple_id`; cursors bind to session/tenant/query. Each check holds a pool connection. Applications own migrations, trusted tenant selection, write authorization, pool configuration, deadlines, and credentials. A cancelled or failed write may have committed; the adapter does not promise retry/idempotency semantics. The README's documented PostgreSQL minimum is 14; its live-test version guard currently differs (see review).
+PostgreSQL checks and batches use one read-only repeatable-read transaction and establish its snapshot before returning the session. Keyset pages order by `tuple_id`; cursors bind to session/tenant/query. Each check holds a pool connection. Applications own migrations, trusted tenant selection, write authorization, pool configuration, deadlines, and credentials. A cancelled or failed write may have committed; the adapter does not promise retry/idempotency semantics. The documented PostgreSQL minimum is 14, matching the live-test version guard.
 
 ## Route policy and Axum
 
@@ -146,10 +146,10 @@ cargo test --workspace --doc --all-features
 cargo test --workspace --all-targets --all-features
 ```
 
-For feature isolation, check/test `relgraph-authz` without features as well as with `--features axum`. The full workspace currently has known failures documented in the review; do not claim a clean baseline by running only default members.
+For feature isolation, check/test `relgraph-authz` without features as well as with `--features axum`. Do not claim a clean workspace baseline by running only default members.
 
 DSL tests cover parser behavior, validation, manifests, modular composition/origins, and a 64-case syntax corpus in `relgraph-dsl/tests/fixtures/openfga`. Authz tests cover model construction, conditions, relation operators, batch checks, policy mapping, paging, store contracts, Axum, and offline compatibility fixtures (also replayed as batches). `relgraph-authz/tests/support/store_contract.rs` is shared by in-memory and PostgreSQL adapter tests.
 
-Live PostgreSQL tests in `relgraph-authz-postgres/tests/postgres.rs` require `OPENFGA_POSTGRES_TEST_URL` pointing to a disposable server with database-creation privileges. They create/drop generated databases and may create roles; they fail on missing configuration, rather than silently skipping. Do not run them against an arbitrary user database or print the URL. At this snapshot they fail to compile before database access.
+Live PostgreSQL tests in `relgraph-authz-postgres/tests/postgres.rs` require `OPENFGA_POSTGRES_TEST_URL` pointing to a disposable server with database-creation privileges. They create/drop generated databases and may create roles; they fail on missing configuration, rather than silently skipping. Do not run them against an arbitrary user database or print the URL. They are `#[ignore]`d, so a plain workspace test run does not exercise them.
 
 External compatibility checks are separately documented in `tools/conformance/README.md` and `relgraph-authz/tests/fixtures/authz/README.md`. Syntax is pinned to vendored `openfga/language` revision `fbc62984d02fc8ff7e2a924e0b9c34193233007c`; authorization references OpenFGA v1.21.0. Offline fixture success does not prove fresh upstream/server parity. Run the documented differential harness when changing a compatibility surface and suitable local prerequisites are available.

@@ -356,9 +356,7 @@ The ignored measurement test can be run for the exact-limit union case with:
 RELGRAPH_CONSTRUCTION_COST_CASE=union_exact_512 cargo test -p relgraph-authz --release --lib authz::model::construction_costs::measure_construction_costs -- --ignored --exact --nocapture --test-threads=1
 ```
 
-See the [construction cost report](../CONSTRUCTION_COSTS.md) for all
-workloads, phases, measurements, and limitations. The timings are descriptive
-construction observations; they do not set a latency target or claim runtime
+The timings are descriptive construction observations; they do not set a latency target or claim runtime
 authorization speed.
 
 ## Supported runtime profile
