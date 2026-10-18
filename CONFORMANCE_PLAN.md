@@ -682,7 +682,7 @@ READMEs, workspace README table, `AGENTS.md`. Validation: `cargo fmt --check`,
 `cargo check --workspace --all-targets --all-features`, clippy on the DSL
 crate, and all plan test commands pass (live PostgreSQL tests not run).
 
-## Task 13 [TODO]: Userset and wildcard check subjects
+## Task 13 [PROGRESS]: Userset and wildcard check subjects
 
 **Depends on:** Task 4.
 
