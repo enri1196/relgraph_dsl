@@ -202,7 +202,7 @@ or type line (e.g. `schema 1.5 # a comment`) and an indented comment between
 `model` and `schema`, which the pinned corpus parses. Validation: all plan
 commands pass; `conformance` unchanged and green; clippy clean on the crate.
 
-## Task 3 [TODO]: Check corpus runner
+## Task 3 [PROGRESS]: Check corpus runner
 
 **Depends on:** Task 1.
 
