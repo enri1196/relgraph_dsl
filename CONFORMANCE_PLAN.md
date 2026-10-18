@@ -262,7 +262,7 @@ unknown types/relations to 2000, not 2021/2022 (those occur only in list
 assertions). Validation: all plan commands pass (live PostgreSQL tests not run);
 clippy clean on the crate.
 
-## Task 4 [TODO]: Baseline classification and published pass rates
+## Task 4 [PROGRESS]: Baseline classification and published pass rates
 
 **Depends on:** Tasks 2 and 3.
 
