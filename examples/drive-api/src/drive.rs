@@ -215,6 +215,51 @@ impl Drive {
             .map_err(ApiError::unavailable)
     }
 
+    /// Keeps the items on which the caller holds a capability, in input order.
+    ///
+    /// Each batch reads one snapshot and shares decisions such as inherited
+    /// folder access across items. Any per-item evaluation error fails the
+    /// whole listing rather than silently hiding the item.
+    pub async fn visible(
+        &self,
+        identity: &Identity,
+        items: Vec<Item>,
+        capability: &str,
+    ) -> Result<Vec<Item>, ApiError> {
+        let relation = RelationName::new(capability).map_err(ApiError::unavailable)?;
+        let mut visible = Vec::new();
+        for chunk in items.chunks(EvaluationLimits::DEFAULT_MAX_BATCH_ITEMS) {
+            let candidates = chunk
+                .iter()
+                .map(|item| ObjectRef::new(item.kind.model_type(), item.id.clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ApiError::unavailable)?;
+            let filtered = self
+                .authz
+                .filter_objects(
+                    identity.tenant.clone(),
+                    identity.subject.clone(),
+                    relation.clone(),
+                    candidates,
+                )
+                .await
+                .map_err(ApiError::unavailable)?;
+            if let Some((_, error)) = filtered.errors.first() {
+                return Err(ApiError::unavailable(error));
+            }
+            let mut allowed = filtered.allowed.into_iter().peekable();
+            for item in chunk {
+                if allowed
+                    .next_if(|object| object.id().as_str() == item.id)
+                    .is_some()
+                {
+                    visible.push(item.clone());
+                }
+            }
+        }
+        Ok(visible)
+    }
+
     /// Requires an allow before the caller reads content or changes application state.
     pub async fn require(
         &self,

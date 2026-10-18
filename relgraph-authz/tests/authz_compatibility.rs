@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use relgraph_authz::{
-    AuthorizationDecision, CheckRequest, ConditionContext, ConstructionError, EvaluationLimits,
-    FgaAuthz, InMemoryRelationshipStore, ObjectRef, RelationName, RelationshipTuple, Subject,
-    TenantId, TupleSubject, TypeName,
+    AuthorizationDecision, BatchCheckRequest, CheckRequest, ConditionContext, ConstructionError,
+    EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ObjectRef, RelationName,
+    RelationshipTuple, Subject, TenantId, TupleSubject, TypeName,
 };
 use serde_json::{Value, json};
 
@@ -190,6 +190,74 @@ async fn checked_in_openfga_cases_match_the_offline_runtime() {
                         .expect("local decision expectation"),
                     "{fixture_file}/{case_id}"
                 );
+            }
+        }
+    }
+}
+
+/// Batches of the checked-in cases, grouped by tenant, subject, and context,
+/// must reproduce every individual check result, including its error.
+#[tokio::test]
+async fn checked_in_cases_match_individual_checks_when_batched() {
+    for fixture_file in [
+        "relationships.json",
+        "conditions.json",
+        "branch_errors.json",
+        "recursion.json",
+    ] {
+        let fixture = read_json(fixture_file);
+        let definition = model_definition(&fixture, fixture_file);
+        let local_max_condition_cost = fixture
+            .get("local_max_condition_cost")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or_else(|| EvaluationLimits::default().max_condition_cost());
+        let limits = EvaluationLimits::default()
+            .with_max_condition_cost(local_max_condition_cost)
+            .expect("fixture condition-cost budget should be valid");
+        let authz = FgaAuthz::new(&definition)
+            .expect("fixture model should construct")
+            .with_store(build_store(&fixture), limits);
+
+        let mut groups: BTreeMap<(String, String, String), Vec<CheckRequest>> = BTreeMap::new();
+        for case in fixture["cases"]
+            .as_array()
+            .expect("fixture cases are an array")
+        {
+            let request = check_request(&fixture, &case["request"]);
+            let key = (
+                request.tenant().as_str().to_owned(),
+                format!("{:?}", request.subject()),
+                serde_json::to_string(request.context()).expect("context serializes"),
+            );
+            groups.entry(key).or_default().push(request);
+        }
+
+        for requests in groups.values() {
+            for chunk in requests.chunks(EvaluationLimits::DEFAULT_MAX_BATCH_ITEMS) {
+                let first = &chunk[0];
+                let batch = BatchCheckRequest::new(
+                    first.tenant().clone(),
+                    first.subject().clone(),
+                    chunk
+                        .iter()
+                        .map(|request| (request.object().clone(), request.relation().clone())),
+                )
+                .with_context(first.context().clone());
+                let results = authz
+                    .batch_check(&batch)
+                    .await
+                    .unwrap_or_else(|error| panic!("{fixture_file}: batch failed: {error:?}"));
+                for (request, batched) in chunk.iter().zip(results) {
+                    let individual = authz.check(request.clone()).await;
+                    assert_eq!(
+                        format!("{batched:?}"),
+                        format!("{individual:?}"),
+                        "{fixture_file}: {:?}#{}",
+                        request.object(),
+                        request.relation().as_str()
+                    );
+                }
             }
         }
     }

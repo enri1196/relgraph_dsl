@@ -57,19 +57,21 @@ async fn list_items(
     let drive = state.lock().await;
     // A shared child may be visible even when its parent is private. This query
     // therefore checks children individually rather than requiring parent access.
-    let mut visible = Vec::new();
-    for item in drive.items.values().filter(|item| {
-        item.tenant == identity.tenant
-            && query
-                .parent_id
-                .as_ref()
-                .is_none_or(|id| item.parent_id.as_ref() == Some(id))
-    }) {
-        if drive.allowed(&identity, item, "can_view").await? {
-            visible.push(item.clone());
-        }
-    }
-    Ok(Json(visible))
+    let candidates = drive
+        .items
+        .values()
+        .filter(|item| {
+            item.tenant == identity.tenant
+                && query
+                    .parent_id
+                    .as_ref()
+                    .is_none_or(|id| item.parent_id.as_ref() == Some(id))
+        })
+        .cloned()
+        .collect();
+    Ok(Json(
+        drive.visible(&identity, candidates, "can_view").await?,
+    ))
 }
 
 /// Returns metadata only after checking view access.

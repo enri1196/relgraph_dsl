@@ -3,8 +3,8 @@ mod common;
 
 use common::{block_on, object, relation, request as check_request, subject, tenant};
 use relgraph_authz::{
-    AuthorizationDecision, AuthorizationError, CheckRequest, ConditionContext, EvaluationLimits,
-    FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
+    AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, ConditionContext,
+    EvaluationLimits, FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
     RelationshipStore, RelationshipTuple, StoreCursor, StoreError, StoreErrorKind, StoreFuture,
     TenantId, TupleSubject,
 };
@@ -1171,6 +1171,109 @@ fn page_preparation_budget_error_defeats_a_same_page_grant() {
         })
     ));
     assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn batch_items_reuse_memoized_userset_decisions() {
+    // Two documents grant viewer through the same userset. The second item
+    // reuses the first item's memoized `document:team#member` decision, so the
+    // batch reads three pages where two separate checks would read four.
+    let member = RelationshipTuple::new(
+        tenant("tenant-a"),
+        object("document", "team"),
+        relation("member"),
+        subject("user", "anne"),
+    );
+    let pages = vec![
+        scripted_page(
+            "1",
+            "viewer",
+            None,
+            vec![userset_tuple("1", "viewer", "team", "member")],
+            None,
+        ),
+        scripted_page("team", "member", None, vec![member], None),
+        scripted_page(
+            "2",
+            "viewer",
+            None,
+            vec![userset_tuple("2", "viewer", "team", "member")],
+            None,
+        ),
+    ];
+    let reads = Arc::new(Mutex::new(PageReadLog::default()));
+    let authz = FgaAuthz::new(USERSET_MODEL).unwrap().with_store(
+        PageStore {
+            pages,
+            reads: Arc::clone(&reads),
+        },
+        EvaluationLimits::default(),
+    );
+    let request = BatchCheckRequest::new(
+        tenant("tenant-a"),
+        subject("user", "anne"),
+        [
+            (object("document", "1"), relation("viewer")),
+            (object("document", "2"), relation("viewer")),
+        ],
+    );
+
+    let results = block_on(authz.batch_check(&request)).unwrap();
+    let calls = reads
+        .lock()
+        .expect("test page read log mutex is not poisoned")
+        .calls
+        .clone();
+
+    assert!(matches!(
+        results.as_slice(),
+        [
+            Ok(AuthorizationDecision::Allow),
+            Ok(AuthorizationDecision::Allow)
+        ]
+    ));
+    assert_eq!(
+        calls
+            .iter()
+            .map(|(object, relation, _, _)| (object.id().as_str(), relation.as_str()))
+            .collect::<Vec<_>>(),
+        [("1", "viewer"), ("team", "member"), ("2", "viewer")]
+    );
+}
+
+#[test]
+fn batch_items_restart_the_store_call_budget() {
+    let pages = vec![
+        scripted_page("1", "viewer", None, vec![page_tuple("bob", "1")], None),
+        scripted_page("2", "viewer", None, vec![page_tuple("anne", "2")], None),
+    ];
+    let reads = Arc::new(Mutex::new(PageReadLog::default()));
+    let limits = EvaluationLimits::default().with_max_store_calls(1).unwrap();
+    let authz = FgaAuthz::new(MODEL).unwrap().with_store(
+        PageStore {
+            pages,
+            reads: Arc::clone(&reads),
+        },
+        limits,
+    );
+    let request = BatchCheckRequest::new(
+        tenant("tenant-a"),
+        subject("user", "anne"),
+        [
+            (object("document", "1"), relation("viewer")),
+            (object("document", "2"), relation("viewer")),
+        ],
+    );
+
+    let results = block_on(authz.batch_check(&request)).unwrap();
+
+    assert!(matches!(
+        results.as_slice(),
+        [
+            Ok(AuthorizationDecision::Deny),
+            Ok(AuthorizationDecision::Allow)
+        ]
+    ));
 }
 
 fn page_tuple(subject_id: &str, object_id: &str) -> RelationshipTuple {

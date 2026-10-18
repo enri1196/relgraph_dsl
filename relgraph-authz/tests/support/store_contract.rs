@@ -1,12 +1,12 @@
 use relgraph_authz::{
-    AuthorizationDecision, AuthorizationError, CheckRequest, ConditionContext, EvaluationLimits,
-    FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
+    AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, ConditionContext,
+    EvaluationLimits, FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
     RelationshipStore, RelationshipTuple, RelationshipWriteStore, StoreCursor, StoreError,
     StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject, TypeName,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Runs the backend-neutral relationship store and evaluator contracts against
 /// one newly constructed store.
@@ -20,6 +20,7 @@ where
     subject_variants_round_trip(&store).await;
     change_sets_are_atomic(&store).await;
     snapshots_are_fixed_before_the_first_read(&store).await;
+    batch_items_share_one_snapshot(&store).await;
     evaluation_limits_are_enforced(&store).await;
     evaluator_uses_backend_tuples_and_propagates_errors(store).await;
 }
@@ -549,6 +550,54 @@ where
     );
 }
 
+async fn batch_items_share_one_snapshot<S>(store: &SharedStore<S>)
+where
+    S: RelationshipStore + RelationshipWriteStore,
+{
+    let tenant_a = tenant("contract-batch-snapshot");
+    let first = object("document", "batch-first");
+    let second = object("document", "batch-second");
+    let viewer = relation("viewer");
+    let reader = subject("user", "batch-reader");
+    let late_grant = RelationshipTuple::new(
+        tenant_a.clone(),
+        second.clone(),
+        viewer.clone(),
+        reader.clone(),
+    );
+    let model =
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user]\n";
+    let authz = FgaAuthz::new(model).unwrap().with_store(
+        WriteOnFirstReadStore {
+            inner: store.clone(),
+            pending: Mutex::new(Some(late_grant)),
+        },
+        EvaluationLimits::default(),
+    );
+    let request = BatchCheckRequest::new(
+        tenant_a.clone(),
+        reader.clone(),
+        [(first, viewer.clone()), (second.clone(), viewer.clone())],
+    );
+
+    // The first item's read commits a grant for the second item first.
+    let results = authz.batch_check(&request).await.unwrap();
+    assert!(matches!(
+        results.as_slice(),
+        [
+            Ok(AuthorizationDecision::Deny),
+            Ok(AuthorizationDecision::Deny)
+        ]
+    ));
+    assert_eq!(
+        authz
+            .check(CheckRequest::new(tenant_a, reader, second, viewer))
+            .await
+            .unwrap(),
+        AuthorizationDecision::Allow
+    );
+}
+
 async fn evaluation_limits_are_enforced<S>(store: &SharedStore<S>)
 where
     S: RelationshipStore + RelationshipWriteStore,
@@ -907,6 +956,73 @@ where
 struct ErrorOnRelationStore<S> {
     inner: S,
     error_relation: &'static str,
+}
+
+/// Inserts one tuple through the wrapped store before its first page read.
+struct WriteOnFirstReadStore<S> {
+    inner: SharedStore<S>,
+    pending: Mutex<Option<RelationshipTuple>>,
+}
+
+impl<S> RelationshipStore for WriteOnFirstReadStore<S>
+where
+    S: RelationshipStore + RelationshipWriteStore,
+{
+    type ReadSession = WriteOnFirstReadSession<S>;
+
+    fn begin_read<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+    ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>> {
+        Box::pin(async move {
+            let pending = self.pending.lock().unwrap().take();
+            Ok(WriteOnFirstReadSession {
+                inner: self.inner.begin_read(tenant).await?,
+                store: self.inner.clone(),
+                pending: Mutex::new(pending),
+            })
+        })
+    }
+}
+
+struct WriteOnFirstReadSession<S: RelationshipStore> {
+    inner: S::ReadSession,
+    store: SharedStore<S>,
+    pending: Mutex<Option<RelationshipTuple>>,
+}
+
+impl<S> RelationshipReadSession for WriteOnFirstReadSession<S>
+where
+    S: RelationshipStore + RelationshipWriteStore,
+{
+    fn tuples<'a>(
+        &'a self,
+        object: &'a ObjectRef,
+        relation: &'a RelationName,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<Vec<RelationshipTuple>, StoreError>> {
+        self.inner.tuples(object, relation, maximum)
+    }
+
+    fn tuples_page<'a>(
+        &'a self,
+        object: &'a ObjectRef,
+        relation: &'a RelationName,
+        cursor: Option<StoreCursor>,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
+        // Sessions are `Send` but not `Sync`, so the future must not borrow
+        // `self`; the page future is created first and polled after the write.
+        let pending = self.pending.lock().unwrap().take();
+        let store = self.store.clone();
+        let page = self.inner.tuples_page(object, relation, cursor, maximum);
+        Box::pin(async move {
+            if let Some(tuple) = pending {
+                store.insert_tuple(tuple.tenant(), &tuple).await?;
+            }
+            page.await
+        })
+    }
 }
 
 struct SharedStore<S>(Arc<S>);

@@ -2,7 +2,8 @@ use super::model::{
     CompiledExpression, CompiledModel, CompiledTargetRange, CompiledTargetRestriction,
 };
 use super::request::{
-    AuthorizationDecision, AuthorizationError, CheckRequest, EntityId, EvaluationLimits, ObjectRef,
+    AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, CheckScope,
+    EntityId, EvaluationLimits, ObjectRef, RelationName,
 };
 use super::store::{
     RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor,
@@ -56,21 +57,8 @@ pub(crate) async fn check<S: RelationshipStore>(
     limits: EvaluationLimits,
     request: &CheckRequest,
 ) -> Result<AuthorizationDecision, AuthorizationError> {
-    let object_type_name = request.object().type_name().as_str();
-    let object_type_id = compiled
-        .type_id(object_type_name)
-        .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type_name.to_owned()))?;
-    let relation_id = compiled
-        .relation_id(object_type_id, request.relation().as_str())
-        .ok_or_else(|| AuthorizationError::UnknownRelation {
-            object_type: object_type_name.to_owned(),
-            relation: request.relation().as_str().to_owned(),
-        })?;
-
-    let subject_type_name = request.subject().type_name().as_str();
-    compiled
-        .type_id(subject_type_name)
-        .ok_or_else(|| AuthorizationError::UnknownSubjectType(subject_type_name.to_owned()))?;
+    let relation_id = resolve_relation(compiled, request.object(), request.relation())?;
+    validate_subject_type(compiled, request.scope())?;
 
     // The session and evaluator are owned by this future. Dropping a cancelled
     // check drops the in-flight page future and its read snapshot without any
@@ -79,18 +67,81 @@ pub(crate) async fn check<S: RelationshipStore>(
         .begin_read(request.tenant())
         .await
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
-    let mut evaluator = Evaluator::new(compiled, session, limits, request);
-    let allowed = evaluator
-        .evaluate_relation(request.object().clone(), relation_id, 0)
-        .await?;
-    Ok(if allowed {
-        AuthorizationDecision::Allow
-    } else {
-        AuthorizationDecision::Deny
-    })
+    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope());
+    evaluator
+        .check_item(request.object().clone(), relation_id)
+        .await
 }
 
-/// One memo key; tenant and subject are fixed for this evaluator's single check.
+/// Evaluates every batch item against one snapshot with a shared memo.
+///
+/// Per-item failures, including unknown object types and relations, are
+/// returned in that item's slot; the outer error covers the item bound, the
+/// shared subject, and opening the read session.
+pub(crate) async fn batch_check<S: RelationshipStore>(
+    compiled: &CompiledModel,
+    store: &S,
+    limits: EvaluationLimits,
+    request: &BatchCheckRequest,
+) -> Result<Vec<Result<AuthorizationDecision, AuthorizationError>>, AuthorizationError> {
+    if request.items().len() > limits.max_batch_items() {
+        return Err(AuthorizationError::BatchLimitExceeded {
+            maximum_items: limits.max_batch_items(),
+        });
+    }
+    validate_subject_type(compiled, request.scope())?;
+    if request.items().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Cancellation drops the session and evaluator as it does for `check`.
+    let session = store
+        .begin_read(request.tenant())
+        .await
+        .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
+    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope());
+    let mut results = Vec::with_capacity(request.items().len());
+    for (object, relation) in request.items() {
+        let result = match resolve_relation(compiled, object, relation) {
+            Ok(relation_id) => evaluator.check_item(object.clone(), relation_id).await,
+            Err(error) => Err(error),
+        };
+        results.push(result);
+    }
+    Ok(results)
+}
+
+/// Resolves a checked object's relation to its compiled relation ID.
+fn resolve_relation(
+    compiled: &CompiledModel,
+    object: &ObjectRef,
+    relation: &RelationName,
+) -> Result<usize, AuthorizationError> {
+    let object_type_name = object.type_name().as_str();
+    let object_type_id = compiled
+        .type_id(object_type_name)
+        .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type_name.to_owned()))?;
+    compiled
+        .relation_id(object_type_id, relation.as_str())
+        .ok_or_else(|| AuthorizationError::UnknownRelation {
+            object_type: object_type_name.to_owned(),
+            relation: relation.as_str().to_owned(),
+        })
+}
+
+/// Rejects a checked subject whose type is absent from the model.
+fn validate_subject_type(
+    compiled: &CompiledModel,
+    scope: &CheckScope,
+) -> Result<(), AuthorizationError> {
+    let subject_type_name = scope.subject().type_name().as_str();
+    compiled
+        .type_id(subject_type_name)
+        .map(|_| ())
+        .ok_or_else(|| AuthorizationError::UnknownSubjectType(subject_type_name.to_owned()))
+}
+
+/// One memo key; tenant, subject, and contexts are fixed by the evaluator's scope.
 ///
 /// A relation ID identifies its owner type, so the object type is implied.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -99,7 +150,11 @@ struct EvaluationKey {
     object_id: EntityId,
 }
 
-/// Per-check state for bounded graph traversal and decision memoization.
+/// Per-scope state for bounded graph traversal and decision memoization.
+///
+/// One evaluator serves every item of a batch: completed decisions and
+/// converted request values are shared across items, while the tuple,
+/// store-call, and work budgets restart for each item (see `check_item`).
 ///
 /// Recursive models are evaluated as least fixed points with Tarjan-style
 /// bookkeeping. Each relation frame gets a DFS index. Reaching a key that is
@@ -121,7 +176,7 @@ struct Evaluator<'a, S> {
     compiled: &'a CompiledModel,
     session: S,
     limits: EvaluationLimits,
-    request: &'a CheckRequest,
+    scope: &'a CheckScope,
     completed: HashMap<EvaluationKey, bool>,
     /// DFS index of every key that is in flight or awaiting its cycle root.
     unresolved: HashMap<EvaluationKey, usize>,
@@ -137,18 +192,18 @@ struct Evaluator<'a, S> {
 }
 
 impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
-    /// Creates isolated evaluation state for a single check and store snapshot.
+    /// Creates isolated evaluation state for one scope and store snapshot.
     fn new(
         compiled: &'a CompiledModel,
         session: S,
         limits: EvaluationLimits,
-        request: &'a CheckRequest,
+        scope: &'a CheckScope,
     ) -> Self {
         Self {
             compiled,
             session,
             limits,
-            request,
+            scope,
             completed: HashMap::new(),
             unresolved: HashMap::new(),
             unresolved_stack: Vec::new(),
@@ -159,6 +214,30 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             work_units: 0,
             request_values: super::conditions::RequestValueCache::default(),
         }
+    }
+
+    /// Resolves one top-level item with fresh budgets and the shared memo.
+    ///
+    /// Every root frame finishes, so no unresolved key survives an item and
+    /// later items see only sound memo entries. Reusing a memoized decision
+    /// spends no budget, so an item can succeed in a batch where a separate
+    /// check would exceed a limit.
+    async fn check_item(
+        &mut self,
+        object: ObjectRef,
+        relation_id: usize,
+    ) -> Result<AuthorizationDecision, AuthorizationError> {
+        self.tuples_scanned = 0;
+        self.store_calls = 0;
+        self.work_units = 0;
+        self.low_link = usize::MAX;
+        let allowed = self.evaluate_relation(object, relation_id, 0).await;
+        debug_assert!(self.unresolved.is_empty() && self.unresolved_stack.is_empty());
+        Ok(if allowed? {
+            AuthorizationDecision::Allow
+        } else {
+            AuthorizationDecision::Deny
+        })
     }
 
     /// Resolves one relation for the checked subject and memoizes its decision.
@@ -416,7 +495,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         targets: &CompiledTargetRange,
     ) -> Result<Vec<PreparedAssignmentTuple>, AuthorizationError> {
         let mut prepared_tuples = Vec::with_capacity(tuples.len());
-        let checked = self.request.subject();
+        let checked = self.scope.subject();
         for tuple in tuples {
             let condition_context = self.validate_tuple(tuple, object, relation_id)?;
             let restriction = self.compiled.validate_assignment_subject(tuple, targets)?;
@@ -497,7 +576,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         object: &ObjectRef,
         relation_id: usize,
     ) -> Result<Option<super::conditions::PreparedConditionContext>, AuthorizationError> {
-        if tuple.tenant() != self.request.tenant() {
+        if tuple.tenant() != self.scope.tenant() {
             return Err(AuthorizationError::InvalidTuple(
                 "tuple belongs to a different tenant",
             ));
@@ -539,8 +618,8 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         let mut work = 0;
         let evaluation = condition.evaluate(
             prepared_context,
-            self.request.condition_context(context.name().as_str()),
-            self.request.context(),
+            self.scope.condition_context(context.name().as_str()),
+            self.scope.context(),
             &mut self.request_values,
             self.limits.max_condition_cost(),
             &mut work,

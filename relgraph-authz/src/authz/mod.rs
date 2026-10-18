@@ -10,10 +10,11 @@ mod store;
 mod write;
 
 pub use request::{
-    AuthorizationDecision, AuthorizationError, CapabilityDiagnostic, CheckRequest,
-    ConditionContextSource, ConditionName, ConstructionError, EntityId, EvaluationLimits,
-    EvaluationLimitsError, IdentifierError, ObjectRef, RelationExpressionKind, RelationLocation,
-    RelationName, RuntimeCapability, Subject, TenantId, TypeName,
+    AuthorizationDecision, AuthorizationError, BatchCheckRequest, CapabilityDiagnostic,
+    CheckRequest, ConditionContextSource, ConditionName, ConstructionError, EntityId,
+    EvaluationLimits, EvaluationLimitsError, FilteredObjects, IdentifierError, ObjectRef,
+    RelationExpressionKind, RelationLocation, RelationName, RuntimeCapability, Subject, TenantId,
+    TypeName,
 };
 pub use store::{
     ConditionContext, InMemoryReadSession, InMemoryRelationshipStore,
@@ -26,7 +27,7 @@ pub use write::WriteError;
 use std::fmt;
 use std::sync::Arc;
 
-use evaluator::check as evaluate_check;
+use evaluator::{batch_check as evaluate_batch_check, check as evaluate_check};
 use model::CompiledModel;
 
 /// Marker for a compiled authorization model that has no relationship store.
@@ -183,6 +184,89 @@ impl<S: RelationshipStore> FgaAuthz<Bound<S>> {
             &request,
         )
         .await
+    }
+
+    /// Checks many `(object, relation)` pairs for one subject and context.
+    ///
+    /// All items read one tenant snapshot, so a write made while the batch
+    /// runs is not observed by later items, and they share memoized relation
+    /// decisions and converted request values. Each item gets fresh tuple,
+    /// store-call, and work budgets, and its error stays in its own slot.
+    /// Results follow item order. The outer error reports a batch larger than
+    /// [`EvaluationLimits::max_batch_items`], an unknown subject type, or a
+    /// failure to open the read session. A backend may hold one connection and
+    /// transaction for the whole batch.
+    ///
+    /// ```no_run
+    /// use relgraph_authz::{
+    ///     AuthorizationDecision, BatchCheckRequest, EvaluationLimits, FgaAuthz,
+    ///     InMemoryRelationshipStore, ObjectRef, RelationName, Subject, TenantId,
+    /// };
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let authorizer = FgaAuthz::new(
+    ///     "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user]\n",
+    /// )?
+    /// .with_store(InMemoryRelationshipStore::new(), EvaluationLimits::default());
+    /// let viewer = RelationName::new("viewer")?;
+    /// let request = BatchCheckRequest::new(
+    ///     TenantId::new("acme")?,
+    ///     Subject::new("user", "anne")?,
+    ///     [
+    ///         (ObjectRef::new("document", "1")?, viewer.clone()),
+    ///         (ObjectRef::new("document", "2")?, viewer),
+    ///     ],
+    /// );
+    /// for result in authorizer.batch_check(&request).await? {
+    ///     let _allowed = result? == AuthorizationDecision::Allow;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn batch_check(
+        &self,
+        request: &BatchCheckRequest,
+    ) -> Result<Vec<Result<AuthorizationDecision, AuthorizationError>>, AuthorizationError> {
+        evaluate_batch_check(
+            &self.compiled,
+            self.state.store.as_ref(),
+            self.state.limits,
+            request,
+        )
+        .await
+    }
+
+    /// Returns the candidates on which `subject` holds `relation`.
+    ///
+    /// Candidates may mix object types that define `relation`. This is one
+    /// [`Self::batch_check`] without request context: allowed candidates and
+    /// per-candidate errors are returned separately, in candidate order, and
+    /// denied candidates are omitted. Use `batch_check` directly when
+    /// conditions need request context.
+    pub async fn filter_objects(
+        &self,
+        tenant: TenantId,
+        subject: Subject,
+        relation: RelationName,
+        candidates: Vec<ObjectRef>,
+    ) -> Result<FilteredObjects, AuthorizationError> {
+        let request = BatchCheckRequest::new(
+            tenant,
+            subject,
+            candidates
+                .into_iter()
+                .map(|object| (object, relation.clone())),
+        );
+        let results = self.batch_check(&request).await?;
+        let mut filtered = FilteredObjects::default();
+        for ((object, _), result) in request.items().iter().zip(results) {
+            match result {
+                Ok(AuthorizationDecision::Allow) => filtered.allowed.push(object.clone()),
+                Ok(AuthorizationDecision::Deny) => {}
+                Err(error) => filtered.errors.push((object.clone(), error)),
+            }
+        }
+        Ok(filtered)
     }
 }
 

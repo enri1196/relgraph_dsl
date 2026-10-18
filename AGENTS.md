@@ -70,9 +70,9 @@ DSL text
       → conditions::compile_all
       → type/relation indexes
   → with_store(store, EvaluationLimits)
-  → FgaAuthz<Bound<S>>::check(CheckRequest)
-  → one tenant-scoped read session + per-check Evaluator
-  → Allow / Deny / AuthorizationError
+  → FgaAuthz<Bound<S>>::check(CheckRequest) / batch_check(&BatchCheckRequest)
+  → one tenant-scoped read session + one Evaluator per check or batch
+  → Allow / Deny / AuthorizationError (per item for a batch)
 ```
 
 `FgaAuthz<State>` shares an immutable `CompiledModel` through `Arc`. `Unbound` and `Bound<S>` prevent checks before store binding. Bound clones share the store and limits. `ModelIdentity` identifies a compiled instance within one process; it is neither a persistent version nor an authentication credential.
@@ -82,12 +82,12 @@ DSL text
 `authz/request.rs` owns:
 
 - Validated identifier types: `TenantId`, `TypeName`, `EntityId`, `RelationName`, `ConditionName`.
-- `Subject`, `ObjectRef`, `CheckRequest`, `AuthorizationDecision`.
+- `Subject`, `ObjectRef`, `CheckRequest`, `BatchCheckRequest`, `FilteredObjects`, `AuthorizationDecision`. Both requests wrap an internal `CheckScope` (tenant, subject, global and condition-scoped context) that the evaluator holds.
 - Construction/runtime errors and `EvaluationLimits`.
 
-Identifier constructors enforce shape; they do not authenticate tenants or subjects. `CheckRequest` carries a tenant, concrete subject, object, relation, global context, and condition-scoped context.
+Identifier constructors enforce shape; they do not authenticate tenants or subjects. `CheckRequest` carries a tenant, concrete subject, object, relation, global context, and condition-scoped context. `BatchCheckRequest` carries the same scope plus ordered `(ObjectRef, RelationName)` items; `batch_check` returns an outer error for a batch above `max_batch_items`, an unknown subject type, or `begin_read`, and otherwise one result per item. `filter_objects` is a context-free batch that splits allowed candidates from per-candidate errors.
 
-`authz/evaluator.rs` owns per-check traversal state: `Evaluator`, `EvaluationKey` (relation ID plus object ID), memoized completed decisions, Tarjan-style unresolved-key tracking for least-fixed-point evaluation, the request-value cache, and tuple/page/work counters. Relations are always evaluated by compiled relation ID. Reaching an unresolved key (in flight, or finished `false` inside an open cycle) returns a provisional `false` and lowers the frame's low link. `true` is always memoized. A `false` cycle root memoizes its whole unresolved suffix as `false`. A `false` frame whose low link points below it stays unresolved. Errors are never memoized, and allowing or erroring frames discard their unresolved suffix. These rules rely on construction having rejected negation cycles. Keep them, and the soundness tests in `tests/authz_recursion.rs`, when changing the evaluator. Main functions are `evaluate_relation`, `evaluate_expression`, `evaluate_direct_assignment`, `evaluate_tuple_to_userset`, `load_tuple_page`, `prepare_assignment_page`, `prepare_tupleset_page`, `validate_tuple`, and `evaluate_tuple_condition`.
+`authz/evaluator.rs` owns per-scope traversal state: `Evaluator`, `EvaluationKey` (relation ID plus object ID), memoized completed decisions, Tarjan-style unresolved-key tracking for least-fixed-point evaluation, the request-value cache, and tuple/page/work counters. Relations are always evaluated by compiled relation ID. Reaching an unresolved key (in flight, or finished `false` inside an open cycle) returns a provisional `false` and lowers the frame's low link. `true` is always memoized. A `false` cycle root memoizes its whole unresolved suffix as `false`. A `false` frame whose low link points below it stays unresolved. Errors are never memoized, and allowing or erroring frames discard their unresolved suffix. These rules rely on construction having rejected negation cycles. Keep them, and the soundness tests in `tests/authz_recursion.rs`, when changing the evaluator. A batch reuses one evaluator: `check_item` resets the tuple/page/work counters per item while the memo and request-value cache persist; every root frame finishes, so no unresolved key survives an item. Main functions are `check`, `batch_check`, `check_item`, `evaluate_relation`, `evaluate_expression`, `evaluate_direct_assignment`, `evaluate_tuple_to_userset`, `load_tuple_page`, `prepare_assignment_page`, `prepare_tupleset_page`, `validate_tuple`, and `evaluate_tuple_condition`.
 
 Boolean expressions use deliberate three-valued rules. A decisive allow can mask a union branch error; a decisive deny can mask an intersection error. Difference must not allow when the subtraction branch has an unresolved error. Preserve and test these rules rather than treating every error as a deny or making every branch error fatal. Tuple validation failures are handled more strictly than branch evaluation errors; `CompiledModel::validate_tuple` (public as `FgaAuthz::validate_tuple`) shares those checks so writers can reject tuples up front. `authz/write.rs` adds `WriteError` and, for `S: RelationshipWriteStore`, the validating `FgaAuthz<Bound<S>>::write_tuple` / `delete_tuple` / `apply_changes`: tenant check, then `validate_tuple`, then the store. They do not authorize the caller. Reads stay strict on stored tuples that drift from the model (maintainer decision); repair goes through the store directly. Tuple-to-userset targets whose type lacks the computed relation are skipped, not errors.
 
@@ -95,7 +95,7 @@ Boolean expressions use deliberate three-valued rules. A decisive allow can mask
 
 The runtime profile supports the six relation-expression forms on acyclic dependencies; CEL scalar bool/int/uint/double/string/duration/timestamp and one-level scalar lists/maps. Map keys are strings. Inline conditions, IP-address parameters, nested containers, comprehension macros, and other unsupported features are rejected by runtime construction even where DSL syntax accepts them. Consult the authz README and fixtures before extending this profile.
 
-Default limits: 10,000 scanned tuples, depth 25 (OpenFGA's resolve depth), 1,024 store page calls, 100,000 work units per check, and condition cost 100 per condition evaluation. Stored condition contexts are limited to 65,536 serialized JSON bytes and 10,000 collection entries; evaluation applies the same limits to each custom-store context and request value. Request values are converted once per check (`RequestValueCache`). Context conversion and condition evaluations, including failed attempts, are charged to the check's work budget. These are local accounting limits, not OpenFGA-equivalent CEL cost accounting or a wall-clock timeout; other resource-bound concerns are recorded in the review.
+Default limits: 10,000 scanned tuples, depth 25 (OpenFGA's resolve depth), 1,024 store page calls, 100,000 work units per check (per item in a batch), condition cost 100 per condition evaluation, and 100 batch items (maximum 1,000). Stored condition contexts are limited to 65,536 serialized JSON bytes and 10,000 collection entries; evaluation applies the same limits to each custom-store context and request value. Request values are converted once per check or batch (`RequestValueCache`). Context conversion and condition evaluations, including failed attempts, are charged to the check's work budget. These are local accounting limits, not OpenFGA-equivalent CEL cost accounting or a wall-clock timeout; other resource-bound concerns are recorded in the review.
 
 ## Store contracts and adapters
 
@@ -115,7 +115,7 @@ PostgreSQL modules:
 | `src/mapping.rs` | `TupleRow`, `from_tuple`, `into_tuple`, versioned canonical identity encoding, SHA-256 digest, exact JSON preservation |
 | `migrations/0001_relationship_tuples.sql` | Fixed schema/table, field/subject/condition constraints, identity uniqueness, lookup index |
 
-PostgreSQL checks use one read-only repeatable-read transaction and establish its snapshot before returning the session. Keyset pages order by `tuple_id`; cursors bind to session/tenant/query. Each check holds a pool connection. Applications own migrations, trusted tenant selection, write authorization, pool configuration, deadlines, and credentials. A cancelled or failed write may have committed; the adapter does not promise retry/idempotency semantics. The README's documented PostgreSQL minimum is 14; its live-test version guard currently differs (see review).
+PostgreSQL checks and batches use one read-only repeatable-read transaction and establish its snapshot before returning the session. Keyset pages order by `tuple_id`; cursors bind to session/tenant/query. Each check holds a pool connection. Applications own migrations, trusted tenant selection, write authorization, pool configuration, deadlines, and credentials. A cancelled or failed write may have committed; the adapter does not promise retry/idempotency semantics. The README's documented PostgreSQL minimum is 14; its live-test version guard currently differs (see review).
 
 ## Route policy and Axum
 
@@ -148,7 +148,7 @@ cargo test --workspace --all-targets --all-features
 
 For feature isolation, check/test `relgraph-authz` without features as well as with `--features axum`. The full workspace currently has known failures documented in the review; do not claim a clean baseline by running only default members.
 
-DSL tests cover parser behavior, validation, manifests, modular composition/origins, and a 64-case syntax corpus in `relgraph-dsl/tests/fixtures/openfga`. Authz tests cover model construction, conditions, relation operators, policy mapping, paging, store contracts, Axum, and offline compatibility fixtures. `relgraph-authz/tests/support/store_contract.rs` is shared by in-memory and PostgreSQL adapter tests.
+DSL tests cover parser behavior, validation, manifests, modular composition/origins, and a 64-case syntax corpus in `relgraph-dsl/tests/fixtures/openfga`. Authz tests cover model construction, conditions, relation operators, batch checks, policy mapping, paging, store contracts, Axum, and offline compatibility fixtures (also replayed as batches). `relgraph-authz/tests/support/store_contract.rs` is shared by in-memory and PostgreSQL adapter tests.
 
 Live PostgreSQL tests in `relgraph-authz-postgres/tests/postgres.rs` require `OPENFGA_POSTGRES_TEST_URL` pointing to a disposable server with database-creation privileges. They create/drop generated databases and may create roles; they fail on missing configuration, rather than silently skipping. Do not run them against an arbitrary user database or print the URL. At this snapshot they fail to compile before database access.
 

@@ -65,10 +65,10 @@ pub use authz::policy::{
     TenantIdentity, TenantSource, ValidatedRoutePolicy,
 };
 pub use authz::{
-    AuthorizationDecision, AuthorizationError, Bound, CapabilityDiagnostic, CheckRequest,
-    ConditionContext, ConditionContextSource, ConditionName, ConstructionError, EntityId,
-    EvaluationLimits, EvaluationLimitsError, FgaAuthz, IdentifierError, InMemoryReadSession,
-    InMemoryRelationshipStore, MAX_CONDITION_CONTEXT_ELEMENTS,
+    AuthorizationDecision, AuthorizationError, BatchCheckRequest, Bound, CapabilityDiagnostic,
+    CheckRequest, ConditionContext, ConditionContextSource, ConditionName, ConstructionError,
+    EntityId, EvaluationLimits, EvaluationLimitsError, FgaAuthz, FilteredObjects, IdentifierError,
+    InMemoryReadSession, InMemoryRelationshipStore, MAX_CONDITION_CONTEXT_ELEMENTS,
     MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, ObjectRef, RelationExpressionKind, RelationLocation,
     RelationName, RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
     RelationshipWriteStore, RuntimeCapability, StoreCursor, StoreError, StoreErrorKind,

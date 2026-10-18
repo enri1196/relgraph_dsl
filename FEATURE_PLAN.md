@@ -130,7 +130,7 @@ OpenFGA; rejected shapes fail construction with a clear diagnostic.
 
 ---
 
-## Task 2A — Batch check [TODO]
+## Task 2A — Batch check [DONE]
 
 Goal: evaluate many `(object, relation)` pairs for one subject and context in
 one read session, sharing memoized decisions, so callers get one consistent
@@ -138,39 +138,40 @@ snapshot and fewer store reads.
 
 ### 2A.1 API
 
-- [ ] Add `BatchCheckRequest` in `request.rs`: tenant, subject, global context,
+- [x] Add `BatchCheckRequest` in `request.rs`: tenant, subject, global context,
   condition-scoped contexts, and `Vec<(ObjectRef, RelationName)>` items. One
   subject and context per batch keeps the memo valid across items.
-- [ ] Add `FgaAuthz<Bound<S>>::batch_check(&self, &BatchCheckRequest) ->
+- [x] Add `FgaAuthz<Bound<S>>::batch_check(&self, &BatchCheckRequest) ->
   Result<Vec<Result<AuthorizationDecision, AuthorizationError>>, AuthorizationError>`.
   The outer error covers request validation and `begin_read`; inner results are
   per item, in request order.
-- [ ] Add `EvaluationLimits::max_batch_items` (default 100, hard maximum 1,000)
+- [x] Add `EvaluationLimits::max_batch_items` (default 100, hard maximum 1,000)
   with the existing builder and error pattern.
-- [ ] **Decision:** budget scope. Recommendation: tuple, store-call, and work
+- [x] **Decision:** budget scope. Recommendation: tuple, store-call, and work
   budgets reset per item (the item's error stays isolated), memo and request
   value cache are shared, and the batch is additionally bounded by
-  `max_batch_items`.
+  `max_batch_items`. **Decided 2026-10-18: per-item reset (the
+  recommendation).**
 
 ### 2A.2 Evaluator refactor
 
-- [ ] Split the fixed per-check inputs out of `CheckRequest` into an internal
+- [x] Split the fixed per-check inputs out of `CheckRequest` into an internal
   `CheckScope` (tenant, subject, contexts) that both `check` and `batch_check`
   build. `Evaluator` keeps `completed` and `request_values` across items and
   resets counters per item.
-- [ ] Reimplement `check` as the one-item case without changing its behavior or
+- [x] Reimplement `check` as the one-item case without changing its behavior or
   error mapping.
 
 ### 2A.3 Convenience, example, and tests
 
-- [ ] Add `filter_objects(tenant, subject, relation, candidates)` returning the
+- [x] Add `filter_objects(tenant, subject, relation, candidates)` returning the
   allowed subset plus per-candidate errors, built on `batch_check`.
-- [ ] Replace the N sequential checks in `examples/drive-api/src/api.rs::list_items`.
-- [ ] Tests: per-item error isolation; shared memo lowers store calls (use the
+- [x] Replace the N sequential checks in `examples/drive-api/src/api.rs::list_items`.
+- [x] Tests: per-item error isolation; shared memo lowers store calls (use the
   scripted page store in `authz_page_contract.rs`); writes made during a batch
   are not observed by later items (in-memory and Postgres store-contract
   tests); `max_batch_items` enforcement.
-- [ ] Document in the Postgres README that a batch holds one connection and
+- [x] Document in the Postgres README that a batch holds one connection and
   transaction for its full duration.
 
 **Acceptance:** `batch_check` results equal individual `check` results on the
@@ -373,6 +374,39 @@ subject and list the tuples that fail validation against a candidate model.
 ## Execution record
 
 Record commands, results, and blockers here per task.
+
+### Task 2A (2026-10-18)
+
+- One commit: the public API in 2A.1 needs the `CheckScope` refactor in 2A.2,
+  and both touch the same evaluator and request code.
+- Outer errors: more items than `max_batch_items` (`BatchLimitExceeded`), an
+  unknown subject type, and `begin_read` failures. Unknown object types and
+  relations are per-item errors. An empty batch returns no results without
+  opening a read session.
+- `check_item` resets the tuple, store-call, and work counters and the low link
+  for each item. The memo and request-value cache are shared. A memo hit spends
+  no budget, so an item can succeed in a batch where a separate check would
+  exceed a limit (documented). Every root frame finishes, so no unresolved key
+  survives an item (debug-asserted).
+- `filter_objects` takes no request context, as specified; callers that need
+  context use `batch_check`. The drive example batches in chunks of
+  `DEFAULT_MAX_BATCH_ITEMS` and fails a listing on any per-item error.
+- Tests: `tests/authz_batch.rs` (order, per-item errors, contexts, per-item
+  budgets, outer errors, limit validation, `filter_objects`); page-contract
+  memo reuse (3 page reads instead of 4) and per-item store-call budget;
+  store-contract snapshot case with a write injected during the batch; every
+  offline compatibility fixture replayed as batches and compared with the
+  individual check, errors included.
+- Validation: `cargo fmt --all -- --check` clean; `cargo clippy --workspace
+  --all-targets --all-features` zero warnings; `cargo test --workspace
+  --all-targets --all-features` 218 passed, 12 ignored; `cargo test --workspace
+  --doc --all-features` 7 passed; `cargo test -p relgraph-authz` 128 passed.
+  Live PostgreSQL against a disposable PostgreSQL 14 cluster on
+  127.0.0.1:55432: `cargo test -p relgraph-authz-postgres --test postgres --
+  --ignored` 11 passed, including the new shared contract case. Drive example
+  smoke-tested over HTTP (`GET /items` for alice, bob, and eve, and with
+  `parent_id`).
+- No compatibility surface changed; the differential harness was not needed.
 
 ### Task 3 (2026-10-18)
 

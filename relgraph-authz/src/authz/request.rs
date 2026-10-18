@@ -322,16 +322,54 @@ impl ObjectRef {
     }
 }
 
-/// Typed inputs to one authorization check.
+/// Inputs fixed for every relation an evaluator resolves: one tenant, one
+/// subject, and one set of request contexts. Memoized decisions stay valid
+/// only while these are unchanged.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CheckRequest {
+pub(crate) struct CheckScope {
     tenant: TenantId,
     subject: Subject,
-    object: ObjectRef,
-    relation: RelationName,
     context: std::collections::BTreeMap<String, serde_json::Value>,
     condition_context:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+impl CheckScope {
+    fn new(tenant: TenantId, subject: Subject) -> Self {
+        Self {
+            tenant,
+            subject,
+            context: std::collections::BTreeMap::new(),
+            condition_context: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+
+    pub(crate) fn subject(&self) -> &Subject {
+        &self.subject
+    }
+
+    pub(crate) fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
+        &self.context
+    }
+
+    pub(crate) fn condition_context(
+        &self,
+        condition: &str,
+    ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
+        self.condition_context.get(condition)
+    }
+}
+
+/// Typed inputs to one authorization check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckRequest {
+    scope: CheckScope,
+    object: ObjectRef,
+    relation: RelationName,
 }
 
 /// Identifies which authorization context supplied a condition parameter.
@@ -360,12 +398,9 @@ impl CheckRequest {
         relation: RelationName,
     ) -> Self {
         Self {
-            tenant,
-            subject,
+            scope: CheckScope::new(tenant, subject),
             object,
             relation,
-            context: std::collections::BTreeMap::new(),
-            condition_context: std::collections::BTreeMap::new(),
         }
     }
 
@@ -373,7 +408,7 @@ impl CheckRequest {
         mut self,
         context: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Self {
-        self.context = context;
+        self.scope.context = context;
         self
     }
 
@@ -386,16 +421,18 @@ impl CheckRequest {
         condition: impl Into<String>,
         context: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Self {
-        self.condition_context.insert(condition.into(), context);
+        self.scope
+            .condition_context
+            .insert(condition.into(), context);
         self
     }
 
     pub fn tenant(&self) -> &TenantId {
-        &self.tenant
+        self.scope.tenant()
     }
 
     pub fn subject(&self) -> &Subject {
-        &self.subject
+        self.scope.subject()
     }
 
     pub fn object(&self) -> &ObjectRef {
@@ -407,7 +444,7 @@ impl CheckRequest {
     }
 
     pub fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
-        &self.context
+        self.scope.context()
     }
 
     /// Returns request context explicitly bound to one condition.
@@ -415,7 +452,88 @@ impl CheckRequest {
         &self,
         condition: &str,
     ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
-        self.condition_context.get(condition)
+        self.scope.condition_context(condition)
+    }
+
+    pub(crate) fn scope(&self) -> &CheckScope {
+        &self.scope
+    }
+}
+
+/// Typed inputs to many checks that share one subject and request context.
+///
+/// Every item is evaluated against the same tenant snapshot, and decisions
+/// memoized while resolving one item are reused by later items. Contexts apply
+/// to every item, exactly as they would to an individual [`CheckRequest`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchCheckRequest {
+    scope: CheckScope,
+    items: Vec<(ObjectRef, RelationName)>,
+}
+
+impl BatchCheckRequest {
+    /// Creates a batch whose results are returned in `items` order.
+    pub fn new(
+        tenant: TenantId,
+        subject: Subject,
+        items: impl IntoIterator<Item = (ObjectRef, RelationName)>,
+    ) -> Self {
+        Self {
+            scope: CheckScope::new(tenant, subject),
+            items: items.into_iter().collect(),
+        }
+    }
+
+    /// Sets global request context for every item.
+    pub fn with_context(
+        mut self,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.scope.context = context;
+        self
+    }
+
+    /// Adds request context scoped to one named condition for every item.
+    ///
+    /// Precedence is the same as [`CheckRequest::with_condition_context`].
+    pub fn with_condition_context(
+        mut self,
+        condition: impl Into<String>,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.scope
+            .condition_context
+            .insert(condition.into(), context);
+        self
+    }
+
+    pub fn tenant(&self) -> &TenantId {
+        self.scope.tenant()
+    }
+
+    pub fn subject(&self) -> &Subject {
+        self.scope.subject()
+    }
+
+    /// Returns the checked `(object, relation)` pairs in request order.
+    pub fn items(&self) -> &[(ObjectRef, RelationName)] {
+        &self.items
+    }
+
+    pub fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
+        self.scope.context()
+    }
+
+    /// Returns request context explicitly bound to one condition.
+    pub fn condition_context(
+        &self,
+        condition: &str,
+    ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
+        self.scope.condition_context(condition)
+    }
+
+    pub(crate) fn scope(&self) -> &CheckScope {
+        &self.scope
     }
 }
 
@@ -427,7 +545,20 @@ pub enum AuthorizationDecision {
     Deny,
 }
 
-/// Work limits for one authorization check.
+/// Candidates split by a batch check; see `FgaAuthz::filter_objects`.
+#[derive(Debug, Default)]
+pub struct FilteredObjects {
+    /// Candidates the subject holds the relation on, in candidate order.
+    pub allowed: Vec<ObjectRef>,
+    /// Candidates whose check failed, in candidate order. An error is neither
+    /// an allow nor a deny.
+    pub errors: Vec<(ObjectRef, AuthorizationError)>,
+}
+
+/// Work limits for one authorization check, and the item bound for a batch.
+///
+/// In a batch, tuple, store-call, and work budgets apply to each item
+/// separately; `max_batch_items` bounds the number of items.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvaluationLimits {
     max_tuples_scanned: usize,
@@ -435,6 +566,7 @@ pub struct EvaluationLimits {
     max_store_calls: usize,
     max_work_units: usize,
     max_condition_cost: usize,
+    max_batch_items: usize,
 }
 
 impl EvaluationLimits {
@@ -459,6 +591,10 @@ impl EvaluationLimits {
     pub const DEFAULT_MAX_CONDITION_COST: usize = 100;
     /// Largest per-evaluation CEL cost limit accepted by the runtime.
     pub const MAX_CONDITION_COST: usize = 100_000;
+    /// Default maximum number of items in one batch check.
+    pub const DEFAULT_MAX_BATCH_ITEMS: usize = 100;
+    /// Largest batch item limit accepted by the runtime.
+    pub const MAX_BATCH_ITEMS: usize = 1_000;
 
     /// Creates limits with the supplied tuple budget and defaults for other bounds.
     pub fn new(max_tuples_scanned: usize) -> Result<Self, EvaluationLimitsError> {
@@ -476,6 +612,7 @@ impl EvaluationLimits {
             max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
             max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
+            max_batch_items: Self::DEFAULT_MAX_BATCH_ITEMS,
         })
     }
 
@@ -551,6 +688,20 @@ impl EvaluationLimits {
         Ok(self)
     }
 
+    /// Sets the maximum number of items in one batch check.
+    pub fn with_max_batch_items(mut self, maximum: usize) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroBatchItemLimit);
+        }
+        if maximum > Self::MAX_BATCH_ITEMS {
+            return Err(EvaluationLimitsError::BatchItemLimitTooLarge {
+                maximum: Self::MAX_BATCH_ITEMS,
+            });
+        }
+        self.max_batch_items = maximum;
+        Ok(self)
+    }
+
     /// Returns the relation traversal depth budget.
     pub const fn max_relation_depth(self) -> usize {
         self.max_relation_depth
@@ -570,6 +721,11 @@ impl EvaluationLimits {
     pub const fn max_condition_cost(self) -> usize {
         self.max_condition_cost
     }
+
+    /// Returns the maximum number of items in one batch check.
+    pub const fn max_batch_items(self) -> usize {
+        self.max_batch_items
+    }
 }
 
 impl Default for EvaluationLimits {
@@ -580,6 +736,7 @@ impl Default for EvaluationLimits {
             max_store_calls: Self::DEFAULT_MAX_STORE_CALLS,
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
             max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
+            max_batch_items: Self::DEFAULT_MAX_BATCH_ITEMS,
         }
     }
 }
@@ -606,6 +763,10 @@ pub enum EvaluationLimitsError {
     ZeroConditionCost,
     /// The CEL condition cost budget exceeds the runtime maximum.
     ConditionCostTooLarge { maximum: usize },
+    /// The batch item limit must be nonzero.
+    ZeroBatchItemLimit,
+    /// The batch item limit exceeds the runtime maximum.
+    BatchItemLimitTooLarge { maximum: usize },
 }
 
 impl std::fmt::Display for EvaluationLimitsError {
@@ -630,6 +791,10 @@ impl std::fmt::Display for EvaluationLimitsError {
             Self::ZeroConditionCost => write!(f, "condition cost limit must be greater than zero"),
             Self::ConditionCostTooLarge { maximum } => {
                 write!(f, "condition cost limit must not exceed {maximum}")
+            }
+            Self::ZeroBatchItemLimit => write!(f, "batch item limit must be greater than zero"),
+            Self::BatchItemLimitTooLarge { maximum } => {
+                write!(f, "batch item limit must not exceed {maximum}")
             }
         }
     }
@@ -691,6 +856,10 @@ pub enum AuthorizationError {
     ConditionCostLimitExceeded {
         maximum_cost: usize,
         estimated_cost: usize,
+    },
+    /// A batch check named more items than its configured bound.
+    BatchLimitExceeded {
+        maximum_items: usize,
     },
 }
 
@@ -773,6 +942,9 @@ impl std::fmt::Display for AuthorizationError {
                 f,
                 "condition evaluation cost {estimated_cost} exceeds the limit {maximum_cost}"
             ),
+            Self::BatchLimitExceeded { maximum_items } => {
+                write!(f, "batch check exceeded its limit of {maximum_items} items")
+            }
         }
     }
 }

@@ -240,6 +240,14 @@ and deployment-wide connection budget. A check that waits for a pool slot is
 bounded by `acquire_timeout`; the example uses two seconds and 32 runtime pool
 connections as starting values, not universal sizing recommendations.
 
+`FgaAuthz::batch_check` and `filter_objects` open one session for the whole
+batch: every item reads the same snapshot, and the batch holds one pooled
+connection and its repeatable-read transaction until the last item finishes.
+Each item has its own tuple, store-call, and work budget, so a batch of up to
+`EvaluationLimits::max_batch_items` items (default 100) can keep the
+transaction open roughly that many times longer than one check. Size
+deadlines and the idle-in-transaction timeout for the largest batch.
+
 The example applies a two-second PostgreSQL `statement_timeout`, a five-second
 `idle_in_transaction_session_timeout`, and a three-second application check
 deadline. Tune these together for the service's latency target. Evaluation

@@ -264,7 +264,7 @@ cost times one unit per 4 pattern bytes), after the cost factors used by
 cel-go. Condition contexts accepted by the in-memory and PostgreSQL stores are
 limited to 65,536 serialized JSON bytes and 10,000 collection entries; the same
 limits apply to each custom-store context and request value during evaluation.
-Request values are converted once per check. Context conversion and every
+Request values are converted once per check or batch. Context conversion and every
 condition evaluation, including failed attempts, also consume the check's work
 budget, which bounds condition work across the whole check.
 Tuple, store-call, and work budgets are shared across nested traversals.
@@ -274,6 +274,53 @@ at most one tuple page and its prepared metadata, plus bounded cursor history;
 parent pages can remain live while nested checks run. Backend snapshot memory
 is outside this bound. These local budgets bound this runtime's work and do not
 claim to reproduce OpenFGA server CEL cost accounting.
+
+## Batch checks
+
+`batch_check` evaluates many `(object, relation)` pairs for one tenant, subject,
+and request context in one read session:
+
+```rust,no_run
+use relgraph_authz::{
+    AuthorizationDecision, BatchCheckRequest, EvaluationLimits, FgaAuthz,
+    InMemoryRelationshipStore, ObjectRef, RelationName, Subject, TenantId,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let authorizer = FgaAuthz::new(
+    "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user]\n",
+)?
+.with_store(InMemoryRelationshipStore::new(), EvaluationLimits::default());
+let viewer = RelationName::new("viewer")?;
+let request = BatchCheckRequest::new(
+    TenantId::new("acme")?,
+    Subject::new("user", "anne")?,
+    [
+        (ObjectRef::new("document", "1")?, viewer.clone()),
+        (ObjectRef::new("document", "2")?, viewer),
+    ],
+);
+for result in authorizer.batch_check(&request).await? {
+    let _allowed = result? == AuthorizationDecision::Allow;
+}
+# Ok(())
+# }
+```
+
+Results follow item order. Every item reads the same snapshot, so a write made
+while the batch runs is not observed by later items, and items share memoized
+relation decisions (for example a group membership or parent folder reached by
+several items) and converted request values. An item's error, including an
+unknown object type or relation, stays in that item's result; the outer error
+reports a batch larger than `max_batch_items`, an unknown subject type, or a
+failure to open the read session. Each item gets fresh tuple, store-call, and
+work budgets. A memoized decision spends no budget, so an item can succeed in a
+batch where a separate check would exceed a limit. `max_batch_items` defaults
+to 100 and accepts up to 1,000. `filter_objects(tenant, subject, relation,
+candidates)` runs one batch without request context and returns the allowed
+candidates and per-candidate errors separately; candidates may mix object types
+that define the relation. A durable store may hold one connection and
+transaction for the whole batch.
 
 ## Construction cost measurements
 
@@ -334,7 +381,7 @@ error. Construction rejects two cyclic shapes with a capability diagnostic:
   `define b: a or y`. OpenFGA rejects these models too.
 
 Cycles through union, intersection, a difference's base operand, userset
-restrictions, and tuple-to-userset are accepted. Within one check, `true`
+restrictions, and tuple-to-userset are accepted. Within one check or batch, `true`
 results are memoized immediately. A `false` result inside an open cycle stays
 provisional until the cycle's first-entered relation finishes, and then the
 whole cycle is memoized as `false`. Errors are never memoized. Work that is

@@ -131,7 +131,7 @@ editor/viewer grants continue to apply. Workspace provisioning is server-owned.
 | Method | Path | Required permission | Result |
 | --- | --- | --- | --- |
 | GET | `/health` | Public | Health response |
-| GET | `/items?parent_id=…` | View checked per item | Visible metadata only |
+| GET | `/items?parent_id=…` | `can_view` per item, batch-checked | Visible metadata only |
 | POST | `/items` | Parent `can_edit` | Created folder/file, `201` |
 | GET | `/items/{id}` | `can_view` | Metadata |
 | GET | `/items/{id}/content` | `can_view` | Text and revision |
@@ -174,12 +174,14 @@ sequenceDiagram
   `delete_tuple`, and `apply_changes`; an item's owner and parent tuples are
   written atomically in one change set.
 - [`src/api.rs`](src/api.rs) maps domain operations to fixed capabilities,
-  validates input, and checks revisions.
+  validates input, and checks revisions. Listing filters candidates with
+  `filter_objects`, one batch check per 100 items, instead of one check per
+  item.
 - [`src/error.rs`](src/error.rs) maps errors to safe HTTP responses.
 - [`src/main.rs`](src/main.rs) starts and shuts down the server.
 
 Checks live inside application handlers because creation checks a parent,
-listing checks each result, and mutations must stay consistent with their
+listing batch-checks every candidate, and mutations must stay consistent with their
 authorization checks. No API allows callers to write arbitrary tuples.
 
 ## Scope and production adaptations
