@@ -65,6 +65,9 @@ longer covers a non-passing case, so the list only shrinks. Each entry has a
 `reason` and a `tag` from a fixed vocabulary checked by the test (see
 `tests/support/skip_list.rs`). This replay is separate from the Docker
 differential runner, which covers only the hand-written fixtures above.
+Running that runner over OpenFGA's own corpus at the same tag would be
+circular: the corpus expectations are already the `v1.21.0` server's answers,
+so the server would only be compared with itself.
 
 Measured at `v1.21.0` (2026-10-18, `-- --nocapture`). Cases are per stage: one
 `model` case, then one case per check, `ctxCheck` (single-stage tests only),
@@ -111,6 +114,39 @@ for an invalid contextual tuple, which Relgraph reports as
 needs a chain of about 27 usersets; the corpus result is unchanged for any
 relation-depth limit from 7 through 26, so the default of 25 (OpenFGA's
 resolve depth) agrees with it.
+
+### Bumping the OpenFGA pin
+
+The Check corpora and the Docker reference server share one pin (`v1.21.0`,
+commit `ab557c5592670c899de35297e7aa067015f06502`). A bump is one deliberate
+change, reviewed in a single pull request:
+
+1. Pick the new tag and resolve its commit. Download
+   `assets/tests/consolidated_1_1_tests.yaml`, `assets/tests/abac_tests.yaml`
+   and `LICENSE` from that tag into `upstream/`, replacing the old files
+   without editing them; compare each with the Git blob ID the GitHub contents
+   API reports at the tag.
+2. Regenerate `upstream/CHECKSUMS` (`cd upstream && shasum -a 256
+   LICENSE abac_tests.yaml consolidated_1_1_tests.yaml > CHECKSUMS`, keeping
+   the existing file order) and the source URLs in this README.
+3. Update the Docker pin together: `PINNED_VERSION`, `PINNED_IMAGE` and
+   `PINNED_COMMIT` in `relgraph-authz/tools/openfga-differential.py`, the
+   `server` block of every fixture JSON, the assertions in
+   `tests/authz_compatibility.rs`, and rerun the differential runner to record
+   the new image digest above.
+4. Recheck the upstream facts pinned in code and docs: the Check driver's
+   stage semantics (`tests/check/check.go`, module docs of
+   `tests/upstream_check.rs`), the error-code table, the resolve depth behind
+   the default relation depth of 25, and `MAX_CONTEXTUAL_TUPLES`
+   (`openfga/api` at the revision the new tag pins).
+5. Run `cargo test -p relgraph-authz --test upstream_checksums` and
+   `cargo test -p relgraph-authz --test upstream_check -- --nocapture`. New
+   failures need a skip entry with a reason, tag, justification and task;
+   entries that no longer cover a failure must be deleted (the test enforces
+   both). Review the `upstream-skip.yaml` diff in the pull request.
+6. Update the pass-rate table above, the measured numbers in the crate and
+   workspace READMEs, and every `v1.21.0` reference (`grep -rn v1.21.0`),
+   including `AGENTS.md` and `CONFORMANCE_PLAN.md`.
 
 ## Compatibility boundary
 

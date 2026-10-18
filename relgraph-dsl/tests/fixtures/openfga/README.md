@@ -89,9 +89,10 @@ The parser preserves condition-body bytes and stops at the first visible
 `RBRACE` token. It does not balance braces: a nested map's first unquoted `}`
 ends the condition, while an unmatched opening `{` can remain syntax-valid.
 The `$expression` condition marker is accepted by syntax and bounded static
-validation, but a server may reject inline conditions in a particular context.
-These are documented compatibility boundaries, not full server-validation
-claims.
+validation; `relgraph-authz` runtime construction rejects it
+(`InlineConditionExpression`, a permanent difference listed in that crate's
+README). Measured agreement with upstream's own language tests is in
+[Upstream language corpora](#upstream-language-corpora) below.
 
 Manifest YAML examples are under `manifest/`; modular composition examples are
 under `modular/`. Cross-file semantic fixtures are under
@@ -156,6 +157,34 @@ Position and symbol matches are metrics, not gates: syntax 46/74 positions and
 spans cover the owning declaration). Manifest errors have no position metric,
 permanently: `serde_yaml` values carry no source positions, so a
 `ManifestError` names a field (`schema`, `contents[2]`) instead of a span.
+
+### Bumping the `openfga/language` pin
+
+The grammars, the 64 syntax fixtures' source URLs and the three language
+corpora share one pin (`fbc62984d02fc8ff7e2a924e0b9c34193233007c`). Bump them
+together in one reviewed pull request:
+
+1. Download `OpenFGALexer.g4`, `OpenFGAParser.g4`, `LICENSE` and
+   `tests/data/{dsl-syntax-validation-cases,dsl-semantic-validation-cases,fga-mod-transformer-cases}.yaml`
+   from the new commit into `upstream/`, replacing the old files without
+   editing them; compare each with the Git blob ID the GitHub contents API
+   reports at that commit.
+2. Regenerate `upstream/CHECKSUMS` with `shasum -a 256` (same file order) and
+   update the source URLs in `upstream/README.md` and
+   `tools/conformance/README.md` (including its grammar checksums).
+3. Rerun the ANTLR runner (`tools/conformance/README.md`) over the 64 syntax
+   fixtures, refresh `upstream-results.jsonl`, and update each fixture's
+   metadata `source_url`; a changed acceptance is a syntax change to review.
+4. Run `cargo test -p relgraph_dsl --test upstream_checksums`,
+   `cargo test -p relgraph_dsl --test conformance` and
+   `cargo test -p relgraph_dsl --test upstream_corpus -- --nocapture`. New
+   failures need a skip entry with a reason, tag, justification and task;
+   entries that no longer cover a failure must be deleted (the test enforces
+   both). Recheck the runner's error-type table against the new
+   `pkg/js/validator/validate-dsl.ts` and `fga.mod` transformers. Review the
+   `upstream-skip.yaml` diff in the pull request.
+5. Update the pass-rate table above, the workspace README's measured numbers,
+   and every reference to the old commit (`AGENTS.md`, `CONFORMANCE_PLAN.md`).
 
 ### fga.mod manifest policy
 
