@@ -143,7 +143,7 @@ skip lists and runners outside `upstream/`. Both READMEs give source URLs.
 `cargo fmt --check`, `cargo check --workspace --all-targets --all-features` and
 all plan test commands pass (the live PostgreSQL tests were not run).
 
-## Task 2 [TODO]: Language corpus runner (syntax, semantic, fga.mod)
+## Task 2 [PROGRESS]: Language corpus runner (syntax, semantic, fga.mod)
 
 **Depends on:** Task 1.
 
