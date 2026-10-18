@@ -562,7 +562,7 @@ asserts a cost limit.
 **Acceptance:** CEL skip entries shrink as recorded in D1; all authz tests and
 no-feature / `axum` builds green; docs updated.
 
-## Task 10 [TODO]: Record permanent divergences
+## Task 10 [PROGRESS]: Record permanent divergences
 
 **Depends on:** Task 4.
 
