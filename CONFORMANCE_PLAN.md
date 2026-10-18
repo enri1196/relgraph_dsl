@@ -632,7 +632,7 @@ Task 9 (blocked on D1) will change the ABAC row. Validation: `cargo fmt
 --check`, `cargo check --workspace --all-targets --all-features`, and the
 corpus, checksum and `conformance` tests pass (docs-only change).
 
-## Task 12 [PROGRESS]: DSL comment handling parity
+## Task 12 [DONE]: DSL comment handling parity
 
 **Depends on:** Task 4.
 
@@ -658,6 +658,29 @@ and `schema` (8 `semantic-divergence/bug` entries in the language skip list).
 
 **Acceptance:** the 8 entries are gone or re-justified as `deliberate`;
 span and CEL-byte preservation tests green; syntax fixtures updated.
+
+Result: implemented the option step 1 prefers (no maintainer decision is
+recorded; the lossy input rewrite was not used). The lexer emits upstream's
+comments (a line whose first non-blank character is `#`, or a ` #` tail with
+its preceding whitespace) as hidden `TokenKind::Comment` tokens, except inside
+a condition body, where `#` stays as before and CEL bytes are exact (upstream
+would cut ` #` there: a documented difference). `visible_tokens` joins the
+line breaks around comment lines into one `Newline`; `declaration_prefix`
+reads `comments_before` from its text. A `#` after a tab or without a space
+(`group#member`) is not a comment, as upstream. All 8 entries are gone: syntax
+78 to 79 of 81, semantic 77 to 84 of 86 run (symbols metric 43/50 to 50/50);
+the DSL skip list has 5 entries (4 deliberate, 1 JSON rule). Syntax fixtures:
+`hash-inside-rewrite` and `trailing-hash-prose` moved to `valid/` with a new
+optional `grammar_parse: reject` metadata field; the pinned ANTLR runner was
+rerun (jar SHA-256 verified, same JDK) and still rejects both (26 / 38), and
+the new `recorded_grammar_results_match_fixture_metadata` test checks
+`upstream-results.jsonl` against every fixture's raw-grammar outcome. Tests:
+`hash_comments_follow_the_openfga_tooling_without_rewriting_input` (spans,
+CEL bytes, `comments_before`, CRLF/CR) and updated rejection cases. Docs: crate
+docs (`lib.rs`; the DSL crate has no README), fixtures and conformance
+READMEs, workspace README table, `AGENTS.md`. Validation: `cargo fmt --check`,
+`cargo check --workspace --all-targets --all-features`, clippy on the DSL
+crate, and all plan test commands pass (live PostgreSQL tests not run).
 
 ## Task 13 [TODO]: Userset and wildcard check subjects
 
