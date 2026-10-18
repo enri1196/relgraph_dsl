@@ -264,7 +264,7 @@ unknown types/relations to 2000, not 2021/2022 (those occur only in list
 assertions). Validation: all plan commands pass (live PostgreSQL tests not run);
 clippy clean on the crate.
 
-## Task 4 [PROGRESS]: Baseline classification and published pass rates
+## Task 4 [DONE]: Baseline classification and published pass rates
 
 **Depends on:** Tasks 2 and 3.
 
@@ -285,6 +285,34 @@ clippy clean on the crate.
 
 **Acceptance:** no skip entry has a provisional reason; both READMEs list the
 pass rates; the plan reflects the measured priorities.
+
+Result: `provisional` is gone from the skip-list format (an unknown field now
+fails the load); every entry carries a `tag` checked against
+`SkipReason::TAGS`, and both runners print non-passing cases per reason/tag.
+The language runner now mirrors upstream `validateDSL` staging (lone module:
+file-local composition issues, else `ModuleRequiresComposition` =
+`schema-version-required`; listener-stage issues compared alone), which cleared
+all 3 harness gaps and 1 divergence: syntax 78/81, semantic 37/86 run (7
+upstream skips), fga.mod 7/9 + JSON rule; 55 entries. Check corpora unchanged:
+consolidated 481/1094, ABAC 147/368; 46 entries. Classification: DSL 40
+`unsupported-feature/validation` (Task 5), 8 comment `semantic-divergence/bug`
+(new Task 12), 4 `deliberate`/permanent (EmptyModel x2, cascade diagnostics,
+TTU granularity), 2 `manifest` (Task 6); authz 24 strict-read and 3
+negation-cycle stages `deliberate`/permanent, 9 `inline-condition` stages
+permanent, 1 `ipaddress` stage (Task 9), 6 `userset-subject` checks (new Task
+13). Task 10 still has to document the permanent entries in the authz README's
+compatibility boundary. Error-code table agrees with the corpus (2000 29/29,
+2002 1/1; 2027 only with contextual tuples; 2021/2022 only in list
+assertions); no harness or evaluator mapping change was needed. Depth: the
+corpus result is identical for limits 7-26 and fails from 27, so 25 agrees.
+Side finding (not a corpus failure): with the limit set to 6 (5 also fails the
+batch comparison),
+`three_prong_relation_possible_exclusion::0::check::5` allows in `batch_check`
+but errors `RelationDepthExceeded` individually, because a batch reuses
+memoized allows from earlier items. Pass-rate tables are in both fixtures
+READMEs. Validation: `cargo fmt --check`, `cargo check --workspace
+--all-targets --all-features`, all plan test commands and clippy on both
+crates pass (live PostgreSQL tests not run).
 
 ## Measured priorities (from Task 4)
 
