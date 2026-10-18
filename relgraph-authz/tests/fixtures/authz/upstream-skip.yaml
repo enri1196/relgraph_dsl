@@ -1,0 +1,232 @@
+# Reviewed exceptions for the pinned openfga/openfga Check corpora.
+# Checked by `cargo test -p relgraph-authz --test upstream_check`; see the
+# module docs of tests/upstream_check.rs and CONFORMANCE_PLAN.md.
+# Keep sorted and canonical; the test prints the expected form on mismatch.
+entries:
+- case: abac_tests.yaml::inline_expression_alongside_named_condition::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_basic::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_exclusion_subtract_missing_param::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_inferred_string_param::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_int_param::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_ipaddress_param::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_timestamp_param::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_ttu::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::inline_expression_userset_subject::0
+  reason: unsupported-feature
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph runtime construction rejects inline condition expressions (InlineConditionExpression); the stage's checks are not run
+- case: abac_tests.yaml::nested_indirect_relation_with_condition::0
+  reason: unsupported-feature
+  task: '8'
+  provisional: true
+  justification: upstream accepts the model; condition ipaddr_in_range uses an ipaddress parameter outside the supported CEL profile; the stage's checks are not run
+- case: abac_tests.yaml::prior_conditions_ignored::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple condition is absent from the authorization model"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: abac_tests.yaml::prior_conditions_ignored::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple condition is absent from the authorization model"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: abac_tests.yaml::simple_userset_with_condition::0::check::3
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: userset check subject folder:a#viewer is not expressible by CheckRequest
+- case: abac_tests.yaml::simple_userset_with_condition::0::check::4
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: userset check subject folder:a#viewer is not expressible by CheckRequest
+- case: abac_tests.yaml::wildcard_with_condition::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::false_butnot_cycle_return_false::0
+  reason: semantic-divergence
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph rejects a cycle through a `but not` subtracted operand (RecursiveDifference); the stage's checks are not run
+- case: consolidated_1_1_tests.yaml::list_objects_expands_wildcard_tuple::2
+  reason: semantic-divergence
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph rejects a cycle through a `but not` subtracted operand (RecursiveDifference); the stage's checks are not run
+- case: consolidated_1_1_tests.yaml::prior_type_restrictions_ignored::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::prior_type_restrictions_ignored_with_wildcard::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::true_butnot_cycle_return_false::0
+  reason: semantic-divergence
+  task: '10'
+  provisional: true
+  justification: upstream accepts the model; Relgraph rejects a cycle through a `but not` subtracted operand (RecursiveDifference); the stage's checks are not run
+- case: consolidated_1_1_tests.yaml::ttu_discard_invalid::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects allow; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::10
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::12
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::15
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::17
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::2
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::5
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects allow; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_multiple_parents::1::check::7
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset subject type is incompatible with the relation"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_orphan_public_wildcard_parent::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects allow; Relgraph errors InvalidTuple("tupleset tuple subject must be a direct object"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_orphan_public_wildcard_parent::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tupleset tuple subject must be a direct object"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::ttu_remove_public_wildcard::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::userset_as_user::0::check::0
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: userset check subject group:x#member is not expressible by CheckRequest
+- case: consolidated_1_1_tests.yaml::userset_discard_invalid::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::userset_discard_invalid_wildcard::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects allow; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::userset_discard_invalid_wildcard::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::userset_orphan_parent::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects allow; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::userset_orphan_parent::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::validation_userset_relation_not_in_model::0::check::0
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: userset check subject document:x#writer is not expressible by CheckRequest
+- case: consolidated_1_1_tests.yaml::validation_userset_type_not_in_model::0::check::0
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: userset check subject folder:x#writer is not expressible by CheckRequest
+- case: consolidated_1_1_tests.yaml::wildcard_direct::0::check::1
+  reason: unsupported-feature
+  task: '4'
+  provisional: true
+  justification: wildcard check subject user:* is not expressible by CheckRequest
+- case: consolidated_1_1_tests.yaml::wildcard_obeys_the_types_in_stages::1::check::0
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- case: consolidated_1_1_tests.yaml::wildcard_obeys_the_types_in_stages::1::check::1
+  reason: semantic-divergence
+  task: '4'
+  provisional: true
+  justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples
+- rule: contextual-tuples
+  reason: unsupported-feature
+  task: '7'
+  justification: CheckRequest has no contextual tuples yet; Task 7 adds them and wires contextualTuples into this runner.
+- rule: list-objects-assertions
+  reason: unsupported-feature
+  task: deferred list-API plan
+  justification: Relgraph has no ListObjects API; it needs a reverse-lookup store contract planned separately (CONFORMANCE_PLAN.md, Deferred).
+- rule: list-users-assertions
+  reason: unsupported-feature
+  task: deferred list-API plan
+  justification: Relgraph has no ListUsers API; it needs a reverse-lookup store contract planned separately (CONFORMANCE_PLAN.md, Deferred).

@@ -28,7 +28,8 @@ reference image):
 - [`assets/tests/abac_tests.yaml`](https://github.com/openfga/openfga/blob/v1.21.0/assets/tests/abac_tests.yaml)
 - [`LICENSE`](https://github.com/openfga/openfga/blob/v1.21.0/LICENSE), Apache License 2.0
 
-They are data only; no runner consumes them yet. SHA-256 checksums
+`cargo test -p relgraph-authz --test upstream_check` replays them (see
+[Upstream Check corpora](#upstream-check-corpora)). SHA-256 checksums
 (lowercase hex, `shasum -a 256` format) are in
 [`upstream/CHECKSUMS`](upstream/CHECKSUMS). `cargo test -p relgraph-authz --test
 upstream_checksums` recomputes them and fails if a file differs or a vendored
@@ -41,6 +42,27 @@ cd relgraph-authz/tests/fixtures/authz/upstream && shasum -a 256 -c CHECKSUMS
 Raw downloads were also compared with the Git blob IDs reported by the GitHub
 contents API at the tag. Never edit these files; a pin bump replaces the files
 and `CHECKSUMS` together.
+
+## Upstream Check corpora
+
+`cargo test -p relgraph-authz --test upstream_check` replays the vendored
+corpora offline. It mirrors upstream's `tests/check/check.go` driver: one
+in-memory store per test, stages run in order with tuples accumulating across
+them, each stage's model constructed with `FgaAuthz::new` and its tuples
+written through the validating `write_tuple`. Check assertions compare
+allow/deny, or an upstream `errorCode` through the runner's error-code table;
+each stage's checks are also replayed through `batch_check`, which must agree
+with the individual checks. The runner's module docs describe case IDs and
+what is not run (contextual tuples, list assertions, userset or wildcard check
+subjects). Run with `-- --nocapture` for per-file totals.
+
+Every case that does not pass is covered by a reviewed entry in
+[`upstream-skip.yaml`](upstream-skip.yaml); the test also fails when an entry no
+longer covers a non-passing case, so the list only shrinks. Entries marked
+`provisional: true` still await classification. Measured pass rates are
+recorded by the conformance plan (`CONFORMANCE_PLAN.md`). This replay is
+separate from the Docker differential runner, which covers only the
+hand-written fixtures above.
 
 ## Compatibility boundary
 

@@ -20,5 +20,7 @@ name = "axum_authz"
 required-features = ["axum"]
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 time = { version = "0.3", features = ["formatting"] }
