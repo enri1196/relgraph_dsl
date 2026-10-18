@@ -148,7 +148,7 @@ skip lists and runners outside `upstream/`. Both READMEs give source URLs.
 `cargo fmt --check`, `cargo check --workspace --all-targets --all-features` and
 all plan test commands pass (the live PostgreSQL tests were not run).
 
-## Task 2 [PROGRESS]: Language corpus runner (syntax, semantic, fga.mod)
+## Task 2 [DONE]: Language corpus runner (syntax, semantic, fga.mod)
 
 **Depends on:** Task 1.
 
@@ -177,6 +177,30 @@ that makes the DSL crate depend on `relgraph-authz`.
 **Acceptance:** `cargo test -p relgraph_dsl --test upstream_corpus` is green
 with the skip list in place and prints per-file totals (pass / skipped / metric);
 the existing 64-fixture `conformance` test is untouched and green.
+
+Result: `relgraph-dsl/tests/upstream_corpus.rs`, `tests/support/skip_list.rs`
+and `tests/fixtures/openfga/upstream-skip.yaml` added (plus a fixtures README
+section). Baseline (`-- --nocapture`): syntax 76/81 pass, 5 skip-listed (3
+fail, 2 harness-gap), position metric 46/74; semantic 35/86 run cases pass, 51
+skip-listed (50 fail, 1 harness-gap), 7 upstream `skip: true`, position metric
+0/53 (Relgraph validation spans cover the whole declaration); fga.mod 7/9 pass,
+2 fail (`schema: "1.1"` and a non-`.fga` path are accepted), plus the `json`
+output rule. The skip list has 58 entries marked `provisional: true` (29
+semantic-divergence, 26 unsupported-feature, 3 harness-gap) and one final rule
+`fga-mod-json-output` (permanent); Task 4 must clear the `provisional` flags.
+Notes for later tasks: `ValidationError` has no symbol, so symbols are a metric
+(substring of a Relgraph span), not gated; one `ValidationIssue` may map to
+several upstream types (`UnknownRelation` → `missing-definition` /
+`invalid-relation-type`), so the multiset comparison is a bipartite matching;
+syntax errors compare the stage only (ANTLR recovers, Relgraph stops at the
+first); `EmptyModel` and `UnknownExtensionType` have no table entry (harness
+gaps); the syntax corpus's two `extend` diagnostics use harness-local types
+`syntax-file:*`. A lone `module` document is composed as the only file of a
+1.2 manifest, so upstream's `schema-version-required` cases fail. Eight cases
+show a parser divergence: Relgraph rejects comments trailing a header, schema
+or type line (e.g. `schema 1.5 # a comment`) and an indented comment between
+`model` and `schema`, which the pinned corpus parses. Validation: all plan
+commands pass; `conformance` unchanged and green; clippy clean on the crate.
 
 ## Task 3 [TODO]: Check corpus runner
 
