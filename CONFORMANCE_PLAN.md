@@ -595,7 +595,7 @@ Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
 --all-features`, authz doc tests and the Check corpus test pass (docs-only
 change).
 
-## Task 11 [PROGRESS]: Documentation and maintenance procedure
+## Task 11 [DONE]: Documentation and maintenance procedure
 
 **Depends on:** Tasks 4 and 10 (rerun at the end of the plan).
 
@@ -616,6 +616,21 @@ change).
    would be circular.
 
 **Acceptance:** docs match the code; links and commands in them work.
+
+Result: `AGENTS.md` now describes `FgaAuthz::from_modular_model` (lifecycle
+diagram with both constructors) and lists the `upstream_corpus` /
+`upstream_check` / `upstream_checksums` targets, vendored directories and skip
+lists. Both fixtures READMEs have a pin-bump procedure (files, checksum
+regeneration, Docker pin in `openfga-differential.py` and fixture JSON,
+upstream facts in code, skip-list diff review); the authz one states that the
+Docker runner covers only hand-written fixtures and why replaying the corpus
+through it would be circular. The workspace README's prose compatibility claim
+is replaced by a measured per-corpus table. The checksum command was checked
+against `CHECKSUMS`; markdown anchors exist. This task is to be rerun at the
+end of the plan: Tasks 12 and 13 update the measured numbers they change, and
+Task 9 (blocked on D1) will change the ABAC row. Validation: `cargo fmt
+--check`, `cargo check --workspace --all-targets --all-features`, and the
+corpus, checksum and `conformance` tests pass (docs-only change).
 
 ## Task 12 [TODO]: DSL comment handling parity
 
