@@ -102,7 +102,7 @@ test support rather than adding a shared crate.
 / `ConstructionError` variant (Check). A case with no table entry is a
 `harness-gap`, not a pass or a fail.
 
-## Task 1 [TODO]: Vendor the pinned upstream corpora
+## Task 1 [PROGRESS]: Vendor the pinned upstream corpora
 
 **Depends on:** none.
 
