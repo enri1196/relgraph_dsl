@@ -1,4 +1,4 @@
-schema: &version '2.0'
-contents:
-  - *version
-  - models/base.fga
+schema: &version '1.2'
+contents: &modules
+  - &base models/base.fga
+  - models/extra.fga

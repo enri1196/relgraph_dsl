@@ -54,8 +54,10 @@
 //! the parser production marks that token optional.
 //!
 //! Manifest parsing applies the crate's YAML and lexical path policies without
-//! file access. Assembly is pure and checks module structure, not semantic
-//! references or versions. Loading is synchronous and reads only the paths listed
+//! file access; like OpenFGA's `fga.mod` transformer it accepts only schema
+//! `1.2` and `.fga` module paths, and rejects `..` components and
+//! percent-encoded paths. Assembly is pure and checks the manifest value and
+//! module structure, not semantic references. Loading is synchronous and reads only the paths listed
 //! in the manifest. Neither assembly nor loading validates the composed model
 //! automatically; call [`validate_modular_model`] explicitly.
 //!
@@ -81,9 +83,10 @@ pub mod ast;
 pub mod diagnostics;
 /// Parse crate-policy model manifests without filesystem access.
 ///
-/// This API requires one YAML mapping with string `schema` and nonempty string
-/// `contents` fields. It lexically normalizes relative slash-separated paths and
-/// rejects absolute paths, backslashes, and above-root traversal.
+/// This API requires one YAML mapping with a `schema` string equal to `1.2` and
+/// a nonempty `contents` list of `.fga` paths. It lexically normalizes relative
+/// slash-separated paths and rejects absolute paths, backslashes, `..`
+/// components, and `%`.
 ///
 /// ```
 /// use relgraph_dsl::parse_model_manifest;

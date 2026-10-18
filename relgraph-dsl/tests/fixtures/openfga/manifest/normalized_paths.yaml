@@ -1,4 +1,4 @@
 schema: '1.2'
 contents:
-  - ./models/extra/../base.fga
-  - docs/./model.txt
+  - ./models//base.fga
+  - docs/./model.fga

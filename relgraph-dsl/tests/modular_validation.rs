@@ -1,6 +1,7 @@
 use relgraph_dsl::{
-    ModelManifest, ModularModel, ModuleSource, ValidationError, assemble_modular_model,
-    parse_fga_schema, parse_model_manifest, validate_modular_model, validate_schema,
+    ManifestErrorCode, ModelManifest, ModularModel, ModularModelError, ModuleSource,
+    ValidationError, assemble_modular_model, parse_fga_schema, parse_model_manifest,
+    validate_modular_model, validate_schema,
 };
 use std::path::PathBuf;
 
@@ -153,46 +154,35 @@ fn validates_references_in_extensions_at_the_extension_origin() {
 }
 
 #[test]
-fn standalone_accepts_1_1_while_modular_validation_requires_exact_1_2() {
+fn standalone_accepts_1_1_while_modular_manifests_require_exact_1_2() {
     let standalone =
         parse_fga_schema("model\nschema 1.1\ntype user\n").expect("standalone schema should parse");
     validate_schema(&standalone).expect("standalone 1.1 remains supported");
 
-    let old_version = assemble(
-        include_str!("fixtures/openfga/modular/validation/schema-1.1.yaml"),
-        vec![module(
-            "old.fga",
-            include_str!("fixtures/openfga/modular/validation/old.fga"),
-        )],
-    );
-    let errors = validate_modular_model(&old_version).expect_err("modular 1.1 is unsupported");
-    assert_eq!(codes(&errors), ["UnsupportedSchemaVersion"]);
-    assert_eq!(
-        errors[0].location,
-        relgraph_dsl::SourceLocation {
-            file: None,
-            module: None,
-            span: None,
-        }
-    );
+    let error = parse_model_manifest(include_str!(
+        "fixtures/openfga/modular/validation/schema-1.1.yaml"
+    ))
+    .expect_err("a 1.1 manifest is rejected before composition");
+    assert_eq!(error.code, ManifestErrorCode::InvalidSchemaVersion);
 
-    let noncanonical = assemble_modular_manifest("01.02");
-    let errors = validate_modular_model(&noncanonical).expect_err("modular version is exact");
-    assert_eq!(codes(&errors), ["UnsupportedSchemaVersion"]);
-}
-
-fn assemble_modular_manifest(schema: &str) -> ModularModel {
-    assemble_modular_model(
-        ModelManifest {
-            schema: schema.to_string(),
-            contents: vec![PathBuf::from("old.fga")],
-        },
-        vec![module(
-            "old.fga",
-            include_str!("fixtures/openfga/modular/validation/old.fga"),
-        )],
-    )
-    .expect("module should compose regardless of supported validation version")
+    for schema in ["1.1", "01.02"] {
+        let error = assemble_modular_model(
+            ModelManifest {
+                schema: schema.to_string(),
+                contents: vec![PathBuf::from("old.fga")],
+            },
+            vec![module(
+                "old.fga",
+                include_str!("fixtures/openfga/modular/validation/old.fga"),
+            )],
+        )
+        .expect_err("a constructed manifest must also be 1.2");
+        assert!(matches!(
+            error,
+            ModularModelError::InvalidManifest { source }
+                if source.code == ManifestErrorCode::InvalidSchemaVersion
+        ));
+    }
 }
 
 #[test]

@@ -12,7 +12,7 @@ fn assert_error(input: &str, code: ManifestErrorCode, field: Option<&str>) -> Ma
 }
 
 #[test]
-fn parses_ordered_paths_without_io_or_suffix_requirements() {
+fn parses_ordered_paths_without_io() {
     let parsed =
         parse_model_manifest(include_str!("fixtures/openfga/manifest/ordered.yaml")).unwrap();
 
@@ -22,26 +22,37 @@ fn parses_ordered_paths_without_io_or_suffix_requirements() {
             schema: "1.2".to_string(),
             contents: vec![
                 PathBuf::from("models/base.fga"),
-                PathBuf::from("docs/model source.txt"),
+                PathBuf::from("docs/model source.fga"),
             ],
         }
     );
 }
 
 #[test]
-fn accepts_unsupported_versions_and_resolved_yaml_aliases() {
+fn accepts_yaml_anchors_and_checks_resolved_aliases_as_values() {
     let parsed =
         parse_model_manifest(include_str!("fixtures/openfga/manifest/aliases.yaml")).unwrap();
 
-    assert_eq!(parsed.schema, "2.0");
+    assert_eq!(parsed.schema, "1.2");
     assert_eq!(
         parsed.contents,
-        vec![PathBuf::from("2.0"), PathBuf::from("models/base.fga")]
+        vec![
+            PathBuf::from("models/base.fga"),
+            PathBuf::from("models/extra.fga")
+        ]
     );
 
-    let leading_zeroes =
-        parse_model_manifest("schema: '01.02'\ncontents: [models/base.fga]\n").unwrap();
-    assert_eq!(leading_zeroes.schema, "01.02");
+    // The alias resolves to the string `1.2`, which is not a `.fga` path.
+    assert_error(
+        "schema: &version '1.2'\ncontents: [*version]\n",
+        ManifestErrorCode::InvalidPath,
+        Some("contents[0]"),
+    );
+    assert_error(
+        "schema: '1.2'\ncontents: [&base base.fga, *base]\n",
+        ManifestErrorCode::DuplicatePath,
+        Some("contents[1]"),
+    );
 }
 
 #[test]
@@ -55,7 +66,7 @@ fn normalizes_paths_lexically_and_preserves_entry_order() {
         parsed.contents,
         vec![
             PathBuf::from("models/base.fga"),
-            PathBuf::from("docs/model.txt")
+            PathBuf::from("docs/model.fga")
         ]
     );
 }
@@ -97,16 +108,16 @@ fn enforces_document_yaml_tag_and_root_precedence() {
 }
 
 #[test]
-fn accepts_yaml_comments_and_resolved_aliases() {
+fn accepts_yaml_comments() {
     let parsed = parse_model_manifest(
-        "# model version\nschema: &version '1.2' # YAML comment\ncontents: [*version, model.yaml]\n",
+        "# model version\nschema: '1.2' # YAML comment\ncontents: [model.fga, extra.fga] # files\n",
     )
     .unwrap();
 
     assert_eq!(parsed.schema, "1.2");
     assert_eq!(
         parsed.contents,
-        vec![PathBuf::from("1.2"), PathBuf::from("model.yaml")]
+        vec![PathBuf::from("model.fga"), PathBuf::from("extra.fga")]
     );
 }
 
@@ -174,7 +185,7 @@ fn checks_mapping_keys_and_required_fields_in_source_order() {
 }
 
 #[test]
-fn requires_quoted_numeric_schema_versions_and_string_contents() {
+fn requires_the_quoted_schema_version_1_2_and_string_contents() {
     assert_error(
         "schema: 1.2\ncontents: [a.fga]\n",
         ManifestErrorCode::WrongType,
@@ -185,7 +196,9 @@ fn requires_quoted_numeric_schema_versions_and_string_contents() {
         ManifestErrorCode::WrongType,
         Some("schema"),
     );
-    for version in ["1", "1.", ".1", "1.2.0", "v1.1", "１.2"] {
+    for version in [
+        "1", "1.", ".1", "1.2.0", "v1.1", "１.2", "1.1", "2.0", "01.02", "1.20", " 1.2",
+    ] {
         assert_error(
             &format!("schema: '{version}'\ncontents: []\n"),
             ManifestErrorCode::InvalidSchemaVersion,
@@ -220,13 +233,21 @@ fn rejects_invalid_and_duplicate_normalized_paths_in_entry_order() {
         "",
         ".",
         "a/..",
-        "../a",
-        "a/../../b",
-        "/a",
-        "C:models/a",
-        "C:/a",
-        "a\\b",
-        "a\0b",
+        "../a.fga",
+        "a/../b.fga",
+        "a/../../b.fga",
+        "/a.fga",
+        "C:models/a.fga",
+        "C:/a.fga",
+        "a\\b.fga",
+        "a\0b.fga",
+        "a",
+        "a.txt",
+        "a.fga.txt",
+        "a.fga/b",
+        "a%2fb.fga",
+        "a%20b.fga",
+        "100%.fga",
     ] {
         let input = format!("schema: '1.2'\ncontents:\n  - {path:?}\n");
         assert_error(&input, ManifestErrorCode::InvalidPath, Some("contents[0]"));
@@ -238,6 +259,36 @@ fn rejects_invalid_and_duplicate_normalized_paths_in_entry_order() {
     );
     assert_error(
         "schema: '1.2'\ncontents: [../bad, 7]\n",
+        ManifestErrorCode::InvalidPath,
+        Some("contents[0]"),
+    );
+}
+
+/// Replays each entry of the pinned `fga-mod-transformer-cases.yaml` case
+/// "contents path contains dot-dot-slash sequence and other invalid paths" on
+/// its own: upstream reports every entry except the first and last, while the
+/// corpus runner only gates on the whole manifest being rejected.
+#[test]
+fn rejects_each_upstream_invalid_contents_item() {
+    for path in ["core.fga", "wiki.fga"] {
+        parse_model_manifest(&format!("schema: '1.2'\ncontents:\n  - {path}\n")).unwrap();
+    }
+    for path in [
+        "../team1/project.fga",
+        "team2/../team3/board.fga",
+        "team2\\\\..\\\\team3\\\\board.fga",
+        "/absolute/path.fga",
+        "\"%2e%2e%2fteam4%2fproject.fga\"",
+        "\"%2e%2e%5cteam4%5cproject.fga\"",
+    ] {
+        assert_error(
+            &format!("schema: '1.2'\ncontents:\n  - {path}\n"),
+            ManifestErrorCode::InvalidPath,
+            Some("contents[0]"),
+        );
+    }
+    assert_error(
+        "schema: '1.2'\ncontents:\n  - core.txt\n",
         ManifestErrorCode::InvalidPath,
         Some("contents[0]"),
     );

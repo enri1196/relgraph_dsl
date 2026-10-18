@@ -12,10 +12,13 @@ use serde::de::{EnumAccess, MapAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_yaml::Deserializer as YamlDeserializer;
 
+/// The only manifest schema version, as in OpenFGA's `fga.mod` transformer.
+pub const SUPPORTED_SCHEMA_VERSION: &str = "1.2";
+
 /// A parsed modular-model manifest, with paths normalized in manifest order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelManifest {
-    /// The version string exactly as written in the YAML scalar.
+    /// The version string; parsing accepts only [`SUPPORTED_SCHEMA_VERSION`].
     pub schema: String,
     /// Normalized relative module paths in their original entry order.
     pub contents: Vec<PathBuf>,
@@ -36,7 +39,7 @@ pub enum ManifestErrorCode {
     DuplicateField,
     /// A YAML key or value has the wrong scalar/container type.
     WrongType,
-    /// The schema string does not match the required numeric version form.
+    /// The schema string is not [`SUPPORTED_SCHEMA_VERSION`].
     InvalidSchemaVersion,
     /// The contents sequence is empty.
     EmptyContents,
@@ -98,13 +101,15 @@ impl Error for ManifestError {}
 /// Parses one manifest YAML document and applies the crate's manifest policies.
 ///
 /// This function performs no filesystem I/O. It requires exactly one mapping
-/// with only `schema` and `contents` keys; `schema` must be a YAML string
-/// matching ASCII `major.minor`, and `contents` must be a nonempty list of
-/// strings. Relative slash-separated paths are normalized lexically before
-/// storage. Absolute paths, backslashes, drive prefixes, NUL, and paths that
-/// traverse above the root are rejected. Spaces and non-`.fga` suffixes are
-/// preserved. A well-formed unsupported version is returned for later modular
-/// validation.
+/// with only `schema` and `contents` keys; `schema` must be the YAML string
+/// `1.2` (OpenFGA's `fga.mod` accepts no other version), and `contents` must be
+/// a nonempty list of strings. Relative slash-separated paths are normalized
+/// lexically before storage: empty and `.` components are dropped. Every path
+/// must name a `.fga` file. Absolute paths, backslashes, drive prefixes, NUL,
+/// `..` components (even ones that stay inside the root), and `%` are rejected.
+/// Paths are never percent-decoded, so a `%` is rejected instead of being read
+/// as a literal file name that OpenFGA's transformers would decode. Spaces are
+/// preserved.
 ///
 /// Comments and resolved aliases are accepted. Explicit tags, merge keys,
 /// unknown or duplicate fields, and multiple YAML documents are rejected.
@@ -204,14 +209,8 @@ pub fn parse_model_manifest(input: &str) -> Result<ModelManifest, ManifestError>
     })?;
 
     let schema = match schema {
-        YamlNode::String(schema) if is_numeric_schema_version(&schema) => schema,
-        YamlNode::String(schema) => {
-            return Err(manifest_error(
-                ManifestErrorCode::InvalidSchemaVersion,
-                Some("schema".to_string()),
-                format!("schema version '{schema}' must match ASCII major.minor digits"),
-            ));
-        }
+        YamlNode::String(schema) if schema == SUPPORTED_SCHEMA_VERSION => schema,
+        YamlNode::String(schema) => return Err(unsupported_schema_version(&schema)),
         _ => {
             return Err(manifest_error(
                 ManifestErrorCode::WrongType,
@@ -292,16 +291,15 @@ fn manifest_error(
     }
 }
 
-/// Checks the exact ASCII `major.minor` spelling required for manifest versions.
-fn is_numeric_schema_version(version: &str) -> bool {
-    let Some((major, minor)) = version.split_once('.') else {
-        return false;
-    };
-    !major.is_empty()
-        && !minor.is_empty()
-        && major.bytes().all(|byte| byte.is_ascii_digit())
-        && minor.bytes().all(|byte| byte.is_ascii_digit())
-        && !minor.contains('.')
+/// Builds the diagnostic for any schema string other than `1.2`.
+fn unsupported_schema_version(schema: &str) -> ManifestError {
+    manifest_error(
+        ManifestErrorCode::InvalidSchemaVersion,
+        Some("schema".to_string()),
+        format!(
+            "schema version '{schema}' is not supported; manifests require '{SUPPORTED_SCHEMA_VERSION}'"
+        ),
+    )
 }
 
 /// A YAML node that retains mapping order, duplicate keys, and tagged values.
@@ -452,12 +450,20 @@ impl<'de> Visitor<'de> for YamlNodeVisitor {
 }
 
 /// Normalizes a slash-separated relative path without consulting the filesystem.
+///
+/// Empty and `.` components are dropped. `..` components are rejected rather
+/// than resolved, matching OpenFGA's `fga.mod` transformer, which rejects any
+/// `../`. `%` is rejected because OpenFGA's transformers percent-decode paths
+/// (differently in Go and JavaScript) while Relgraph reads them literally.
 pub(crate) fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static str> {
     if path.contains('\0') {
         return Err("module paths cannot contain NUL");
     }
     if path.contains('\\') {
         return Err("module paths must use forward slashes");
+    }
+    if path.contains('%') {
+        return Err("module paths cannot contain '%' (percent-encoding is not supported)");
     }
     if path.starts_with('/') {
         return Err("module paths must be relative");
@@ -471,16 +477,15 @@ pub(crate) fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static st
     for component in path.split('/') {
         match component {
             "" | "." => {}
-            ".." => {
-                if components.pop().is_none() {
-                    return Err("module path traverses above its relative root");
-                }
-            }
+            ".." => return Err("module paths cannot contain '..' components"),
             other => components.push(other),
         }
     }
-    if components.is_empty() {
+    let Some(file_name) = components.last() else {
         return Err("module path normalizes to an empty path");
+    };
+    if !file_name.ends_with(".fga") {
+        return Err("module paths must name a '.fga' file");
     }
 
     Ok(PathBuf::from(components.join("/")))
@@ -488,15 +493,8 @@ pub(crate) fn normalize_manifest_path(path: &str) -> Result<PathBuf, &'static st
 
 /// Validates a constructed manifest value without parsing or serializing YAML.
 pub(crate) fn validate_manifest_value(manifest: &ModelManifest) -> Result<(), ManifestError> {
-    if !is_numeric_schema_version(&manifest.schema) {
-        return Err(manifest_error(
-            ManifestErrorCode::InvalidSchemaVersion,
-            Some("schema".to_string()),
-            format!(
-                "schema version '{}' must match ASCII major.minor digits",
-                manifest.schema
-            ),
-        ));
+    if manifest.schema != SUPPORTED_SCHEMA_VERSION {
+        return Err(unsupported_schema_version(&manifest.schema));
     }
 
     if manifest.contents.is_empty() {

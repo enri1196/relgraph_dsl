@@ -63,16 +63,6 @@ entries:
   tag: deliberate
   task: permanent
   justification: 'upstream accepts; Relgraph validation [EmptyModel]. The model declares no type; `validate_schema` rejects it as EmptyModel, matching the OpenFGA API (`WriteAuthorizationModelRequest.type_definitions` has `min_items: 1`), while the language validator accepts it'
-- case: fga-mod-transformer-cases.yaml::contents item does not end with `.fga`
-  reason: unsupported-feature
-  tag: manifest
-  task: '6'
-  justification: upstream rejects; Relgraph accepts the manifest. `parse_model_manifest` does not require module paths to end in `.fga`
-- case: fga-mod-transformer-cases.yaml::invalid schema version
-  reason: unsupported-feature
-  tag: manifest
-  task: '6'
-  justification: upstream rejects; Relgraph accepts the manifest. `parse_model_manifest` accepts any ASCII `major.minor` schema (composition and `validate_modular_model` require 1.2 later); upstream rejects anything but 1.2 while reading fga.mod
 - rule: fga-mod-json-output
   reason: unsupported-feature
   tag: json-model

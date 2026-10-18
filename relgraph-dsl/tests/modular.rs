@@ -124,12 +124,12 @@ fn allows_empty_extensions_repeated_module_names_and_skips_semantic_validation()
             "module shared\n\ntype document\n  relations\n    define viewer: [missing]\n",
         ),
     ];
-    let model = assemble_modular_model(manifest(&["extension.fga", "base.fga"], "9.7"), modules)
-        .expect("composition does not apply version or reference validation");
+    let model = assemble_modular_model(manifest(&["extension.fga", "base.fga"], "1.2"), modules)
+        .expect("composition does not apply reference validation");
     assert_eq!(
         model.schema().header,
         SchemaHeader::ModelSchema {
-            version: "9.7".to_string()
+            version: "1.2".to_string()
         }
     );
     assert_eq!(model.schema().type_definitions[0].relations.len(), 1);
@@ -325,16 +325,18 @@ fn validates_manual_manifest_values_before_matching_modules() {
                 && source.field.as_deref() == Some("contents[0]")
     ));
 
-    let error = assemble_modular_model(
-        manifest(&["a.fga"], "not-a-version"),
-        vec![module("wrong.fga", "module shared\n")],
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        ModularModelError::InvalidManifest { source }
-            if source.code == ManifestErrorCode::InvalidSchemaVersion
-    ));
+    for schema in ["not-a-version", "1.1", "9.7"] {
+        let error = assemble_modular_model(
+            manifest(&["a.fga"], schema),
+            vec![module("wrong.fga", "module shared\n")],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ModularModelError::InvalidManifest { source }
+                if source.code == ManifestErrorCode::InvalidSchemaVersion
+        ));
+    }
 
     for (contents, expected_code) in [
         (Vec::new(), ManifestErrorCode::EmptyContents),
