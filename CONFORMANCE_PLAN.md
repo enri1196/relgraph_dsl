@@ -431,7 +431,7 @@ were unaffected. `AGENTS.md` manifest summary updated. Validation:
 all plan test commands and clippy on the DSL crate pass (live PostgreSQL tests
 not run).
 
-## Task 7 [TODO]: Contextual tuples
+## Task 7 [PROGRESS]: Contextual tuples
 
 **Depends on:** Task 4.
 
