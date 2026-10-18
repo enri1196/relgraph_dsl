@@ -317,9 +317,28 @@ authorization speed.
 ## Supported runtime profile
 
 The runtime supports all six relation-expression forms represented by the
-parser, on acyclic relation dependencies. Cyclic or recursive model dependencies
-are rejected during construction with an unsupported-recursion diagnostic;
-fixed-point recursive evaluation is not implemented. This restriction is
+parser, including recursive models such as nested groups
+(`define member: [user, group#member]`), same-type hierarchies
+(`define viewer: [user] or viewer from parent`), and mutual recursion across
+types. Recursive relations are evaluated as least fixed points: a relationship
+cycle in the stored data (group A in B in A) denies a non-member without an
+error. Construction rejects two cyclic shapes with a capability diagnostic:
+
+- `RecursiveDifference`: a cycle through the subtracted operand of `but not`.
+  Assume-false evaluation is unsound under negation. OpenFGA v1.21.0 accepts
+  these models when the cycle crosses a tuple-to-userset or userset hop, but it
+  then answers data cycles inconsistently (both `viewer` and `blocked` deny on
+  the same object).
+- `SameObjectRelationCycle`: relations on one object that depend on each other
+  only through computed usersets, such as `define a: b or x` with
+  `define b: a or y`. OpenFGA rejects these models too.
+
+Cycles through union, intersection, a difference's base operand, userset
+restrictions, and tuple-to-userset are accepted. Within one check, `true`
+results are memoized immediately. A `false` result inside an open cycle stays
+provisional until the cycle's first-entered relation finishes, and then the
+whole cycle is memoized as `false`. Errors are never memoized. Work that is
+discarded and repeated stays within the check's work budget. These rules are
 separate from parser acceptance.
 
 The pinned CEL implementation is `cel-core = 0.5.1`. The supported condition

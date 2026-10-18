@@ -66,7 +66,7 @@ DSL text
   → parse_fga_schema
   → CompiledModel::compile
       → validate_schema
-      → capability checks + recursive dependency rejection
+      → capability checks + cycle-shape classification
       → conditions::compile_all
       → type/relation indexes
   → with_store(store, EvaluationLimits)
@@ -77,7 +77,7 @@ DSL text
 
 `FgaAuthz<State>` shares an immutable `CompiledModel` through `Arc`. `Unbound` and `Bound<S>` prevent checks before store binding. Bound clones share the store and limits. `ModelIdentity` identifies a compiled instance within one process; it is neither a persistent version nor an authentication credential.
 
-`authz/model.rs` owns `CompiledModel`, type/relation indexes, conditions, runtime capability diagnostics, and dependency graph cycle detection. Recursive model dependencies are rejected; fixed-point evaluation is not implemented.
+`authz/model.rs` owns `CompiledModel`, type/relation indexes, conditions, runtime capability diagnostics, and dependency graph cycle detection. Dependency edges carry their kind (same-object computed userset/tupleset vs. userset or tuple-to-userset hop) and polarity. Iterative Tarjan SCCs reject cycles through a `but not` subtracted operand (`RecursiveDifference`) and same-object computed-userset cycles (`SameObjectRelationCycle`, which OpenFGA also rejects); all other cycles are accepted.
 
 `authz/request.rs` owns:
 
@@ -87,7 +87,7 @@ DSL text
 
 Identifier constructors enforce shape; they do not authenticate tenants or subjects. `CheckRequest` carries a tenant, concrete subject, object, relation, global context, and condition-scoped context.
 
-`authz/evaluator.rs` owns per-check traversal state: `Evaluator`, `EvaluationKey` (relation ID plus object ID), memoized completed decisions, the request-value cache, and tuple/page/work counters. Relations are always evaluated by compiled relation ID. There is no in-flight cycle detection: construction rejects recursive dependencies and the depth limit bounds traversal. Main functions are `evaluate_relation`, `evaluate_expression`, `evaluate_direct_assignment`, `evaluate_tuple_to_userset`, `load_tuple_page`, `prepare_assignment_page`, `prepare_tupleset_page`, `validate_tuple`, and `evaluate_tuple_condition`.
+`authz/evaluator.rs` owns per-check traversal state: `Evaluator`, `EvaluationKey` (relation ID plus object ID), memoized completed decisions, Tarjan-style unresolved-key tracking for least-fixed-point evaluation, the request-value cache, and tuple/page/work counters. Relations are always evaluated by compiled relation ID. Reaching an unresolved key (in flight, or finished `false` inside an open cycle) returns a provisional `false` and lowers the frame's low link. `true` is always memoized. A `false` cycle root memoizes its whole unresolved suffix as `false`. A `false` frame whose low link points below it stays unresolved. Errors are never memoized, and allowing or erroring frames discard their unresolved suffix. These rules rely on construction having rejected negation cycles. Keep them, and the soundness tests in `tests/authz_recursion.rs`, when changing the evaluator. Main functions are `evaluate_relation`, `evaluate_expression`, `evaluate_direct_assignment`, `evaluate_tuple_to_userset`, `load_tuple_page`, `prepare_assignment_page`, `prepare_tupleset_page`, `validate_tuple`, and `evaluate_tuple_condition`.
 
 Boolean expressions use deliberate three-valued rules. A decisive allow can mask a union branch error; a decisive deny can mask an intersection error. Difference must not allow when the subtraction branch has an unresolved error. Preserve and test these rules rather than treating every error as a deny or making every branch error fatal. Tuple validation failures are handled more strictly than branch evaluation errors; `CompiledModel::validate_tuple` (public as `FgaAuthz::validate_tuple`) shares those checks so writers can reject tuples up front. `authz/write.rs` adds `WriteError` and, for `S: RelationshipWriteStore`, the validating `FgaAuthz<Bound<S>>::write_tuple` / `delete_tuple` / `apply_changes`: tenant check, then `validate_tuple`, then the store. They do not authorize the caller. Reads stay strict on stored tuples that drift from the model (maintainer decision); repair goes through the store directly. Tuple-to-userset targets whose type lacks the computed relation are skipped, not errors.
 

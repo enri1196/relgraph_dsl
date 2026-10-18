@@ -428,7 +428,7 @@ fn paged_reads_complete_within_the_tuple_budget_and_respect_store_call_limits() 
 }
 
 #[test]
-fn relation_depth_work_and_recursive_tuple_graphs_fail_safely() {
+fn relation_depth_work_and_mistyped_tuple_cycles_fail_safely() {
     let definition = "model\nschema 1.1\ntype user\ntype subgroup\n  relations\n    define member: [user]\ntype group\n  relations\n    define member: [subgroup#member]\ntype document\n  relations\n    define viewer: [group#member]\n";
     let store = InMemoryRelationshipStore::new();
     store
@@ -513,14 +513,6 @@ fn relation_depth_work_and_recursive_tuple_graphs_fail_safely() {
             "tenant-a", "user", "anne", "document", "42", "viewer",
         ))),
         Err(AuthorizationError::InvalidTuple(_))
-    ));
-
-    let recursive_model = "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user, group#member]\ntype document\n  relations\n    define viewer: [group#member]\n";
-    assert!(matches!(
-        FgaAuthz::new(recursive_model),
-        Err(relgraph_authz::ConstructionError::UnsupportedCapabilities(
-            _
-        ))
     ));
 }
 

@@ -57,8 +57,12 @@ pub enum RuntimeCapability {
     InlineConditionExpression,
     /// The model declares conditions, which are not compiled in this runtime slice.
     ConditionDefinitions,
-    /// The relation dependency graph contains a cycle.
-    RecursiveRelationDependency,
+    /// A relation dependency cycle passes through the subtracted operand of
+    /// `but not`, which has no sound least-fixed-point evaluation.
+    RecursiveDifference,
+    /// Relations on one object depend on each other only through computed
+    /// usersets; OpenFGA rejects this cycle shape as well.
+    SameObjectRelationCycle,
 }
 
 /// One source-located runtime capability diagnostic.

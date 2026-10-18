@@ -633,14 +633,32 @@ struct RelationNode {
     span: Option<relgraph_dsl::SourceSpan>,
 }
 
+/// Whether a dependency edge stays on the evaluated object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeKind {
+    /// A computed userset or tupleset read on the same object.
+    SameObject,
+    /// A userset restriction or tuple-to-userset hop to a tuple's object.
+    ObjectHop,
+}
+
 #[derive(Debug, Clone)]
 /// A directed dependency between two declared relations.
 struct RelationEdge {
     target: usize,
+    kind: EdgeKind,
+    /// The edge lies inside the subtracted operand of a difference.
+    subtracted: bool,
     span: Option<relgraph_dsl::SourceSpan>,
 }
 
-/// Reports relation dependency cycles that require recursive evaluation.
+/// Reports relation dependency cycles outside the fixed-point evaluator's profile.
+///
+/// Cycles through unions, intersections, base operands, userset restrictions,
+/// and tuple-to-userset hops are evaluated as least fixed points. Two cyclic
+/// shapes are rejected: a cycle through the subtracted operand of `but not`,
+/// which has no sound assume-false evaluation, and a cycle that stays on one
+/// object through computed usersets only, which OpenFGA also rejects.
 fn recursive_dependencies(schema: &Schema) -> Vec<CapabilityDiagnostic> {
     let mut nodes = Vec::new();
     let mut ids = HashMap::new();
@@ -678,27 +696,60 @@ fn recursive_dependencies(schema: &Schema) -> Vec<CapabilityDiagnostic> {
         }
     }
 
-    let mut state = vec![0_u8; nodes.len()];
-    let mut stack = Vec::new();
-    let mut emitted = HashSet::new();
     let mut diagnostics = Vec::new();
-    for node in 0..nodes.len() {
-        if state[node] == 0 {
-            visit_dependencies(
-                node,
-                &graph,
-                &nodes,
-                &mut state,
-                &mut stack,
-                &mut emitted,
-                &mut diagnostics,
-            );
+    let all_edges = |_: &RelationEdge| true;
+    let components = strongly_connected_components(&graph, all_edges);
+    let mut reported = HashSet::new();
+    for (source, edges) in graph.iter().enumerate() {
+        for edge in edges {
+            if edge.subtracted
+                && components[source] == components[edge.target]
+                && reported.insert((source, edge.target))
+            {
+                let path = cycle_path(&graph, &nodes, &components, all_edges, source, edge.target);
+                diagnostics.push(CapabilityDiagnostic {
+                    capability: RuntimeCapability::RecursiveDifference,
+                    relation: Some(nodes[source].location.clone()),
+                    span: edge.span.clone().or_else(|| nodes[source].span.clone()),
+                    message: format!(
+                        "relation depends on itself through the subtracted operand of `but not`: {path}"
+                    ),
+                });
+            }
+        }
+    }
+
+    let same_object = |edge: &RelationEdge| edge.kind == EdgeKind::SameObject;
+    let components = strongly_connected_components(&graph, same_object);
+    let mut reported = HashSet::new();
+    for (source, edges) in graph.iter().enumerate() {
+        for edge in edges {
+            if same_object(edge)
+                && components[source] == components[edge.target]
+                && reported.insert(components[source])
+            {
+                let path = cycle_path(
+                    &graph,
+                    &nodes,
+                    &components,
+                    same_object,
+                    source,
+                    edge.target,
+                );
+                diagnostics.push(CapabilityDiagnostic {
+                    capability: RuntimeCapability::SameObjectRelationCycle,
+                    relation: Some(nodes[source].location.clone()),
+                    span: edge.span.clone().or_else(|| nodes[source].span.clone()),
+                    message: format!(
+                        "relations on one object depend on each other only through computed usersets: {path}"
+                    ),
+                });
+            }
         }
     }
     diagnostics
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Adds dependency edges implied by one parsed relation expression.
 fn collect_relation_edges(
     source: usize,
@@ -708,8 +759,18 @@ fn collect_relation_edges(
     graph: &mut [Vec<RelationEdge>],
     span: Option<relgraph_dsl::SourceSpan>,
 ) {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
+    let mut add = |target: (String, String), kind, subtracted| {
+        if let Some(target_id) = ids.get(&target) {
+            graph[source].push(RelationEdge {
+                target: *target_id,
+                kind,
+                subtracted,
+                span: span.clone(),
+            });
+        }
+    };
+    let mut pending = vec![(expression, false)];
+    while let Some((expression, subtracted)) = pending.pop() {
         match expression {
             RelationExpression::DirectAssignment(targets) => {
                 for target in targets {
@@ -718,33 +779,27 @@ fn collect_relation_edges(
                         .as_deref()
                         .map(|relation| (relation != "*").then_some(relation))
                     {
-                        add_edge(
-                            source,
-                            &(target.target_type.clone(), target_relation.to_owned()),
-                            ids,
-                            graph,
-                            span.clone(),
+                        add(
+                            (target.target_type.clone(), target_relation.to_owned()),
+                            EdgeKind::ObjectHop,
+                            subtracted,
                         );
                     }
                 }
             }
-            RelationExpression::ComputedUserset(target_relation) => add_edge(
-                source,
-                &(owner.name.clone(), target_relation.clone()),
-                ids,
-                graph,
-                span.clone(),
+            RelationExpression::ComputedUserset(target_relation) => add(
+                (owner.name.clone(), target_relation.clone()),
+                EdgeKind::SameObject,
+                subtracted,
             ),
             RelationExpression::TupleToUserset {
                 computed_userset,
                 tupleset_relation,
             } => {
-                add_edge(
-                    source,
-                    &(owner.name.clone(), tupleset_relation.clone()),
-                    ids,
-                    graph,
-                    span.clone(),
+                add(
+                    (owner.name.clone(), tupleset_relation.clone()),
+                    EdgeKind::SameObject,
+                    subtracted,
                 );
 
                 if let Some(tupleset) = owner
@@ -755,110 +810,138 @@ fn collect_relation_edges(
                         &tupleset.definition.expression
                 {
                     for target in targets {
-                        add_edge(
-                            source,
-                            &(target.target_type.clone(), computed_userset.clone()),
-                            ids,
-                            graph,
-                            span.clone(),
+                        add(
+                            (target.target_type.clone(), computed_userset.clone()),
+                            EdgeKind::ObjectHop,
+                            subtracted,
                         );
                     }
                 }
             }
             RelationExpression::Union(left, right)
-            | RelationExpression::Intersection(left, right)
-            | RelationExpression::Difference(left, right) => {
-                pending.push(right);
-                pending.push(left);
+            | RelationExpression::Intersection(left, right) => {
+                pending.push((right, subtracted));
+                pending.push((left, subtracted));
+            }
+            RelationExpression::Difference(left, right) => {
+                pending.push((right, true));
+                pending.push((left, subtracted));
             }
         }
     }
 }
 
-/// Adds a dependency edge if semantic validation resolved the target relation.
-fn add_edge(
-    source: usize,
-    target: &(String, String),
-    ids: &HashMap<(String, String), usize>,
-    graph: &mut [Vec<RelationEdge>],
-    span: Option<relgraph_dsl::SourceSpan>,
-) {
-    if let Some(target_id) = ids.get(target) {
-        graph[source].push(RelationEdge {
-            target: *target_id,
-            span,
-        });
+/// Assigns a strongly connected component ID to every relation node.
+///
+/// Iterative Tarjan over the edges accepted by `include`, so deeply chained
+/// models cannot exhaust the native stack.
+fn strongly_connected_components(
+    graph: &[Vec<RelationEdge>],
+    include: impl Fn(&RelationEdge) -> bool,
+) -> Vec<usize> {
+    const UNVISITED: usize = usize::MAX;
+    let mut index = vec![UNVISITED; graph.len()];
+    let mut low_link = vec![0; graph.len()];
+    let mut on_stack = vec![false; graph.len()];
+    let mut component = vec![UNVISITED; graph.len()];
+    let mut stack = Vec::new();
+    let mut next_index = 0;
+    let mut next_component = 0;
+
+    for root in 0..graph.len() {
+        if index[root] != UNVISITED {
+            continue;
+        }
+        index[root] = next_index;
+        low_link[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        let mut frames = vec![(root, 0usize)];
+
+        while let Some(frame) = frames.last_mut() {
+            let node = frame.0;
+            if let Some(edge) = graph[node].get(frame.1) {
+                frame.1 += 1;
+                if !include(edge) {
+                    continue;
+                }
+                let target = edge.target;
+                if index[target] == UNVISITED {
+                    index[target] = next_index;
+                    low_link[target] = next_index;
+                    next_index += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    frames.push((target, 0));
+                } else if on_stack[target] {
+                    low_link[node] = low_link[node].min(index[target]);
+                }
+                continue;
+            }
+
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                low_link[parent] = low_link[parent].min(low_link[node]);
+            }
+            if low_link[node] == index[node] {
+                loop {
+                    let member = stack.pop().expect("a component root is on the stack");
+                    on_stack[member] = false;
+                    component[member] = next_component;
+                    if member == node {
+                        break;
+                    }
+                }
+                next_component += 1;
+            }
+        }
     }
+    component
 }
 
-/// Runs depth-first cycle detection from one relation node.
-fn visit_dependencies(
-    node: usize,
+/// Formats the cycle closed by `source -> target` within one component.
+fn cycle_path(
     graph: &[Vec<RelationEdge>],
     nodes: &[RelationNode],
-    state: &mut [u8],
-    stack: &mut Vec<usize>,
-    emitted: &mut HashSet<Vec<usize>>,
-    diagnostics: &mut Vec<CapabilityDiagnostic>,
-) {
-    state[node] = 1;
-    stack.push(node);
-    let mut frames = vec![(node, 0usize)];
-
-    loop {
-        let next = frames.last().and_then(|(current, edge_index)| {
-            graph[*current]
-                .get(*edge_index)
-                .map(|edge| (*current, *edge_index, edge.target))
-        });
-        let Some((current, edge_index, target)) = next else {
-            let (finished, _) = frames.pop().expect("a finished DFS frame exists");
-            let popped = stack.pop();
-            debug_assert_eq!(popped, Some(finished));
-            state[finished] = 2;
-            if frames.is_empty() {
-                break;
+    components: &[usize],
+    include: impl Fn(&RelationEdge) -> bool,
+    source: usize,
+    target: usize,
+) -> String {
+    // Breadth-first search from `target` back to `source` inside the component.
+    let mut previous = HashMap::from([(target, target)]);
+    let mut queue = std::collections::VecDeque::from([target]);
+    while let Some(node) = queue.pop_front() {
+        if node == source {
+            break;
+        }
+        for edge in &graph[node] {
+            if include(edge)
+                && components[edge.target] == components[source]
+                && !previous.contains_key(&edge.target)
+            {
+                previous.insert(edge.target, node);
+                queue.push_back(edge.target);
             }
-            continue;
-        };
-        frames.last_mut().expect("the active DFS frame exists").1 += 1;
-
-        match state[target] {
-            0 => {
-                state[target] = 1;
-                stack.push(target);
-                frames.push((target, 0));
-            }
-            1 => {
-                let edge = &graph[current][edge_index];
-                let start = stack
-                    .iter()
-                    .position(|candidate| *candidate == target)
-                    .unwrap_or(0);
-                let mut cycle = stack[start..].to_vec();
-                cycle.sort_unstable();
-                cycle.dedup();
-                if emitted.insert(cycle) {
-                    let path = stack[start..]
-                        .iter()
-                        .chain(std::iter::once(&target))
-                        .map(|id| {
-                            let relation = &nodes[*id].location;
-                            format!("{}#{}", relation.object_type, relation.relation)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" -> ");
-                    diagnostics.push(CapabilityDiagnostic {
-                        capability: RuntimeCapability::RecursiveRelationDependency,
-                        relation: Some(nodes[current].location.clone()),
-                        span: edge.span.clone().or_else(|| nodes[current].span.clone()),
-                        message: format!("recursive relation dependency is unsupported: {path}"),
-                    });
-                }
-            }
-            _ => {}
         }
     }
+
+    let mut path = vec![source];
+    let mut node = source;
+    while node != target {
+        node = previous[&node];
+        path.push(node);
+    }
+    path.reverse();
+    path.insert(0, source);
+    path.iter()
+        .map(|id| {
+            let relation = &nodes[*id].location;
+            format!("{}#{}", relation.object_type, relation.relation)
+        })
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 #[cfg(test)]
@@ -880,19 +963,21 @@ mod tests {
     }
 
     #[test]
-    fn depth_limit_bounds_a_recursive_model_that_skipped_construction_checks() {
+    fn unresolved_keys_terminate_a_cycle_that_skipped_construction_checks() {
         use crate::authz::evaluator;
         use crate::authz::request::{
-            AuthorizationError, CheckRequest, EvaluationLimits, ObjectRef, RelationName, Subject,
-            TenantId,
+            AuthorizationDecision, CheckRequest, EvaluationLimits, ObjectRef, RelationName,
+            Subject, TenantId,
         };
-        use crate::authz::store::{InMemoryRelationshipStore, RelationshipTuple, TupleSubject};
+        use crate::authz::store::{InMemoryRelationshipStore, RelationshipTuple};
         use std::future::Future;
         use std::sync::Arc;
         use std::task::{Context, Poll, Wake, Waker};
 
+        // Construction rejects this same-object cycle; the evaluator still
+        // terminates on it through its unresolved-key tracking.
         let schema = parse_fga_schema(
-            "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user, group#member]\ntype document\n  relations\n    define viewer: [group#member]\n",
+            "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user] or editor\n    define editor: viewer\n",
         )
         .unwrap();
         let compiled = CompiledModel::compile_unchecked_for_test(schema);
@@ -903,29 +988,9 @@ mod tests {
                 tenant.clone(),
                 ObjectRef::new("document", "42").unwrap(),
                 RelationName::new("viewer").unwrap(),
-                TupleSubject::Userset {
-                    object: ObjectRef::new("group", "8").unwrap(),
-                    relation: RelationName::new("member").unwrap(),
-                },
+                Subject::new("user", "anne").unwrap(),
             ))
             .unwrap();
-        store
-            .insert(RelationshipTuple::new(
-                tenant.clone(),
-                ObjectRef::new("group", "8").unwrap(),
-                RelationName::new("member").unwrap(),
-                TupleSubject::Userset {
-                    object: ObjectRef::new("group", "8").unwrap(),
-                    relation: RelationName::new("member").unwrap(),
-                },
-            ))
-            .unwrap();
-        let request = CheckRequest::new(
-            tenant,
-            Subject::new("user", "anne").unwrap(),
-            ObjectRef::new("document", "42").unwrap(),
-            RelationName::new("viewer").unwrap(),
-        );
 
         struct NoopWake;
         impl Wake for NoopWake {
@@ -933,22 +998,28 @@ mod tests {
         }
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
-        let mut future = Box::pin(evaluator::check(
-            &compiled,
-            &store,
-            EvaluationLimits::default(),
-            &request,
-        ));
-        let result = loop {
-            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                break result;
-            }
-        };
-        // Construction rejects this model; without that check the self-referencing
-        // tuple recurses until the depth limit rather than looping forever.
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::RelationDepthExceeded { .. })
-        ));
+        for (subject, expected) in [
+            ("anne", AuthorizationDecision::Allow),
+            ("zoe", AuthorizationDecision::Deny),
+        ] {
+            let request = CheckRequest::new(
+                tenant.clone(),
+                Subject::new("user", subject).unwrap(),
+                ObjectRef::new("document", "42").unwrap(),
+                RelationName::new("editor").unwrap(),
+            );
+            let mut future = Box::pin(evaluator::check(
+                &compiled,
+                &store,
+                EvaluationLimits::default(),
+                &request,
+            ));
+            let result = loop {
+                if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                    break result;
+                }
+            };
+            assert_eq!(result.unwrap(), expected);
+        }
     }
 }

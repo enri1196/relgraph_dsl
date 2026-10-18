@@ -93,7 +93,7 @@ pub(crate) async fn check<S: RelationshipStore>(
 /// One memo key; tenant and subject are fixed for this evaluator's single check.
 ///
 /// A relation ID identifies its owner type, so the object type is implied.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EvaluationKey {
     relation_id: usize,
     object_id: EntityId,
@@ -101,14 +101,35 @@ struct EvaluationKey {
 
 /// Per-check state for bounded graph traversal and decision memoization.
 ///
-/// Construction rejects recursive model dependencies, so a relation key never
-/// recurs while it is being evaluated; the depth limit bounds traversal.
+/// Recursive models are evaluated as least fixed points with Tarjan-style
+/// bookkeeping. Each relation frame gets a DFS index. Reaching a key that is
+/// still unresolved (in flight, or finished false inside an open cycle) yields
+/// a provisional `false` and lowers the caller's low link to that key's index.
+/// Construction admits cycles only through monotone operators, so:
+///
+/// - `true` is always memoized: it was derived from under-approximations.
+/// - A frame whose low link stays at its own index is a cycle root. A `false`
+///   root resolves itself and every unresolved key above it as `false`.
+/// - A `false` frame whose low link points below it stays unresolved until its
+///   root finishes.
+/// - Errors are never memoized; an erroring or allowing frame discards the
+///   unresolved keys above it, which a later visit evaluates again.
+///
+/// Repeated evaluation of discarded keys is bounded by the work budget, and
+/// the depth limit bounds traversal.
 struct Evaluator<'a, S> {
     compiled: &'a CompiledModel,
     session: S,
     limits: EvaluationLimits,
     request: &'a CheckRequest,
     completed: HashMap<EvaluationKey, bool>,
+    /// DFS index of every key that is in flight or awaiting its cycle root.
+    unresolved: HashMap<EvaluationKey, usize>,
+    /// Unresolved keys in DFS order; a frame owns the suffix it pushed.
+    unresolved_stack: Vec<EvaluationKey>,
+    /// Lowest DFS index the current frame's provisional results depend on.
+    low_link: usize,
+    next_index: usize,
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
@@ -129,6 +150,10 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             limits,
             request,
             completed: HashMap::new(),
+            unresolved: HashMap::new(),
+            unresolved_stack: Vec::new(),
+            low_link: usize::MAX,
+            next_index: 0,
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
@@ -157,16 +182,49 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             if let Some(decision) = self.completed.get(&key) {
                 return Ok(*decision);
             }
+            if let Some(&index) = self.unresolved.get(&key) {
+                self.low_link = self.low_link.min(index);
+                return Ok(false);
+            }
+
+            let index = self.next_index;
+            self.next_index += 1;
+            let stack_start = self.unresolved_stack.len();
+            self.unresolved.insert(key.clone(), index);
+            self.unresolved_stack.push(key);
+            let caller_low_link = std::mem::replace(&mut self.low_link, index);
 
             let expression_id = self.compiled.relation_expression_id(relation_id);
             let result = self
                 .evaluate_expression(object, relation_id, expression_id, depth)
                 .await;
-            if let Ok(decision) = &result {
-                self.completed.insert(key, *decision);
+
+            let low_link = self.low_link;
+            self.low_link = caller_low_link.min(low_link);
+            if !matches!(result, Ok(false)) || low_link >= index {
+                self.finish_frame(stack_start, result.as_ref().ok().copied());
             }
             result
         })
+    }
+
+    /// Pops a finished frame's unresolved suffix and memoizes what is sound.
+    ///
+    /// A `false` cycle root resolves the whole suffix as `false`; `true` is
+    /// memoized for the frame itself only; errors memoize nothing.
+    fn finish_frame(&mut self, stack_start: usize, decision: Option<bool>) {
+        for (offset, key) in self.unresolved_stack.drain(stack_start..).enumerate() {
+            self.unresolved.remove(&key);
+            match decision {
+                Some(false) => {
+                    self.completed.insert(key, false);
+                }
+                Some(true) if offset == 0 => {
+                    self.completed.insert(key, true);
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Evaluates one AST node while preserving the operator's three-valued rules.

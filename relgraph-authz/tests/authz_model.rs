@@ -63,16 +63,131 @@ fn accepts_every_supported_relation_expression() {
 }
 
 #[test]
-fn rejects_relation_dependency_cycles_even_when_the_parser_accepts_them() {
-    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define first: second\n    define second: first\n";
-    let error = FgaAuthz::new(definition).unwrap_err();
+fn accepts_recursive_dependencies_through_monotone_operators() {
+    let cases = [
+        // Nested groups through a self-referencing userset restriction.
+        "type group\n  relations\n    define member: [user, group#member]\n",
+        // A same-type hierarchy through tuple-to-userset.
+        "type folder\n  relations\n    define parent: [folder]\n    define viewer: [user] or viewer from parent\n",
+        // Mutual recursion across two types.
+        "type org\n  relations\n    define member: [user, team#member]\ntype team\n  relations\n    define member: [user, org#member]\n",
+        // Recursion under intersection.
+        "type project\n  relations\n    define parent: [project]\n    define active: [user]\n    define viewer: ([user] or viewer from parent) and active\n",
+        // Recursion through the base operand of a difference.
+        "type folder\n  relations\n    define parent: [folder]\n    define blocked: [user]\n    define viewer: ([user] or viewer from parent) but not blocked\n",
+        // A same-object computed userset inside a cycle that hops objects.
+        "type node\n  relations\n    define x: [user]\n    define a: [node#b] or x\n    define b: [node#a]\n    define both: a and b\n",
+    ];
+    for types in cases {
+        let definition = format!("model\nschema 1.1\ntype user\n{types}");
+        let _model = FgaAuthz::new(&definition)
+            .unwrap_or_else(|error| panic!("recursive model was rejected: {error}\n{definition}"));
+    }
 
+    let conditional = "model\nschema 1.1\ntype user\ntype circle\n  relations\n    define member: [user with active, circle#member]\ncondition active(enabled: bool) {\n  enabled\n}\n";
+    let _model = FgaAuthz::new(conditional).unwrap();
+}
+
+/// Asserts one diagnostic of `capability` on `relation`, spanning its definition.
+fn assert_cycle_rejected(
+    definition: &str,
+    capability: RuntimeCapability,
+    object_type: &str,
+    relation: &str,
+    path: &str,
+) {
+    let error = FgaAuthz::new(definition).unwrap_err();
     let ConstructionError::UnsupportedCapabilities(diagnostics) = error else {
-        panic!("expected runtime capability diagnostic");
+        panic!("expected runtime capability diagnostics for {definition}");
     };
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.capability == RuntimeCapability::RecursiveRelationDependency
-    }));
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.capability, capability);
+    let location = diagnostic.relation.as_ref().expect("diagnostic relation");
+    assert_eq!(
+        (location.object_type.as_str(), location.relation.as_str()),
+        (object_type, relation)
+    );
+    let span = diagnostic.span.as_ref().expect("diagnostic span");
+    assert!(
+        definition[span.start..span.end].starts_with(&format!("define {relation}:")),
+        "span {span:?} does not cover {relation} in {definition}"
+    );
+    assert!(
+        diagnostic.message.ends_with(path),
+        "unexpected message: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn rejects_relation_cycles_that_stay_on_one_object() {
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n    define first: second\n    define second: first\n",
+        RuntimeCapability::SameObjectRelationCycle,
+        "document",
+        "first",
+        "document#first -> document#second -> document#first",
+    );
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype pair\n  relations\n    define x: [user]\n    define y: [user]\n    define a: b or x\n    define b: a or y\n",
+        RuntimeCapability::SameObjectRelationCycle,
+        "pair",
+        "a",
+        "pair#a -> pair#b -> pair#a",
+    );
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define a: [user] and b\n    define b: [user] or a\n",
+        RuntimeCapability::SameObjectRelationCycle,
+        "doc",
+        "a",
+        "doc#a -> doc#b -> doc#a",
+    );
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define viewer: [user] or viewer\n",
+        RuntimeCapability::SameObjectRelationCycle,
+        "doc",
+        "viewer",
+        "doc#viewer -> doc#viewer",
+    );
+}
+
+#[test]
+fn rejects_relation_cycles_through_a_subtracted_operand() {
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype folder\n  relations\n    define parent: [folder]\n    define blocked: [user] or viewer from parent\n    define viewer: [user] but not blocked\n",
+        RuntimeCapability::RecursiveDifference,
+        "folder",
+        "viewer",
+        "folder#viewer -> folder#blocked -> folder#viewer",
+    );
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype group\n  relations\n    define banned: [user, group#member]\n    define member: [user] but not banned\n",
+        RuntimeCapability::RecursiveDifference,
+        "group",
+        "member",
+        "group#member -> group#banned -> group#member",
+    );
+
+    // A cycle through the subtracted operand that also stays on one object
+    // reports both shapes.
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define a: [user] but not b\n    define b: [user] or a\n";
+    let ConstructionError::UnsupportedCapabilities(diagnostics) =
+        FgaAuthz::new(definition).unwrap_err()
+    else {
+        panic!("expected runtime capability diagnostics");
+    };
+    let capabilities = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.capability.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        capabilities,
+        [
+            RuntimeCapability::RecursiveDifference,
+            RuntimeCapability::SameObjectRelationCycle
+        ]
+    );
 }
 
 #[test]

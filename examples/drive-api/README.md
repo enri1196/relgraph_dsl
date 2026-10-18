@@ -184,10 +184,10 @@ authorization checks. No API allows callers to write arbitrary tuples.
 
 ## Scope and production adaptations
 
-Relgraph currently rejects recursive model dependencies. This example therefore
-has exactly three resource levels: workspace → folder → file. Arbitrarily
-nested folders require a different model/design or recursive runtime support;
-simply adding `folder` to its own parent restriction will not work.
+This example has exactly three resource levels: workspace → folder → file.
+Relgraph evaluates recursive models, so a model could nest folders by adding
+`folder` to its own parent restriction. The example keeps a fixed depth to
+stay small; its routes and metadata do not model nested folders.
 
 The process-local mutex serializes requests, including authorization checks,
 so share revocation and edits have a clear order. It is a teaching implementation,
