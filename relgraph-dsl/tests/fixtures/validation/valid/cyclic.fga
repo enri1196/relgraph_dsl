@@ -1,6 +1,7 @@
 model
 schema 1.2
+type user
 type document
   relations
-    define first: second
+    define first: [user] or second
     define second: first

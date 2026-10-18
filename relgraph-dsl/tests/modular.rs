@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use relgraph_dsl::{
     ManifestErrorCode, ModelManifest, ModularModelError, ModuleSource, SchemaHeader,
     ValidationIssue, assemble_modular_model, load_modular_model, parse_fga_schema,
-    parse_model_manifest,
+    parse_model_manifest, validate_modular_model,
 };
 use tempfile::tempdir;
 
@@ -112,6 +112,7 @@ fn assembles_extension_before_base_and_tracks_ordered_origins() {
         model.relation_origins()[0][1].span,
         model.modules()[0].schema.type_definitions[0].relations[0].span
     );
+    validate_modular_model(&model).expect("the composed model is semantically valid");
 }
 
 #[test]

@@ -2,4 +2,4 @@ module shared
 
 extend type document
   relations
-    define editor: [user]
+    define editor: [user with can_edit]

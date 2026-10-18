@@ -2,6 +2,6 @@ module shared
 
 type document
   relations
-    define viewer: [user]
+    define viewer: [user with can_view]
 
 condition can_view(x: bool) { x }

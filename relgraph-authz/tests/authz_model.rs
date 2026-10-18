@@ -122,8 +122,25 @@ fn assert_cycle_rejected(
 
 #[test]
 fn rejects_relation_cycles_that_stay_on_one_object() {
-    assert_cycle_rejected(
+    // A cycle without any entry point never reaches runtime construction:
+    // DSL validation rejects it, as OpenFGA does.
+    let error = FgaAuthz::new(
         "model\nschema 1.1\ntype user\ntype document\n  relations\n    define first: second\n    define second: first\n",
+    )
+    .unwrap_err();
+    let ConstructionError::Validation(errors) = error else {
+        panic!("expected validation errors, got {error:?}");
+    };
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.issue == ValidationIssue::NoEntryPoint),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 2);
+
+    assert_cycle_rejected(
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n    define first: [user] or second\n    define second: first\n",
         RuntimeCapability::SameObjectRelationCycle,
         "document",
         "first",

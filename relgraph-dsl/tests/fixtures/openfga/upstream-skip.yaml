@@ -3,46 +3,11 @@
 # module docs of tests/upstream_corpus.rs and CONFORMANCE_PLAN.md.
 # Keep sorted and canonical; the test prints the expected form on mismatch.
 entries:
-- case: dsl-semantic-validation-cases.yaml::cycle 1 should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::cycle 2 should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::cyclic loop
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::detect loop in TTU dependency
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
 - case: dsl-semantic-validation-cases.yaml::duplicate in type name
   reason: semantic-divergence
   tag: deliberate
   task: permanent
   justification: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]. Both reject the duplicate type; upstream stops at it, while Relgraph also reports follow-on issues (DuplicateRelation, UnknownTuplesetRelation) from the relations of the second `account` block
-- case: dsl-semantic-validation-cases.yaml::exclusion base not allow to reference itself in TTU
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::group viewer no entry point
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::intersection child not allow to reference itself in TTU
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
 - case: dsl-semantic-validation-cases.yaml::invalid schema version with a trailing comment on the schema line
   reason: semantic-divergence
   tag: bug
@@ -68,56 +33,11 @@ entries:
   tag: bug
   task: '12'
   justification: 'upstream expects [missing-definition x2]; Relgraph parse error UnexpectedToken at 3:10. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::no entry point exclusion that relates to itself
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no entry point for multiple type
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no entry point for single type multiple relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no entry point if directly assignable value is itself
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no entry point intersection that relates to itself
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
 - case: dsl-semantic-validation-cases.yaml::no entrypoint relation with a trailing comment on the enclosing type line
   reason: semantic-divergence
   tag: bug
   task: '12'
   justification: 'upstream expects [relation-no-entry-point]; Relgraph parse error UnexpectedToken at 3:11. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::no_entrypoint_1 should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no_entrypoint_2 should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x3]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no_entrypoint_3a should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::no_entrypoint_3b should fail
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
 - case: dsl-semantic-validation-cases.yaml::reserved relation name with a trailing comment on the enclosing type line
   reason: semantic-divergence
   tag: bug
@@ -128,11 +48,6 @@ entries:
   tag: bug
   task: '12'
   justification: 'upstream expects [reserved-type-keywords]; Relgraph parse error UnexpectedToken at 3:9. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::single character relations and types, no entry point
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
 - case: dsl-syntax-validation-cases.yaml::a valid model with comments should not have errors
   reason: semantic-divergence
   tag: bug

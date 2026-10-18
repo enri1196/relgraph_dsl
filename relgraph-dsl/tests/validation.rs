@@ -46,6 +46,67 @@ fn accepts_forward_references_and_a_locally_resolved_cycle() {
 }
 
 #[test]
+fn rejects_relations_without_an_entry_point() {
+    let source = include_str!("fixtures/validation/invalid/no-entry-point-cycle.fga");
+    let schema = parse(source);
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(codes(&errors), ["NoEntryPoint", "NoEntryPoint"]);
+    for (error, relation) in errors.iter().zip(&schema.type_definitions[0].relations) {
+        assert_standalone_location(error, relation.span.clone());
+        assert!(error.message.contains(&format!("'{}'", relation.name)));
+    }
+
+    // Each shape lists the relations OpenFGA reports as impossible.
+    for (types, impossible) in [
+        // A userset restriction on the relation itself.
+        (
+            "type group\n  relations\n    define viewer: [group#viewer]\n",
+            vec!["viewer"],
+        ),
+        // A tuple-to-userset loop between two types.
+        (
+            "type folder\n  relations\n    define parent: [document]\n    define viewer: viewer from parent\ntype document\n  relations\n    define parent: [folder]\n    define viewer: viewer from parent\n",
+            vec!["viewer", "viewer"],
+        ),
+        // An intersection needs every operand.
+        (
+            "type doc\n  relations\n    define editor: [user]\n    define viewer: [doc#viewer] and editor\n",
+            vec!["viewer"],
+        ),
+        // As in OpenFGA, a difference needs an entry point in both operands.
+        (
+            "type doc\n  relations\n    define admin: [user]\n    define a: admin but not b\n    define b: admin but not a\n",
+            vec!["a", "b"],
+        ),
+    ] {
+        let source = format!("model\nschema 1.1\ntype user\n{types}");
+        let errors = validate_source(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.issue == ValidationIssue::NoEntryPoint),
+            "{errors:#?}"
+        );
+        assert_eq!(errors.len(), impossible.len(), "{source}");
+        for (error, relation) in errors.iter().zip(impossible) {
+            assert!(error.message.contains(&format!("'{relation}'")));
+        }
+    }
+
+    // Entry points through usersets, tuple-to-usersets, wildcards and
+    // conditional restrictions, including recursive definitions.
+    let reachable = "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user:*, group#member]\ntype folder\n  relations\n    define parent: [folder]\n    define viewer: [user with active] or viewer from parent\n    define member: member from parent or viewer\ntype doc\n  relations\n    define parent: [folder]\n    define viewer: [group#member] and viewer from parent\ncondition active(on: bool) { on }\n";
+    validate_source(reachable).expect("every relation has an entry point");
+}
+
+#[test]
+fn checks_entry_points_only_when_every_other_rule_passes() {
+    let source = "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define a: b\n    define b: a\n    define c: missing\n";
+    let errors = validate_source(source).unwrap_err();
+    assert_eq!(codes(&errors), ["UnknownRelation"]);
+}
+
+#[test]
 fn preserves_unsupported_versions_and_handles_header_and_module_rules() {
     let source = "model\nschema 2.0\n";
     let schema = parse(source);

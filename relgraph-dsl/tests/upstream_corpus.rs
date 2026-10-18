@@ -133,6 +133,7 @@ const ERROR_TYPE_TABLE: &[(&str, ValidationIssue)] = &[
     ("invalid-type", ValidationIssue::UnknownType),
     // A computed userset naming a relation the type lacks.
     ("missing-definition", ValidationIssue::UnknownRelation),
+    ("relation-no-entry-point", ValidationIssue::NoEntryPoint),
     (
         "reserved-relation-keywords",
         ValidationIssue::ReservedRelationName,
@@ -167,8 +168,10 @@ const LISTENER_STAGE_ISSUES: &[ValidationIssue] = &[
 /// module file at a time, so a lone module is not judged on them.
 const CROSS_FILE_ISSUES: &[ValidationIssue] = &[ValidationIssue::UnknownExtensionType];
 
-/// Upstream error types that Relgraph validation does not diagnose at all.
-const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] = &["relation-no-entry-point"];
+/// Upstream error types that Relgraph validation does not diagnose at all
+/// (none at the current pin). A failing case expecting one is suggested as
+/// `unsupported-feature`.
+const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] = &[];
 
 /// Message prefixes of ANTLR parser diagnostics in the syntax corpus.
 const ANTLR_MESSAGE_PREFIXES: &[&str] = &[

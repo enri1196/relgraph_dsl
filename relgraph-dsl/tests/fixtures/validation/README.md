@@ -2,8 +2,11 @@
 
 - `valid/forward-references.fga` verifies that type, relation, and condition
   references resolve even when declarations appear later.
-- `valid/cyclic.fga` records the bounded validator's intentional cycle
-  boundary: a locally resolved cycle passes static validation.
+- `valid/cyclic.fga` records the validator's cycle boundary: a cycle with an
+  entry point (`[user] or second`) passes static validation, although the
+  authorization runtime rejects this same-object cycle at construction.
+- `invalid/no-entry-point-cycle.fga` is a cycle without an entry point; every
+  relation in it is reported as `NoEntryPoint`, as OpenFGA does.
 - `invalid/reference-cascade.fga` verifies deterministic diagnostics and
   suppression of dependent errors after a missing type or tupleset.
 

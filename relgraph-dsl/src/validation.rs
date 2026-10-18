@@ -382,6 +382,12 @@ fn validate_schema_with_context(
 
     validator.check_names(schema, origins);
     validator.check_repetitions(schema, origins);
+    // Like OpenFGA, judge entry points only on an otherwise valid model:
+    // unresolved references would make every dependent relation look
+    // impossible.
+    if validator.errors.is_empty() {
+        validator.check_entry_points(schema, origins, &relation_symbols);
+    }
     validator.check_unused_conditions(schema, &condition_locations);
 
     let result = validator.finish();
@@ -738,6 +744,83 @@ impl Validator {
         }
     }
 
+    /// Relations that no relationship tuple can ever satisfy.
+    ///
+    /// A relation has an entry point when its definition can be satisfied
+    /// from stored tuples alone: a direct assignment with a plain type or
+    /// wildcard restriction, a userset restriction or computed userset naming
+    /// a relation with an entry point, or a tuple-to-userset whose computed
+    /// relation has one on some tupleset target type. A union needs one
+    /// operand with an entry point; an intersection, and (as in OpenFGA) a
+    /// difference, need all of them. The set of relations with entry points
+    /// is the least fixed point of those rules, so a relation that can only
+    /// be reached through itself has none. Callers run this only on a model
+    /// whose references resolve.
+    fn check_entry_points(
+        &mut self,
+        schema: &Schema,
+        origins: Option<ValidationOrigins<'_>>,
+        relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
+    ) {
+        let declared: Vec<(usize, usize, &str, &Relation)> =
+            schema
+                .type_definitions
+                .iter()
+                .enumerate()
+                .filter(|(_, definition)| !definition.is_extended)
+                .flat_map(|(type_index, definition)| {
+                    definition.relations.iter().enumerate().map(
+                        move |(relation_index, relation)| {
+                            (
+                                type_index,
+                                relation_index,
+                                definition.name.as_str(),
+                                relation,
+                            )
+                        },
+                    )
+                })
+                .collect();
+
+        let mut reachable: HashSet<(&str, &str)> = HashSet::new();
+        loop {
+            let mut changed = false;
+            for &(_, _, owner_type, relation) in &declared {
+                let key = (owner_type, relation.name.as_str());
+                if !reachable.contains(&key)
+                    && has_entry_point(
+                        &relation.definition.expression,
+                        owner_type,
+                        relation_symbols,
+                        &reachable,
+                    )
+                {
+                    reachable.insert(key);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        for (type_index, relation_index, owner_type, relation) in declared {
+            if reachable.contains(&(owner_type, relation.name.as_str())) {
+                continue;
+            }
+            self.push(
+                ValidationIssue::NoEntryPoint,
+                declared_relation_location(origins, type_index, relation_index, relation),
+                Vec::new(),
+                format!(
+                    "relation '{}' of type '{owner_type}' has no entry point: no relationship \
+                     tuple can satisfy it",
+                    relation.name
+                ),
+            );
+        }
+    }
+
     /// Conditions that no type restriction names. Each name is reported once,
     /// at its first declaration.
     fn check_unused_conditions(
@@ -831,6 +914,85 @@ fn is_valid_name(name: &str, max_chars: usize) -> bool {
         count += 1;
     }
     (1..=max_chars).contains(&count)
+}
+
+/// Whether `expression`, owned by `owner_type`, can be satisfied given the
+/// relations already known to have entry points. Evaluated with an explicit
+/// stack so manually built deep expressions cannot overflow the call stack.
+fn has_entry_point(
+    expression: &RelationExpression,
+    owner_type: &str,
+    relation_symbols: &HashMap<&str, HashMap<&str, &Relation>>,
+    reachable: &HashSet<(&str, &str)>,
+) -> bool {
+    enum Step<'a> {
+        Visit(&'a RelationExpression),
+        Combine(&'a RelationExpression),
+    }
+
+    let leaf = |expression: &RelationExpression| -> bool {
+        match expression {
+            RelationExpression::DirectAssignment(targets) => {
+                targets
+                    .iter()
+                    .any(|target| match target.relation_or_wildcard.as_deref() {
+                        None | Some("*") => true,
+                        Some(relation) => {
+                            reachable.contains(&(target.target_type.as_str(), relation))
+                        }
+                    })
+            }
+            RelationExpression::ComputedUserset(relation) => {
+                reachable.contains(&(owner_type, relation.as_str()))
+            }
+            RelationExpression::TupleToUserset {
+                computed_userset,
+                tupleset_relation,
+            } => {
+                let Some(RelationExpression::DirectAssignment(targets)) = relation_symbols
+                    .get(owner_type)
+                    .and_then(|relations| relations.get(tupleset_relation.as_str()))
+                    .map(|tupleset| &tupleset.definition.expression)
+                else {
+                    return false;
+                };
+                targets.iter().any(|target| {
+                    reachable.contains(&(target.target_type.as_str(), computed_userset.as_str()))
+                })
+            }
+            RelationExpression::Union(..)
+            | RelationExpression::Intersection(..)
+            | RelationExpression::Difference(..) => {
+                unreachable!("operators are combined, not evaluated as leaves")
+            }
+        }
+    };
+
+    let mut steps = vec![Step::Visit(expression)];
+    let mut values = Vec::new();
+    while let Some(step) = steps.pop() {
+        match step {
+            Step::Visit(
+                node @ (RelationExpression::Union(left, right)
+                | RelationExpression::Intersection(left, right)
+                | RelationExpression::Difference(left, right)),
+            ) => {
+                steps.push(Step::Combine(node));
+                steps.push(Step::Visit(right));
+                steps.push(Step::Visit(left));
+            }
+            Step::Visit(node) => values.push(leaf(node)),
+            Step::Combine(node) => {
+                let right = values.pop().expect("an operator has a right value");
+                let left = values.pop().expect("an operator has a left value");
+                values.push(match node {
+                    RelationExpression::Union(..) => left || right,
+                    _ => left && right,
+                });
+            }
+        }
+    }
+    values.pop().expect("an expression has one value")
 }
 
 /// Calls `visit` with the targets of every direct assignment in `expression`.
