@@ -78,13 +78,18 @@ Rules for every task:
   `line{start,end}`, `column{start,end}`, `metadata{symbol, errorType}`), and
   `skip: true` in some semantic cases. The syntax file mixes parser errors
   (ANTLR-style text) with semantic ones (duplicates, `extend` outside a modular
-  model). `fga-mod-transformer-cases.yaml` has `modFile`, `json`,
+  model); its errors carry no `errorType` (`metadata` has only `symbol`, and
+  four errors have no `metadata`), so its runner classifies them from the
+  message. `fga-mod-transformer-cases.yaml` has `modFile`, `json`,
   `expected_errors`.
 - Where this plan and a vendored file disagree, the file wins; fix the plan.
 
 **Case IDs.** `file::test-name::stage-index::kind::index` where `kind` is
 `check`, `listObjects`, `listUsers` or `model`. For language files:
-`file::case-name`. The harness fails on duplicate IDs.
+`file::case-name`. The pinned syntax file repeats one case name (`mixed
+operators with mixed operations and paren sets`, with different DSL), so a name
+that repeats within a file gets `#n` appended from its second occurrence
+(`…#2`, `…#3`). The harness fails on duplicate IDs after that rule.
 
 **Skip list.** One YAML file per crate, sorted and deterministically serialized.
 Each entry is one of: a single case ID, a stage (`…::stage-index`), or a rule
