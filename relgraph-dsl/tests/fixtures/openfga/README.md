@@ -103,6 +103,48 @@ reject, then the stage (syntax) or the multiset of error types mapped to
 `ValidationIssue` codes, never message text. Positions and symbols are printed
 as metrics only (`-- --nocapture`). Every case that does not pass is covered by
 a reviewed entry in `upstream-skip.yaml`; the test also fails when an entry no
-longer covers a non-passing case, so the list only shrinks. Entries marked
-`provisional: true` still await classification. Measured pass rates are
-recorded by the conformance plan (`CONFORMANCE_PLAN.md`).
+longer covers a non-passing case, so the list only shrinks.
+
+Each entry has a `reason` and a `tag` from a fixed vocabulary (checked by the
+test; see `tests/support/skip_list.rs`): `unsupported-feature` entries name the
+missing area (`validation` and `manifest` are rules Relgraph does not implement
+yet), `semantic-divergence` entries are either a `bug` owned by a plan task or
+a `deliberate`, `permanent` difference, and `harness-gap` entries are harness
+limitations. Like upstream's `validateDSL`, the runner stops at upstream's
+parse-listener stage (`extend` outside a module, a type extended twice in one
+file) and validates a lone `module` document standalone, which yields
+`schema-version-required`.
+
+Measured at the pinned revision (2026-10-18, `-- --nocapture`):
+
+| Corpus file | Cases | Pass | Upstream `skip: true` | Skip-listed | Skip-listed by reason/tag |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `dsl-syntax-validation-cases.yaml` | 81 | 78 | 0 | 3 | semantic-divergence/bug 1, semantic-divergence/deliberate 2 |
+| `dsl-semantic-validation-cases.yaml` | 93 | 37 | 7 | 49 | unsupported-feature/validation 40, semantic-divergence/bug 7, semantic-divergence/deliberate 2 |
+| `fga-mod-transformer-cases.yaml` | 10 (9 manifests, 1 `json` output) | 7 | 0 | 3 | unsupported-feature/manifest 2, unsupported-feature/json-model 1 |
+
+What the skip-listed groups are:
+
+- `unsupported-feature/validation` (plan Task 5): rules Relgraph validation
+  lacks: relation entry points (17 cases), repeated type restrictions or
+  operands in one relation (14), `self` / `this` names (4), unused conditions
+  (2, plus 1 combined with a repeated restriction) and names that break
+  upstream's naming rule `^[^:#@\*\s]{1,50}$` (2).
+- `semantic-divergence/bug` (plan Task 12): eight documents with a comment
+  after a header, schema or type line, or an indented comment between `model`
+  and `schema`. Upstream's `parseDSL` strips comment lines and ` #` comment
+  tails before running the grammar; Relgraph parses the raw text with the
+  pinned grammar and rejects them.
+- `semantic-divergence/deliberate` (permanent): a model with no type is
+  rejected (`EmptyModel`, as the OpenFGA API requires at least one type
+  definition; 2 cases), Relgraph also reports follow-on issues after a
+  duplicate type (1), and it reports one tuple-to-userset diagnostic per
+  reference rather than per tupleset target type (1).
+- `unsupported-feature/manifest` (plan Task 6): `parse_model_manifest` accepts
+  `schema: "1.1"` and a module path that does not end in `.fga`.
+- `unsupported-feature/json-model` (permanent rule): the transformer's
+  expected JSON output is not compared (Decision D3).
+
+Position and symbol matches are metrics, not gates: syntax 46/74 positions and
+40/58 symbols, semantic 2/54 positions and 17/24 symbols (Relgraph validation
+spans cover the owning declaration).

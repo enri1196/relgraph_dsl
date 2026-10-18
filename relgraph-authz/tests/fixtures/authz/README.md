@@ -58,11 +58,47 @@ subjects). Run with `-- --nocapture` for per-file totals.
 
 Every case that does not pass is covered by a reviewed entry in
 [`upstream-skip.yaml`](upstream-skip.yaml); the test also fails when an entry no
-longer covers a non-passing case, so the list only shrinks. Entries marked
-`provisional: true` still await classification. Measured pass rates are
-recorded by the conformance plan (`CONFORMANCE_PLAN.md`). This replay is
-separate from the Docker differential runner, which covers only the
-hand-written fixtures above.
+longer covers a non-passing case, so the list only shrinks. Each entry has a
+`reason` and a `tag` from a fixed vocabulary checked by the test (see
+`tests/support/skip_list.rs`). This replay is separate from the Docker
+differential runner, which covers only the hand-written fixtures above.
+
+Measured at `v1.21.0` (2026-10-18, `-- --nocapture`). Cases are per stage: one
+`model` case, then one case per check, `listObjects` or `listUsers` assertion.
+
+| Corpus file | Tests / stages | Cases | Pass | Pass by kind | Skip-listed by reason/tag |
+| --- | ---: | ---: | ---: | --- | --- |
+| `consolidated_1_1_tests.yaml` | 138 / 161 | 1094 | 481 | check 323/364, model 158/161, list 0/569 | unsupported-feature/list-api 569, semantic-divergence/deliberate 34, unsupported-feature/contextual-tuples 6, unsupported-feature/userset-subject 4 |
+| `abac_tests.yaml` | 33 / 37 | 368 | 147 | check 120/152, model 27/37, list 0/179 | unsupported-feature/list-api 179, unsupported-feature/inline-condition 30, unsupported-feature/ipaddress 4, unsupported-feature/contextual-tuples 3, semantic-divergence/deliberate 3, unsupported-feature/userset-subject 2 |
+
+What the skip-listed groups are:
+
+- `unsupported-feature/list-api` (rules; deferred list-API plan): every
+  `listObjectsAssertions` / `listUsersAssertions` entry.
+- `semantic-divergence/deliberate` (permanent): 24 checks that read a tuple
+  written under an earlier stage's model which no longer fits the current
+  one; upstream ignores such tuples, Relgraph reads are strict and report
+  `InvalidTuple` (a recorded maintainer decision). 13 cases (3 models and
+  their 10 checks) of three negation-cycle models that construction rejects
+  as `RecursiveDifference`, which the evaluator's memoization relies on.
+- `unsupported-feature/inline-condition` (permanent): 9 ABAC stages whose
+  models use inline condition expressions, which runtime construction
+  rejects; their 21 checks are not run.
+- `unsupported-feature/contextual-tuples` (rule; plan Task 7): 9 checks with
+  `contextualTuples`.
+- `unsupported-feature/userset-subject` (plan Task 13): 6 checks whose subject
+  is a userset (`group:x#member`) or a wildcard (`user:*`), which
+  `CheckRequest` cannot express.
+- `unsupported-feature/ipaddress` (plan Tasks 8 and 9): one ABAC stage whose
+  condition takes an `ipaddress` parameter.
+
+Error codes: every run check expecting `validation_error` (2000) passes
+(29/29), as does the one `authorization_model_resolution_too_complex` (2002)
+check. `invalid_tuple` (2027) occurs in Check assertions only together with
+contextual tuples, and 2021 / 2022 only in list assertions. The 2002 check
+needs a chain of about 27 usersets; the corpus result is unchanged for any
+relation-depth limit from 7 through 26, so the default of 25 (OpenFGA's
+resolve depth) agrees with it.
 
 ## Compatibility boundary
 
