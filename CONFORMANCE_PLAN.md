@@ -595,7 +595,7 @@ Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
 --all-features`, authz doc tests and the Check corpus test pass (docs-only
 change).
 
-## Task 11 [TODO]: Documentation and maintenance procedure
+## Task 11 [PROGRESS]: Documentation and maintenance procedure
 
 **Depends on:** Tasks 4 and 10 (rerun at the end of the plan).
 
