@@ -381,7 +381,7 @@ validator summary was updated. Validation: `cargo fmt --check`,
 `cargo check --workspace --all-targets --all-features`, all plan test commands
 and clippy (workspace, all features) pass; live PostgreSQL tests not run.
 
-## Task 6 [TODO]: Manifest (`fga.mod`) parity
+## Task 6 [PROGRESS]: Manifest (`fga.mod`) parity
 
 **Depends on:** Task 4.
 
