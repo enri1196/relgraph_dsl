@@ -197,11 +197,14 @@ fn run_child_case(case: &str) {
 }
 
 fn flat_expression_model(terms: usize) -> String {
-    let expression = std::iter::repeat_n("base", terms)
-        .collect::<Vec<_>>()
-        .join(" or ");
+    let names: Vec<String> = (0..terms).map(|term| format!("base{term:04}")).collect();
+    let bases: String = names
+        .iter()
+        .map(|name| format!("  define {name}: [user]\n"))
+        .collect();
+    let expression = names.join(" or ");
     format!(
-        "model\nschema 1.1\ntype user\ntype document\n relations\n  define base: [user]\n  define viewer: {expression}\n"
+        "model\nschema 1.1\ntype user\ntype document\n relations\n{bases}  define viewer: {expression}\n"
     )
 }
 

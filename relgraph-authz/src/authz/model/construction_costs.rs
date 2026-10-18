@@ -77,13 +77,14 @@ fn measure_construction_costs() {
         assert!(parsed.condition_definitions.is_empty());
 
         let (expressions, relations, targets, edges) = match case.name {
-            "union_32" => (64, None, None, None),
-            "union_128" => (256, None, None, None),
-            "union_256" | "union_exact_512" | "intersection_256" => (512, None, None, None),
+            "union_32" => (95, None, None, None),
+            "union_128" => (383, None, None, None),
+            "union_256" | "intersection_256" => (767, None, None, None),
+            "union_exact_512" => (766, None, None, None),
             "nested_128" | "targets_511" => (1, None, None, None),
             "wide_indexes_2047" => (2047, Some(2047), None, None),
             "edges_511" => (513, Some(513), Some(1022), Some(511)),
-            "repeated_128" => (65_409, Some(129), Some(129), None),
+            "repeated_128" => (65_663, Some(383), Some(383), None),
             name => panic!("unexpected construction case: {name}"),
         };
         assert_eq!(compiled.expressions.len(), expressions, "{}", case.name);

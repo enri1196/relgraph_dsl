@@ -23,101 +23,21 @@ entries:
   tag: validation
   task: '5'
   justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::duplicate difference relationship import in parent relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
 - case: dsl-semantic-validation-cases.yaml::duplicate in type name
   reason: semantic-divergence
   tag: deliberate
   task: permanent
   justification: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]. Both reject the duplicate type; upstream stops at it, while Relgraph also reports follow-on issues (DuplicateRelation, UnknownTuplesetRelation) from the relations of the second `account` block
-- case: dsl-semantic-validation-cases.yaml::duplicate intersection relationship import in parent relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relation difference in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relation intersection in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relation union in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in difference relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in intersection relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate relationship symbol in union relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate type in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate type in relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate type relation in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate type wildcard in relations
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate union relationship import in parent relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
-- case: dsl-semantic-validation-cases.yaml::duplicate wildcard type in relationship definition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [duplicated-error]; Relgraph accepts. Relgraph validation has no rule against a repeated type restriction or a repeated operand within one relation definition
 - case: dsl-semantic-validation-cases.yaml::exclusion base not allow to reference itself in TTU
   reason: unsupported-feature
   tag: validation
   task: '5'
   justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::extraneous condition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [condition-not-used]; Relgraph accepts. Relgraph validation has no unused-condition rule yet
 - case: dsl-semantic-validation-cases.yaml::group viewer no entry point
   reason: unsupported-feature
   tag: validation
   task: '5'
   justification: upstream expects [relation-no-entry-point]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::handle single name duplicated type and unused condition
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [condition-not-used, duplicated-error x2]; Relgraph validation [DuplicateType]. Relgraph validation has no unused-condition rule or repeated type restriction rule yet
 - case: dsl-semantic-validation-cases.yaml::intersection child not allow to reference itself in TTU
   reason: unsupported-feature
   tag: validation
@@ -213,11 +133,6 @@ entries:
   tag: validation
   task: '5'
   justification: upstream expects [relation-no-entry-point x2]; Relgraph accepts. Relgraph validation has no relation entry-point (reachability) rule yet
-- case: dsl-semantic-validation-cases.yaml::unused condition whose name is a prefix of an earlier condition points at the correct line
-  reason: unsupported-feature
-  tag: validation
-  task: '5'
-  justification: upstream expects [condition-not-used]; Relgraph accepts. Relgraph validation has no unused-condition rule yet
 - case: dsl-syntax-validation-cases.yaml::a valid model with comments should not have errors
   reason: semantic-divergence
   tag: bug

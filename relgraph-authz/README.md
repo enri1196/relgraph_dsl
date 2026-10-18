@@ -274,14 +274,18 @@ profiles. This includes a left-deep relation at the 512-unit boundary and
 `nested_128`, whose 128 parentheses produce only two expression units. The
 `wide_indexes_2047` case compiled a model with 2,047 independent relations and
 4,095 declarations; `repeated_128` compiled 128 relations with 512 units each
-and 65,409 compiled expressions. These stress results apply to the tested
-workloads and host.
+and 65,663 compiled expressions. Union and intersection workloads use a
+distinct `[user]` relation per computed-userset operand, because validation
+rejects a repeated operand as OpenFGA does. These stress results apply to the
+tested workloads and host.
 
 Across three release runs, full-construction medians for `union_exact_512`
-were 92,375 / 92,666 / 95,333 ns; `wide_indexes_2047` measured
+were 450,542 / 444,708 / 445,584 ns; `wide_indexes_2047` measured
 3,445,000 / 3,498,417 / 3,724,417 ns; and `repeated_128` measured
-12,193,750 / 12,060,250 / 13,824,417 ns. Their measured whole-process peak
-RSS was 9,633,792, 17,383,424, and 233,979,904 bytes, respectively. RSS
+16,830,666 / 16,799,333 / 16,890,042 ns. Their measured whole-process peak
+RSS was 10,469,376, 17,383,424, and 239,321,088 bytes, respectively. The
+`union_exact_512` and `repeated_128` figures were remeasured after the
+distinct-operand change (2026-10-18); `wide_indexes_2047` is unchanged. RSS
 includes the test harness, fixture preparation, and all measurement phases;
 it is not an index allocation or live evaluator measurement. Linux x86_64 was
 not measured, and the workspace declares no MSRV, so these observations make

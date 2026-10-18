@@ -2,4 +2,8 @@ module shared
 
 type user
 
+type document
+  relations
+    define viewer: [user with can_view]
+
 condition can_view(allowed: bool, allowed: string) { allowed }

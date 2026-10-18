@@ -518,7 +518,7 @@ fn relation_depth_work_and_mistyped_tuple_cycles_fail_safely() {
 
 #[test]
 fn completed_relation_decisions_are_memoized_for_one_check() {
-    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define member: [user]\n    define viewer: member or member\n";
+    let definition = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define member: [user]\n    define editor: member\n    define viewer: member or editor\n";
     let calls = Arc::new(AtomicUsize::new(0));
     let authz = FgaAuthz::new(definition).unwrap().with_store(
         CountingStore {

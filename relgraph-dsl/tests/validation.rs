@@ -365,7 +365,11 @@ fn checks_manually_constructed_ast_invariants_and_missing_spans() {
     let errors = validate_schema(&schema).unwrap_err();
     assert_eq!(
         codes(&errors),
-        ["EmptyDirectAssignment", "InvalidParameterType"]
+        [
+            "EmptyDirectAssignment",
+            "InvalidParameterType",
+            "UnusedCondition"
+        ]
     );
     assert_eq!(
         issue(&errors, ValidationIssue::EmptyDirectAssignment)
@@ -381,6 +385,7 @@ fn checks_manually_constructed_ast_invariants_and_missing_spans() {
     );
     assert_standalone_location(issue(&errors, ValidationIssue::EmptyDirectAssignment), None);
     assert_standalone_location(issue(&errors, ValidationIssue::InvalidParameterType), None);
+    assert_standalone_location(issue(&errors, ValidationIssue::UnusedCondition), None);
 }
 
 #[test]
@@ -453,5 +458,82 @@ fn applies_openfga_name_length_and_character_rules() {
         invalid
             .iter()
             .any(|message| message.contains("'has space'"))
+    );
+}
+
+#[test]
+fn rejects_repeated_type_restrictions_but_not_differing_conditions() {
+    let source = "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user, user:*, group#member, user, user:*, group#member, user with allowed]\ncondition allowed(flag: bool) { flag }\n";
+    let schema = parse(source);
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(
+        codes(&errors),
+        [
+            "DuplicateTypeRestriction",
+            "DuplicateTypeRestriction",
+            "DuplicateTypeRestriction"
+        ]
+    );
+    for (error, restriction) in errors.iter().zip(["'group#member'", "'user'", "'user:*'"]) {
+        assert!(error.message.contains(restriction), "{}", error.message);
+        assert_standalone_location(error, schema.type_definitions[1].relations[0].span.clone());
+    }
+}
+
+#[test]
+fn rejects_repeated_top_level_operands() {
+    for (expression, operand) in [
+        ("viewer or editor or viewer", "'viewer'"),
+        ("viewer and viewer", "'viewer'"),
+        ("viewer but not viewer", "'viewer'"),
+        (
+            "viewer from parent or viewer from parent",
+            "'viewer from parent'",
+        ),
+    ] {
+        let source = format!(
+            "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define parent: [doc]\n    define editor: [user]\n    define viewer: [user]\n    define other: {expression}\n"
+        );
+        let schema = parse(&source);
+        let errors = validate_schema(&schema).unwrap_err();
+        assert_eq!(codes(&errors), ["DuplicateOperand"], "{expression}");
+        assert!(errors[0].message.contains(operand), "{}", errors[0].message);
+        assert_standalone_location(
+            &errors[0],
+            schema.type_definitions[1].relations[3].span.clone(),
+        );
+    }
+
+    // As in OpenFGA, only the operands of the top-level operator are compared;
+    // a parenthesized group on the right is one operand without a name.
+    for expression in [
+        "viewer or (viewer and editor)",
+        "(viewer or editor) and (viewer or editor)",
+        "viewer but not (viewer and editor)",
+    ] {
+        let source = format!(
+            "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define editor: [user]\n    define viewer: [user]\n    define other: {expression}\n"
+        );
+        validate_source(&source)
+            .unwrap_or_else(|errors| panic!("{expression} should validate: {errors:#?}"));
+    }
+}
+
+#[test]
+fn reports_each_unused_condition_once_at_its_declaration() {
+    let source = "model\nschema 1.1\ntype user\ntype doc\n  relations\n    define viewer: [user with less_than]\ncondition less_than(x: int) { x < 100 }\ncondition less(x: int) { x < 10 }\n";
+    let schema = parse(source);
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(codes(&errors), ["UnusedCondition"]);
+    assert!(errors[0].message.contains("'less'"));
+    assert_standalone_location(&errors[0], schema.condition_definitions[1].span.clone());
+
+    let duplicated = "model\nschema 1.1\ntype user\ncondition unused(x: int) { x < 1 }\ncondition unused(x: int) { x < 2 }\n";
+    let schema = parse(duplicated);
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(codes(&errors), ["UnusedCondition", "DuplicateCondition"]);
+    assert_standalone_location(
+        issue(&errors, ValidationIssue::UnusedCondition),
+        schema.condition_definitions[0].span.clone(),
     );
 }

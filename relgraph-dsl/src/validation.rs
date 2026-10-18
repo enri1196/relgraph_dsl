@@ -5,11 +5,11 @@
 //! not compile CEL, validate runtime tuples, or decide which cycles the
 //! authorization runtime can evaluate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    ConditionDefinition, ParameterType, Relation, RelationCondition, RelationExpression, Schema,
-    SchemaHeader, TypeDefinition,
+    ConditionDefinition, ParameterType, Relation, RelationCondition, RelationExpression,
+    RelationTarget, Schema, SchemaHeader, TypeDefinition,
 };
 use crate::diagnostics::{SourceLocation, SourceSpan, ValidationError};
 
@@ -381,6 +381,8 @@ fn validate_schema_with_context(
     }
 
     validator.check_names(schema, origins);
+    validator.check_repetitions(schema, origins);
+    validator.check_unused_conditions(schema, &condition_locations);
 
     let result = validator.finish();
     if !modular {
@@ -690,6 +692,90 @@ impl Validator {
         }
     }
 
+    /// Repeated type restrictions within one direct assignment, and repeated
+    /// operands of a relation's top-level operator.
+    fn check_repetitions(&mut self, schema: &Schema, origins: Option<ValidationOrigins<'_>>) {
+        for (type_index, type_definition) in schema.type_definitions.iter().enumerate() {
+            for (relation_index, relation) in type_definition.relations.iter().enumerate() {
+                let relation_location =
+                    declared_relation_location(origins, type_index, relation_index, relation);
+                let expression = &relation.definition.expression;
+
+                for_each_direct_assignment(expression, |targets| {
+                    for (index, target) in targets.iter().enumerate() {
+                        if targets[..index].contains(target) {
+                            self.push(
+                                ValidationIssue::DuplicateTypeRestriction,
+                                relation_location.clone(),
+                                Vec::new(),
+                                format!(
+                                    "relation '{}' of type '{}' repeats type restriction '{}'",
+                                    relation.name,
+                                    type_definition.name,
+                                    restriction_text(target)
+                                ),
+                            );
+                        }
+                    }
+                });
+
+                let operands = top_level_operands(expression);
+                let mut seen = HashSet::new();
+                for name in operands.iter().filter_map(|operand| operand_name(operand)) {
+                    if !seen.insert(name.clone()) {
+                        self.push(
+                            ValidationIssue::DuplicateOperand,
+                            relation_location.clone(),
+                            Vec::new(),
+                            format!(
+                                "relation '{}' of type '{}' repeats operand '{name}'",
+                                relation.name, type_definition.name
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Conditions that no type restriction names. Each name is reported once,
+    /// at its first declaration.
+    fn check_unused_conditions(
+        &mut self,
+        schema: &Schema,
+        condition_locations: &HashMap<String, SourceLocation>,
+    ) {
+        let mut used = HashSet::new();
+        for type_definition in &schema.type_definitions {
+            for relation in &type_definition.relations {
+                for_each_direct_assignment(&relation.definition.expression, |targets| {
+                    for target in targets {
+                        if let Some(RelationCondition::Named(name)) = &target.condition {
+                            used.insert(name.as_str());
+                        }
+                    }
+                });
+            }
+        }
+
+        let mut reported = HashSet::new();
+        for condition in &schema.condition_definitions {
+            let name = condition.name.as_str();
+            if used.contains(name) || !reported.insert(name) {
+                continue;
+            }
+            self.push(
+                ValidationIssue::UnusedCondition,
+                condition_locations
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| location(condition.span.as_ref())),
+                Vec::new(),
+                format!("condition '{name}' is not used by any type restriction"),
+            );
+        }
+    }
+
     fn finish(mut self) -> Result<(), Vec<ValidationError>> {
         if self.errors.is_empty() {
             return Ok(());
@@ -745,6 +831,97 @@ fn is_valid_name(name: &str, max_chars: usize) -> bool {
         count += 1;
     }
     (1..=max_chars).contains(&count)
+}
+
+/// Calls `visit` with the targets of every direct assignment in `expression`.
+fn for_each_direct_assignment<'a>(
+    expression: &'a RelationExpression,
+    mut visit: impl FnMut(&'a [RelationTarget]),
+) {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match expression {
+            RelationExpression::DirectAssignment(targets) => visit(targets),
+            RelationExpression::ComputedUserset(_) | RelationExpression::TupleToUserset { .. } => {}
+            RelationExpression::Union(left, right)
+            | RelationExpression::Intersection(left, right)
+            | RelationExpression::Difference(left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
+        }
+    }
+}
+
+/// The operands of a relation's top-level operator, in source order.
+///
+/// The parser folds `a or b or c` to the left, so a left-nested chain of the
+/// same union or intersection operator is one operator with several operands,
+/// matching OpenFGA's flat `union` / `intersection` children. A difference has
+/// its base and subtracted operand. Any other expression has no operands.
+fn top_level_operands(expression: &RelationExpression) -> Vec<&RelationExpression> {
+    match expression {
+        RelationExpression::Difference(base, subtract) => vec![base, subtract],
+        RelationExpression::Union(..) | RelationExpression::Intersection(..) => {
+            let same_operator = |candidate: &RelationExpression| {
+                std::mem::discriminant(candidate) == std::mem::discriminant(expression)
+            };
+            let mut operands = Vec::new();
+            let mut current = expression;
+            loop {
+                match current {
+                    RelationExpression::Union(left, right)
+                    | RelationExpression::Intersection(left, right)
+                        if same_operator(current) =>
+                    {
+                        operands.push(right.as_ref());
+                        current = left;
+                    }
+                    _ => {
+                        operands.push(current);
+                        break;
+                    }
+                }
+            }
+            operands.reverse();
+            operands
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// OpenFGA's name for a rewrite operand: `relation` or `relation from
+/// tupleset`. Direct assignments and nested operators have none.
+fn operand_name(operand: &RelationExpression) -> Option<String> {
+    match operand {
+        RelationExpression::ComputedUserset(name) => Some(name.clone()),
+        RelationExpression::TupleToUserset {
+            computed_userset,
+            tupleset_relation,
+        } => Some(format!("{computed_userset} from {tupleset_relation}")),
+        _ => None,
+    }
+}
+
+fn restriction_text(target: &RelationTarget) -> String {
+    let mut text = target.target_type.clone();
+    match target.relation_or_wildcard.as_deref() {
+        Some("*") => text.push_str(":*"),
+        Some(relation) => {
+            text.push('#');
+            text.push_str(relation);
+        }
+        None => {}
+    }
+    match &target.condition {
+        Some(RelationCondition::Named(name)) => {
+            text.push_str(" with ");
+            text.push_str(name);
+        }
+        Some(RelationCondition::InlineExpression) => text.push_str(" with $expression"),
+        None => {}
+    }
+    text
 }
 
 fn declared_type_location(

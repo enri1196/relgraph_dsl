@@ -16,31 +16,31 @@ pub fn construction_cases() -> Vec<ConstructionCase> {
         ConstructionCase {
             name: "union_32",
             source: union_model(32, false),
-            declarations: 4,
+            declarations: 35,
             maximum_relation_units: 63,
         },
         ConstructionCase {
             name: "union_128",
             source: union_model(128, false),
-            declarations: 4,
+            declarations: 131,
             maximum_relation_units: 255,
         },
         ConstructionCase {
             name: "union_256",
             source: union_model(256, false),
-            declarations: 4,
+            declarations: 259,
             maximum_relation_units: 511,
         },
         ConstructionCase {
             name: "union_exact_512",
             source: union_model(256, true),
-            declarations: 4,
+            declarations: 258,
             maximum_relation_units: 512,
         },
         ConstructionCase {
             name: "intersection_256",
             source: intersection_model(256),
-            declarations: 4,
+            declarations: 259,
             maximum_relation_units: 511,
         },
         ConstructionCase {
@@ -70,39 +70,53 @@ pub fn construction_cases() -> Vec<ConstructionCase> {
         ConstructionCase {
             name: "repeated_128",
             source: repeated_expression_model(128),
-            declarations: 131,
+            declarations: 385,
             maximum_relation_units: 512,
         },
     ]
 }
 
-/// Generates a flat union of computed usersets, optionally starting with `[user]`.
+/// Operand names `base000`, `base001`, ... for terms `first..terms`. OpenFGA
+/// rejects a repeated operand, so every computed-userset term is distinct.
+fn base_names(first: usize, terms: usize) -> Vec<String> {
+    (first..terms)
+        .map(|term| format!("base{term:03}"))
+        .collect()
+}
+
+/// One `define <name>: [user]` declaration per operand name.
+fn base_relations(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("  define {name}: [user]\n"))
+        .collect()
+}
+
+/// Generates a flat union of distinct computed usersets, optionally starting
+/// with `[user]`.
 pub fn union_model(terms: usize, direct_root: bool) -> String {
-    let mut expression = String::new();
-    for term in 0..terms {
-        if term > 0 {
-            expression.push_str(" or ");
-        }
-        if direct_root && term == 0 {
-            expression.push_str("[user]");
-        } else {
-            expression.push_str("base");
-        }
+    let names = base_names(usize::from(direct_root), terms);
+    let mut operands = Vec::with_capacity(terms);
+    if direct_root && terms > 0 {
+        operands.push(String::from("[user]"));
     }
+    operands.extend(names.iter().cloned());
+    let expression = operands.join(" or ");
 
     format!(
-        "model\nschema 1.1\ntype user\ntype document\n relations\n  define base: [user]\n  define viewer: {expression}\n"
+        "model\nschema 1.1\ntype user\ntype document\n relations\n{}  define viewer: {expression}\n",
+        base_relations(&names)
     )
 }
 
-/// Generates a flat intersection of computed usersets.
+/// Generates a flat intersection of distinct computed usersets.
 pub fn intersection_model(terms: usize) -> String {
-    let expression = std::iter::repeat_n("base", terms)
-        .collect::<Vec<_>>()
-        .join(" and ");
+    let names = base_names(0, terms);
+    let expression = names.join(" and ");
 
     format!(
-        "model\nschema 1.1\ntype user\ntype document\n relations\n  define base: [user]\n  define viewer: {expression}\n"
+        "model\nschema 1.1\ntype user\ntype document\n relations\n{}  define viewer: {expression}\n",
+        base_relations(&names)
     )
 }
 
@@ -164,16 +178,14 @@ pub fn edge_fanout_model(targets: usize) -> String {
     model
 }
 
-/// Generates many relations containing the same exact-limit direct-assignment union.
+/// Generates many relations containing the same exact-limit direct-assignment
+/// union of 255 distinct computed usersets.
 pub fn repeated_expression_model(relations: usize) -> String {
-    let mut model = String::from(
-        "model\nschema 1.1\ntype user\ntype document\n relations\n  define base: [user]\n",
-    );
+    let names = base_names(1, 256);
+    let mut model = String::from("model\nschema 1.1\ntype user\ntype document\n relations\n");
+    model.push_str(&base_relations(&names));
+    let expression = format!("[user] or {}", names.join(" or "));
     for index in 0..relations {
-        let mut expression = String::from("[user]");
-        for _ in 0..255 {
-            expression.push_str(" or base");
-        }
         model.push_str(&format!("  define viewer{index:04}: {expression}\n"));
     }
     model

@@ -106,10 +106,16 @@ const DUPLICATE_EXTENSION: &str = "syntax-file:duplicate-extension";
 /// pairing listed here.
 const ERROR_TYPE_TABLE: &[(&str, ValidationIssue)] = &[
     ("condition-not-defined", ValidationIssue::UnknownCondition),
+    ("condition-not-used", ValidationIssue::UnusedCondition),
     ("duplicated-error", ValidationIssue::DuplicateCondition),
     ("duplicated-error", ValidationIssue::DuplicateParameter),
+    ("duplicated-error", ValidationIssue::DuplicateOperand),
     ("duplicated-error", ValidationIssue::DuplicateRelation),
     ("duplicated-error", ValidationIssue::DuplicateType),
+    (
+        "duplicated-error",
+        ValidationIssue::DuplicateTypeRestriction,
+    ),
     // `x from parent` where no type of `parent` defines `x`.
     (
         "invalid-relation-on-tupleset",
@@ -162,8 +168,7 @@ const LISTENER_STAGE_ISSUES: &[ValidationIssue] = &[
 const CROSS_FILE_ISSUES: &[ValidationIssue] = &[ValidationIssue::UnknownExtensionType];
 
 /// Upstream error types that Relgraph validation does not diagnose at all.
-const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] =
-    &["condition-not-used", "relation-no-entry-point"];
+const UPSTREAM_TYPES_WITHOUT_COUNTERPART: &[&str] = &["relation-no-entry-point"];
 
 /// Message prefixes of ANTLR parser diagnostics in the syntax corpus.
 const ANTLR_MESSAGE_PREFIXES: &[&str] = &[
