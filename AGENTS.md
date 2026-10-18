@@ -20,7 +20,7 @@ The workspace uses edition 2024 and resolver 3. `default-members` contains only 
 
 `relgraph-dsl/src/lib.rs` is the public facade. The internal parser is divided into:
 
-- `parser/lexer.rs`: `lex`, `Token`, `TokenKind`; context-sensitive tokenization with original byte spans and hidden tokens.
+- `parser/lexer.rs`: `lex`, `Token`, `TokenKind`; context-sensitive tokenization with original byte spans and hidden tokens. `#` comments follow the OpenFGA tooling's `parseDSL` (a line whose first non-blank character is `#`, or a ` #` tail) and become hidden `Comment` tokens, never inside a condition body; `schema.rs` `visible_tokens` joins the line breaks around comment lines into one `Newline`, whose text supplies `comments_before`.
 - `parser/common.rs`: `TokenInput`, token combinators, identifier/whitespace handling, `Res`.
 - `parser/schema.rs`: document headers, types, relation sections, and public `parse_fga_schema`.
 - `parser/relation.rs`: targets, restrictions, named/inline conditions, rewrite expressions.
@@ -131,7 +131,7 @@ With `axum`, `middleware` builds `FgaAuthzLayer<S>` / `FgaAuthzService`. `author
 - Prefer CodeGraph MCP for Rust architecture/symbol analysis: context first, then targeted node/trace calls. Use narrow source reads only for omitted exports, ambiguous same-name methods, or other confirmed tool gaps. Ordinary reads are appropriate for manifests, SQL, fixtures, and documentation.
 - Use public-API integration tests to validate behavior across crate boundaries. Keep parser acceptance, semantic validity, runtime support, and upstream compatibility as separate claims.
 - With `nom` 8, invoke parser combinators via `.parse(input)`.
-- Preserve original UTF-8 byte spans and exact CEL body bytes. The pinned grammar ends a condition at its first visible closing brace; it does not balance CEL braces. Parameter newlines also follow the pinned lexer restriction. Do not casually “fix” these without changing the compatibility contract and fixtures.
+- Preserve original UTF-8 byte spans and exact CEL body bytes. The pinned grammar ends a condition at its first visible closing brace; it does not balance CEL braces. Parameter newlines also follow the pinned lexer restriction. Do not casually “fix” these without changing the compatibility contract and fixtures. `#` comments deliberately follow the tooling's stripping rather than the bare grammar (plan Task 12); a syntax fixture whose raw-grammar outcome differs records it as `grammar_parse`, which `tests/conformance.rs` checks against the recorded ANTLR results.
 - Preserve tenant isolation, snapshot consistency, stored context precedence, strict tuple identity, cancellation cleanup, and error-versus-deny behavior when simplifying internals.
 - Update README examples and compile-checked examples together with dependency/API changes. Avoid compatibility wrappers unless the task calls for them; this is pre-1.0 code.
 - Do not alter generated `.codegraph` state, unrelated user changes, or vendored upstream files incidentally.

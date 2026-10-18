@@ -23,8 +23,8 @@ entry. Measured on 2026-10-18:
 
 | Corpus (pin) | Cases | Pass | Not passing, by reason |
 | --- | ---: | ---: | --- |
-| `openfga/language` syntax cases (`fbc6298`) | 81 | 78 | 1 bug (comments, plan Task 12), 2 deliberate |
-| `openfga/language` semantic cases (`fbc6298`) | 93 (7 skipped upstream) | 77 | 7 bugs (comments, plan Task 12), 2 deliberate |
+| `openfga/language` syntax cases (`fbc6298`) | 81 | 79 | 2 deliberate |
+| `openfga/language` semantic cases (`fbc6298`) | 93 (7 skipped upstream) | 84 | 2 deliberate |
 | `openfga/language` `fga.mod` cases (`fbc6298`) | 10 | 9 | 1 unsupported (JSON model output) |
 | `openfga/openfga` `consolidated_1_1_tests.yaml` (`v1.21.0`) | 1380 | 767 | 569 ListObjects/ListUsers (no list API), 36 deliberate, 8 userset/wildcard check subjects |
 | `openfga/openfga` `abac_tests.yaml` (`v1.21.0`) | 505 | 261 | 179 ListObjects/ListUsers, 51 inline conditions, 7 `ipaddress`, 3 deliberate, 4 userset check subjects |

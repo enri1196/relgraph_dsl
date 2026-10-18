@@ -52,6 +52,13 @@ rejected fixtures; acceptance matched every paired metadata record. The
 generated classes and downloaded jar remained in temporary directories and
 are not Cargo dependencies.
 
+The runner checks the bare grammar. Since plan Task 12, Relgraph strips `#`
+comments as the OpenFGA tooling does, so two fixtures (`hash-inside-rewrite`,
+`trailing-hash-prose`) are in `valid/` with `"grammar_parse": "reject"` in
+their metadata; `cargo test -p relgraph_dsl --test conformance` checks the
+recorded results against that field. The 2026-10-18 rerun for that change used
+the same JDK and jar and produced the same 26 accepted / 38 rejected results.
+
 The runner creates a clean temporary generation directory on each invocation.
 The exact generation and compile steps used by `run.sh` are:
 
