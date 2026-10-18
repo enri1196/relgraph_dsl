@@ -509,7 +509,7 @@ Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
 pass, including `relgraph-authz` without features and with `axum` and
 `cargo test -p relgraph-authz-postgres --lib` (live PostgreSQL tests not run).
 
-## Task 8 [TODO]: CEL route evaluation (produces Decision D1)
+## Task 8 [PROGRESS]: CEL route evaluation (produces Decision D1)
 
 **Depends on:** Task 4.
 
