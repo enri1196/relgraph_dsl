@@ -42,7 +42,7 @@ Important public types in `ast.rs`:
 
 `validation.rs` exposes `validate_schema`; `Validator` checks schema versions, reserved and malformed type/relation names, duplicate declarations, reference resolution, empty assignments, condition parameter declarations, tuple-to-userset structure, repeated type restrictions and top-level operands, and unused conditions; when all of those pass it also rejects relations without an entry point (least fixed point, following the pinned `openfga/language` validator). It intentionally does not compile CEL or provide complete server-side model validation. Standalone validation accepts exactly schema 1.1/1.2; modular validation requires 1.2. A cycle with an entry point can pass DSL validation and still fail authorization construction.
 
-`manifest.rs` exposes `ModelManifest` and `parse_model_manifest`. Parsing performs YAML/lexical path validation without filesystem access. Paths are ordered, normalized relative paths; absolute paths, backslashes, above-root traversal, and duplicate normalized paths are rejected. Lexical normalization is not filesystem sandboxing or symlink containment.
+`manifest.rs` exposes `ModelManifest` and `parse_model_manifest`. Parsing performs YAML/lexical path validation without filesystem access. As in OpenFGA's `fga.mod` transformer, `schema` must be exactly `1.2` (also enforced on constructed manifests by `assemble_modular_model`) and every path must end in `.fga`. Paths are ordered, normalized relative paths (`.` and empty components dropped); absolute paths, backslashes, any `..` component, `%` (paths are never percent-decoded), and duplicate normalized paths are rejected. Lexical normalization is not filesystem sandboxing or symlink containment.
 
 `modular.rs` exposes:
 

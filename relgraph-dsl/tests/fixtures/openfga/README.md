@@ -110,21 +110,21 @@ longer covers a non-passing case, so the list only shrinks.
 
 Each entry has a `reason` and a `tag` from a fixed vocabulary (checked by the
 test; see `tests/support/skip_list.rs`): `unsupported-feature` entries name the
-missing area (`manifest` rules Relgraph does not implement yet; the
-`validation` tag has no entries since Task 5), `semantic-divergence` entries are either a `bug` owned by a plan task or
+missing area (the `validation` and `manifest` tags have no entries since
+Tasks 5 and 6), `semantic-divergence` entries are either a `bug` owned by a plan task or
 a `deliberate`, `permanent` difference, and `harness-gap` entries are harness
 limitations. Like upstream's `validateDSL`, the runner stops at upstream's
 parse-listener stage (`extend` outside a module, a type extended twice in one
 file) and validates a lone `module` document standalone, which yields
 `schema-version-required`.
 
-Measured at the pinned revision (2026-10-18 after plan Task 5, `-- --nocapture`):
+Measured at the pinned revision (2026-10-18 after plan Task 6, `-- --nocapture`):
 
 | Corpus file | Cases | Pass | Upstream `skip: true` | Skip-listed | Skip-listed by reason/tag |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `dsl-syntax-validation-cases.yaml` | 81 | 78 | 0 | 3 | semantic-divergence/bug 1, semantic-divergence/deliberate 2 |
 | `dsl-semantic-validation-cases.yaml` | 93 | 77 | 7 | 9 | semantic-divergence/bug 7, semantic-divergence/deliberate 2 |
-| `fga-mod-transformer-cases.yaml` | 10 (9 manifests, 1 `json` output) | 7 | 0 | 3 | unsupported-feature/manifest 2, unsupported-feature/json-model 1 |
+| `fga-mod-transformer-cases.yaml` | 10 (9 manifests, 1 `json` output) | 9 | 0 | 1 | unsupported-feature/json-model 1 |
 
 What the skip-listed groups are:
 
@@ -143,11 +143,47 @@ What the skip-listed groups are:
   definition; 2 cases), Relgraph also reports follow-on issues after a
   duplicate type (1), and it reports one tuple-to-userset diagnostic per
   reference rather than per tupleset target type (1).
-- `unsupported-feature/manifest` (plan Task 6): `parse_model_manifest` accepts
-  `schema: "1.1"` and a module path that does not end in `.fga`.
+- Plan Task 6 aligned `parse_model_manifest` with upstream's `fga.mod`
+  transformer (`pkg/go/transformer/mod-to-json.go` and
+  `pkg/js/transformer/modules/mod-to-json.ts` at the pin), which cleared both
+  `unsupported-feature/manifest` entries (7 to 9 passing manifests). See
+  "fga.mod manifest policy" below.
 - `unsupported-feature/json-model` (permanent rule): the transformer's
   expected JSON output is not compared (Decision D3).
 
 Position and symbol matches are metrics, not gates: syntax 46/74 positions and
 40/58 symbols, semantic 2/108 positions and 43/50 symbols (Relgraph validation
-spans cover the owning declaration).
+spans cover the owning declaration). Manifest errors have no position metric,
+permanently: `serde_yaml` values carry no source positions, so a
+`ManifestError` names a field (`schema`, `contents[2]`) instead of a span.
+
+### fga.mod manifest policy
+
+The `fga.mod` gate is accept versus reject per manifest. Upstream reports one
+error per bad entry, while `parse_model_manifest` stops at the first, so
+`tests/manifest.rs` also replays each entry of the multi-path upstream case on
+its own. Since Task 6 Relgraph matches upstream on:
+
+- `schema` must be the YAML string `1.2` (previously any ASCII `major.minor`
+  was accepted and only modular validation required `1.2`);
+  `assemble_modular_model` applies the same check to a constructed
+  `ModelManifest`;
+- every entry must end in `.fga`;
+- a `..` component is rejected even when it stays inside the root
+  (`team2/../team3/board.fga`), as upstream rejects any `../`; previously such
+  paths were normalized;
+- backslash traversal and absolute paths are rejected (unchanged).
+
+Deliberate differences, none of which occur in the pinned corpus:
+
+- Stricter: Relgraph never percent-decodes paths and rejects any `%`
+  (upstream's Go transformer URL-decodes every entry, its JavaScript one
+  decodes only `%2e`, `%2f` and `%5c`, and both then use the decoded path). It
+  rejects every backslash (upstream converts `\` to `/` and accepts
+  `dir\a.fga`). It rejects unknown fields, empty `contents`, duplicate
+  normalized paths, every explicit YAML tag (upstream accepts `!!str`) and
+  multi-document input (upstream's Go transformer reads the first document).
+- Laxer or different: `.` and empty components are dropped (`./a.fga` is
+  stored as `a.fga`, upstream keeps the text), and a component that merely ends
+  in `..` (`x../a.fga`) is accepted, while upstream's `../` substring check
+  rejects it.
