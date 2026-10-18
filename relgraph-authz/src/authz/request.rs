@@ -5,6 +5,8 @@ use std::fmt;
 
 use relgraph_dsl::{ParseError, SourceSpan, ValidationError};
 
+use super::store::RelationshipTuple;
+
 /// A relation's owning object type and declared relation name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RelationLocation {
@@ -322,9 +324,16 @@ impl ObjectRef {
     }
 }
 
+/// Maximum number of contextual tuples one check or batch may carry.
+///
+/// This is OpenFGA's limit at `v1.21.0` (`ContextualTupleKeys.tuple_keys`
+/// has `max_items: 100` in `openfga/api`). A larger set fails the whole check
+/// or batch with [`AuthorizationError::ContextualTupleLimitExceeded`].
+pub const MAX_CONTEXTUAL_TUPLES: usize = 100;
+
 /// Inputs fixed for every relation an evaluator resolves: one tenant, one
-/// subject, and one set of request contexts. Memoized decisions stay valid
-/// only while these are unchanged.
+/// subject, one set of request contexts, and one set of contextual tuples.
+/// Memoized decisions stay valid only while these are unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CheckScope {
     tenant: TenantId,
@@ -332,6 +341,7 @@ pub(crate) struct CheckScope {
     context: std::collections::BTreeMap<String, serde_json::Value>,
     condition_context:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    contextual_tuples: Vec<RelationshipTuple>,
 }
 
 impl CheckScope {
@@ -341,7 +351,12 @@ impl CheckScope {
             subject,
             context: std::collections::BTreeMap::new(),
             condition_context: std::collections::BTreeMap::new(),
+            contextual_tuples: Vec::new(),
         }
+    }
+
+    pub(crate) fn contextual_tuples(&self) -> &[RelationshipTuple] {
+        &self.contextual_tuples
     }
 
     pub(crate) fn tenant(&self) -> &TenantId {
@@ -427,12 +442,42 @@ impl CheckRequest {
         self
     }
 
+    /// Sets the contextual tuples evaluated with the stored ones for this check,
+    /// replacing any set earlier.
+    ///
+    /// Contextual tuples are **trusted input**: they are relationship facts the
+    /// caller asserts for this check only, read as if they were stored in the
+    /// request's tenant snapshot. Build them from application state you trust,
+    /// never from unauthenticated request data; a caller who controls them
+    /// controls the decision.
+    ///
+    /// Before reading the store, the check rejects a set larger than
+    /// [`MAX_CONTEXTUAL_TUPLES`], a tuple of another tenant, a tuple that
+    /// fails [`FgaAuthz::validate_tuple`](crate::FgaAuthz::validate_tuple), and
+    /// an exact repeat within the set
+    /// ([`AuthorizationError::InvalidContextualTuple`]). A contextual tuple
+    /// equal to a stored tuple is read once. Its condition context is tuple
+    /// context, so it keeps precedence over request context, and contextual
+    /// tuples count toward the tuple-scan and work budgets like stored ones.
+    pub fn with_contextual_tuples(
+        mut self,
+        tuples: impl IntoIterator<Item = RelationshipTuple>,
+    ) -> Self {
+        self.scope.contextual_tuples = tuples.into_iter().collect();
+        self
+    }
+
     pub fn tenant(&self) -> &TenantId {
         self.scope.tenant()
     }
 
     pub fn subject(&self) -> &Subject {
         self.scope.subject()
+    }
+
+    /// Returns the contextual tuples in the order they were supplied.
+    pub fn contextual_tuples(&self) -> &[RelationshipTuple] {
+        self.scope.contextual_tuples()
     }
 
     pub fn object(&self) -> &ObjectRef {
@@ -460,11 +505,13 @@ impl CheckRequest {
     }
 }
 
-/// Typed inputs to many checks that share one subject and request context.
+/// Typed inputs to many checks that share one subject, request context, and
+/// set of contextual tuples.
 ///
 /// Every item is evaluated against the same tenant snapshot, and decisions
-/// memoized while resolving one item are reused by later items. Contexts apply
-/// to every item, exactly as they would to an individual [`CheckRequest`].
+/// memoized while resolving one item are reused by later items. Contexts and
+/// contextual tuples apply to every item, exactly as they would to an
+/// individual [`CheckRequest`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct BatchCheckRequest {
     scope: CheckScope,
@@ -507,12 +554,30 @@ impl BatchCheckRequest {
         self
     }
 
+    /// Sets contextual tuples for every item, replacing any set earlier.
+    ///
+    /// They are trusted input and are validated once for the whole batch, as
+    /// described for [`CheckRequest::with_contextual_tuples`]; an invalid set
+    /// fails the batch with an outer error.
+    pub fn with_contextual_tuples(
+        mut self,
+        tuples: impl IntoIterator<Item = RelationshipTuple>,
+    ) -> Self {
+        self.scope.contextual_tuples = tuples.into_iter().collect();
+        self
+    }
+
     pub fn tenant(&self) -> &TenantId {
         self.scope.tenant()
     }
 
     pub fn subject(&self) -> &Subject {
         self.scope.subject()
+    }
+
+    /// Returns the contextual tuples in the order they were supplied.
+    pub fn contextual_tuples(&self) -> &[RelationshipTuple] {
+        self.scope.contextual_tuples()
     }
 
     /// Returns the checked `(object, relation)` pairs in request order.
@@ -861,6 +926,40 @@ pub enum AuthorizationError {
     BatchLimitExceeded {
         maximum_items: usize,
     },
+    /// A request carried more than [`MAX_CONTEXTUAL_TUPLES`] contextual tuples.
+    ContextualTupleLimitExceeded {
+        maximum_tuples: usize,
+    },
+    /// The contextual tuple at `index` (in request order) was rejected before
+    /// the store was read. This is caller input, never stored data.
+    InvalidContextualTuple {
+        index: usize,
+        reason: ContextualTupleError,
+    },
+}
+
+/// Why a contextual tuple was rejected.
+#[derive(Debug)]
+pub enum ContextualTupleError {
+    /// The tuple names a tenant other than the request's.
+    TenantMismatch,
+    /// The tuple repeats the contextual tuple at `first_index` exactly.
+    Duplicate { first_index: usize },
+    /// The tuple does not fit the authorization model; the error is the one
+    /// [`FgaAuthz::validate_tuple`](crate::FgaAuthz::validate_tuple) returns.
+    Model(Box<AuthorizationError>),
+}
+
+impl std::fmt::Display for ContextualTupleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TenantMismatch => f.write_str("tuple tenant does not match the request tenant"),
+            Self::Duplicate { first_index } => {
+                write!(f, "tuple repeats contextual tuple {first_index}")
+            }
+            Self::Model(error) => error.fmt(f),
+        }
+    }
 }
 
 impl std::fmt::Display for AuthorizationError {
@@ -945,6 +1044,13 @@ impl std::fmt::Display for AuthorizationError {
             Self::BatchLimitExceeded { maximum_items } => {
                 write!(f, "batch check exceeded its limit of {maximum_items} items")
             }
+            Self::ContextualTupleLimitExceeded { maximum_tuples } => write!(
+                f,
+                "request exceeded its limit of {maximum_tuples} contextual tuples"
+            ),
+            Self::InvalidContextualTuple { index, reason } => {
+                write!(f, "invalid contextual tuple {index}: {reason}")
+            }
         }
     }
 }
@@ -953,6 +1059,10 @@ impl std::error::Error for AuthorizationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(error) => Some(error),
+            Self::InvalidContextualTuple {
+                reason: ContextualTupleError::Model(error),
+                ..
+            } => Some(error.as_ref()),
             _ => None,
         }
     }

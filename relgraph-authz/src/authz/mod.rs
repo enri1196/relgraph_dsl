@@ -11,10 +11,10 @@ mod write;
 
 pub use request::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, CapabilityDiagnostic,
-    CheckRequest, ConditionContextSource, ConditionName, ConstructionError, EntityId,
-    EvaluationLimits, EvaluationLimitsError, FilteredObjects, IdentifierError, ObjectRef,
-    RelationExpressionKind, RelationLocation, RelationName, RuntimeCapability, Subject, TenantId,
-    TypeName,
+    CheckRequest, ConditionContextSource, ConditionName, ConstructionError, ContextualTupleError,
+    EntityId, EvaluationLimits, EvaluationLimitsError, FilteredObjects, IdentifierError,
+    MAX_CONTEXTUAL_TUPLES, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
+    RuntimeCapability, Subject, TenantId, TypeName,
 };
 pub use store::{
     ConditionContext, InMemoryReadSession, InMemoryRelationshipStore,
@@ -193,9 +193,9 @@ impl<S: RelationshipStore> FgaAuthz<Bound<S>> {
     /// decisions and converted request values. Each item gets fresh tuple,
     /// store-call, and work budgets, and its error stays in its own slot.
     /// Results follow item order. The outer error reports a batch larger than
-    /// [`EvaluationLimits::max_batch_items`], an unknown subject type, or a
-    /// failure to open the read session. A backend may hold one connection and
-    /// transaction for the whole batch.
+    /// [`EvaluationLimits::max_batch_items`], an unknown subject type, invalid
+    /// contextual tuples, or a failure to open the read session. A backend may
+    /// hold one connection and transaction for the whole batch.
     ///
     /// ```no_run
     /// use relgraph_authz::{
@@ -239,10 +239,11 @@ impl<S: RelationshipStore> FgaAuthz<Bound<S>> {
     /// Returns the candidates on which `subject` holds `relation`.
     ///
     /// Candidates may mix object types that define `relation`. This is one
-    /// [`Self::batch_check`] without request context: allowed candidates and
-    /// per-candidate errors are returned separately, in candidate order, and
-    /// denied candidates are omitted. Use `batch_check` directly when
-    /// conditions need request context.
+    /// [`Self::batch_check`] without request context or contextual tuples:
+    /// allowed candidates and per-candidate errors are returned separately, in
+    /// candidate order, and denied candidates are omitted. Use `batch_check`
+    /// directly when conditions need request context or the check needs
+    /// contextual tuples.
     pub async fn filter_objects(
         &self,
         tenant: TenantId,

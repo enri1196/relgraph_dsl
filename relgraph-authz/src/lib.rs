@@ -67,12 +67,13 @@ pub use authz::policy::{
 pub use authz::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, Bound, CapabilityDiagnostic,
     CheckRequest, ConditionContext, ConditionContextSource, ConditionName, ConstructionError,
-    EntityId, EvaluationLimits, EvaluationLimitsError, FgaAuthz, FilteredObjects, IdentifierError,
-    InMemoryReadSession, InMemoryRelationshipStore, MAX_CONDITION_CONTEXT_ELEMENTS,
-    MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, ObjectRef, RelationExpressionKind, RelationLocation,
-    RelationName, RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
-    RelationshipWriteStore, RuntimeCapability, StoreCursor, StoreError, StoreErrorKind,
-    StoreFuture, Subject, TenantId, TupleSubject, TypeName, Unbound, WriteError,
+    ContextualTupleError, EntityId, EvaluationLimits, EvaluationLimitsError, FgaAuthz,
+    FilteredObjects, IdentifierError, InMemoryReadSession, InMemoryRelationshipStore,
+    MAX_CONDITION_CONTEXT_ELEMENTS, MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, MAX_CONTEXTUAL_TUPLES,
+    ObjectRef, RelationExpressionKind, RelationLocation, RelationName, RelationshipPage,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, RelationshipWriteStore,
+    RuntimeCapability, StoreCursor, StoreError, StoreErrorKind, StoreFuture, Subject, TenantId,
+    TupleSubject, TypeName, Unbound, WriteError,
 };
 #[cfg(feature = "axum")]
 pub mod axum_authz;

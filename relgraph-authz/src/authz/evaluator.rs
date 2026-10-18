@@ -3,11 +3,12 @@ use super::model::{
 };
 use super::request::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, CheckScope,
-    EntityId, EvaluationLimits, ObjectRef, RelationName,
+    ContextualTupleError, EntityId, EvaluationLimits, MAX_CONTEXTUAL_TUPLES, ObjectRef,
+    RelationName,
 };
 use super::store::{
-    RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor,
-    StoreError, StoreErrorKind, TupleSubject,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor, StoreError,
+    StoreErrorKind, TupleSubject,
 };
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -19,11 +20,67 @@ type EvalFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AuthorizationErro
 const EVALUATION_PAGE_SIZE: usize = 128;
 
 /// Pagination state retained while one relation's tuples are evaluated.
+///
+/// The relation's contextual tuples form the first page; store pages follow.
 #[derive(Default)]
 struct TuplePageState {
+    contextual_loaded: bool,
     cursor: Option<StoreCursor>,
     seen_cursors: HashSet<StoreCursor>,
     exhausted: bool,
+}
+
+/// A scope's validated contextual tuples, indexed by object and relation.
+///
+/// Built once per check or batch, before the store is read. The evaluator
+/// merges a relation's contextual tuples into its tuple loading instead of
+/// wrapping the read session, so store cursors keep their session- and
+/// query-bound meaning.
+#[derive(Default)]
+struct ContextualTuples {
+    by_object: HashMap<ObjectRef, HashMap<RelationName, Vec<RelationshipTuple>>>,
+}
+
+impl ContextualTuples {
+    /// Rejects an oversized set, a tuple of another tenant, a tuple that does
+    /// not fit the model, and an exact repeat, in request order.
+    fn prepare(compiled: &CompiledModel, scope: &CheckScope) -> Result<Self, AuthorizationError> {
+        let tuples = scope.contextual_tuples();
+        if tuples.len() > MAX_CONTEXTUAL_TUPLES {
+            return Err(AuthorizationError::ContextualTupleLimitExceeded {
+                maximum_tuples: MAX_CONTEXTUAL_TUPLES,
+            });
+        }
+        let mut prepared = Self::default();
+        for (index, tuple) in tuples.iter().enumerate() {
+            let invalid = |reason| AuthorizationError::InvalidContextualTuple { index, reason };
+            if tuple.tenant() != scope.tenant() {
+                return Err(invalid(ContextualTupleError::TenantMismatch));
+            }
+            compiled
+                .validate_tuple(tuple)
+                .map_err(|error| invalid(ContextualTupleError::Model(Box::new(error))))?;
+            if let Some(first_index) = tuples[..index].iter().position(|earlier| earlier == tuple) {
+                return Err(invalid(ContextualTupleError::Duplicate { first_index }));
+            }
+            prepared
+                .by_object
+                .entry(tuple.object().clone())
+                .or_default()
+                .entry(tuple.relation().clone())
+                .or_default()
+                .push(tuple.clone());
+        }
+        Ok(prepared)
+    }
+
+    /// Returns one object relation's contextual tuples in request order.
+    fn tuples(&self, object: &ObjectRef, relation: &RelationName) -> &[RelationshipTuple] {
+        self.by_object
+            .get(object)
+            .and_then(|relations| relations.get(relation))
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// How a validated assignment tuple's subject relates to the checked subject.
@@ -59,6 +116,7 @@ pub(crate) async fn check<S: RelationshipStore>(
 ) -> Result<AuthorizationDecision, AuthorizationError> {
     let relation_id = resolve_relation(compiled, request.object(), request.relation())?;
     validate_subject_type(compiled, request.scope())?;
+    let contextual = ContextualTuples::prepare(compiled, request.scope())?;
 
     // The session and evaluator are owned by this future. Dropping a cancelled
     // check drops the in-flight page future and its read snapshot without any
@@ -67,7 +125,7 @@ pub(crate) async fn check<S: RelationshipStore>(
         .begin_read(request.tenant())
         .await
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
-    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope());
+    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope(), contextual);
     evaluator
         .check_item(request.object().clone(), relation_id)
         .await
@@ -77,7 +135,7 @@ pub(crate) async fn check<S: RelationshipStore>(
 ///
 /// Per-item failures, including unknown object types and relations, are
 /// returned in that item's slot; the outer error covers the item bound, the
-/// shared subject, and opening the read session.
+/// shared subject and contextual tuples, and opening the read session.
 pub(crate) async fn batch_check<S: RelationshipStore>(
     compiled: &CompiledModel,
     store: &S,
@@ -90,6 +148,7 @@ pub(crate) async fn batch_check<S: RelationshipStore>(
         });
     }
     validate_subject_type(compiled, request.scope())?;
+    let contextual = ContextualTuples::prepare(compiled, request.scope())?;
     if request.items().is_empty() {
         return Ok(Vec::new());
     }
@@ -99,7 +158,7 @@ pub(crate) async fn batch_check<S: RelationshipStore>(
         .begin_read(request.tenant())
         .await
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
-    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope());
+    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope(), contextual);
     let mut results = Vec::with_capacity(request.items().len());
     for (object, relation) in request.items() {
         let result = match resolve_relation(compiled, object, relation) {
@@ -141,7 +200,8 @@ fn validate_subject_type(
         .ok_or_else(|| AuthorizationError::UnknownSubjectType(subject_type_name.to_owned()))
 }
 
-/// One memo key; tenant, subject, and contexts are fixed by the evaluator's scope.
+/// One memo key; tenant, subject, contexts, and contextual tuples are fixed by
+/// the evaluator's scope.
 ///
 /// A relation ID identifies its owner type, so the object type is implied.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -177,6 +237,7 @@ struct Evaluator<'a, S> {
     session: S,
     limits: EvaluationLimits,
     scope: &'a CheckScope,
+    contextual: ContextualTuples,
     completed: HashMap<EvaluationKey, bool>,
     /// DFS index of every key that is in flight or awaiting its cycle root.
     unresolved: HashMap<EvaluationKey, usize>,
@@ -198,12 +259,14 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         session: S,
         limits: EvaluationLimits,
         scope: &'a CheckScope,
+        contextual: ContextualTuples,
     ) -> Self {
         Self {
             compiled,
             session,
             limits,
             scope,
+            contextual,
             completed: HashMap::new(),
             unresolved: HashMap::new(),
             unresolved_stack: Vec::new(),
@@ -384,15 +447,15 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let mut state = TuplePageState::default();
             let mut first_error = None;
             loop {
-                let Some(page) = self
+                let Some(tuples) = self
                     .load_tuple_page(&object, relation_id, &mut state)
                     .await?
                 else {
                     break;
                 };
                 let prepared_tuples =
-                    self.prepare_assignment_page(&page.tuples, &object, relation_id, &targets)?;
-                for (tuple, prepared) in page.tuples.iter().zip(prepared_tuples) {
+                    self.prepare_assignment_page(&tuples, &object, relation_id, &targets)?;
+                for (tuple, prepared) in tuples.iter().zip(prepared_tuples) {
                     let membership = match prepared.membership {
                         AssignmentMembership::Known(matches) => Ok(matches),
                         AssignmentMembership::Userset {
@@ -437,19 +500,15 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             let mut state = TuplePageState::default();
             let mut first_error = None;
             loop {
-                let Some(page) = self
+                let Some(tuples) = self
                     .load_tuple_page(&object, tupleset_relation_id, &mut state)
                     .await?
                 else {
                     break;
                 };
-                let prepared_tuples = self.prepare_tupleset_page(
-                    &page.tuples,
-                    &object,
-                    tupleset_relation_id,
-                    edge_range,
-                )?;
-                for (tuple, prepared) in page.tuples.iter().zip(prepared_tuples) {
+                let prepared_tuples =
+                    self.prepare_tupleset_page(&tuples, &object, tupleset_relation_id, edge_range)?;
+                for (tuple, prepared) in tuples.iter().zip(prepared_tuples) {
                     let PreparedTuplesetTuple {
                         condition_context,
                         target_object,
@@ -630,19 +689,37 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     }
 
     /// Fetches, accounts for, and validates one bounded page for a relation.
+    ///
+    /// The relation's contextual tuples come first, as one page charged to the
+    /// tuple and work budgets like a store page (but not to store calls).
+    /// Store pages follow without the stored tuples that equal a contextual
+    /// one; those still count as scanned.
     async fn load_tuple_page(
         &mut self,
         object: &ObjectRef,
         relation_id: usize,
         state: &mut TuplePageState,
-    ) -> Result<Option<RelationshipPage>, AuthorizationError> {
-        if state.exhausted {
-            return Ok(None);
-        }
+    ) -> Result<Option<Vec<RelationshipTuple>>, AuthorizationError> {
         let relation = self.compiled.checked_relation_name(relation_id).ok_or(
             AuthorizationError::InvalidTuple("model contains an invalid relation reference"),
         )?;
         let maximum_tuples = self.limits.max_tuples_scanned();
+        if !state.contextual_loaded {
+            state.contextual_loaded = true;
+            let contextual = self.contextual.tuples(object, relation);
+            if !contextual.is_empty() {
+                let contextual = contextual.to_vec();
+                if contextual.len() > maximum_tuples.saturating_sub(self.tuples_scanned) {
+                    return Err(AuthorizationError::EvaluationLimitExceeded { maximum_tuples });
+                }
+                self.charge_work(contextual.len())?;
+                self.tuples_scanned += contextual.len();
+                return Ok(Some(contextual));
+            }
+        }
+        if state.exhausted {
+            return Ok(None);
+        }
         if self.store_calls >= self.limits.max_store_calls() {
             return Err(AuthorizationError::StoreCallLimitExceeded {
                 maximum_calls: self.limits.max_store_calls(),
@@ -681,7 +758,15 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 state.cursor = Some(next_cursor);
             }
         }
-        Ok(Some(page))
+        // Only tuples equal to one of this query's contextual tuples are
+        // dropped, so a stored tuple for another object or relation still
+        // fails validation.
+        let mut tuples = page.tuples;
+        let contextual = self.contextual.tuples(object, relation);
+        if !contextual.is_empty() {
+            tuples.retain(|tuple| !contextual.contains(tuple));
+        }
+        Ok(Some(tuples))
     }
 
     /// Charges a bounded unit of evaluator work.
@@ -742,5 +827,74 @@ fn map_store_error(error: StoreError, maximum_tuples: usize) -> AuthorizationErr
         AuthorizationError::EvaluationLimitExceeded { maximum_tuples }
     } else {
         AuthorizationError::Store(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContextualTuples, Evaluator, TuplePageState};
+    use crate::authz::model::CompiledModel;
+    use crate::authz::request::{
+        CheckRequest, EvaluationLimits, ObjectRef, RelationName, Subject, TenantId,
+    };
+    use crate::authz::store::{InMemoryRelationshipStore, RelationshipStore, RelationshipTuple};
+
+    fn viewer(id: &str) -> RelationshipTuple {
+        RelationshipTuple::new(
+            TenantId::new("acme").unwrap(),
+            ObjectRef::new("document", "1").unwrap(),
+            RelationName::new("viewer").unwrap(),
+            Subject::new("user", id).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn contextual_tuples_come_first_and_replace_equal_stored_tuples() {
+        let schema = relgraph_dsl::parse_fga_schema(
+            "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user]\n",
+        )
+        .unwrap();
+        let compiled = CompiledModel::compile(schema).unwrap();
+        let relation_id = compiled
+            .relation_id(compiled.type_id("document").unwrap(), "viewer")
+            .unwrap();
+        let store = InMemoryRelationshipStore::new();
+        store.insert(viewer("anne")).unwrap();
+        store.insert(viewer("bob")).unwrap();
+        let request = CheckRequest::new(
+            TenantId::new("acme").unwrap(),
+            Subject::new("user", "zoe").unwrap(),
+            ObjectRef::new("document", "1").unwrap(),
+            RelationName::new("viewer").unwrap(),
+        )
+        .with_contextual_tuples([viewer("anne"), viewer("carl")]);
+        let contextual = ContextualTuples::prepare(&compiled, request.scope()).unwrap();
+        let session = store.begin_read(request.tenant()).await.unwrap();
+        let mut evaluator = Evaluator::new(
+            &compiled,
+            session,
+            EvaluationLimits::default(),
+            request.scope(),
+            contextual,
+        );
+
+        let object = request.object().clone();
+        let mut state = TuplePageState::default();
+        let mut pages = Vec::new();
+        while let Some(page) = evaluator
+            .load_tuple_page(&object, relation_id, &mut state)
+            .await
+            .unwrap()
+        {
+            pages.push(page);
+        }
+
+        assert_eq!(
+            pages,
+            [vec![viewer("anne"), viewer("carl")], vec![viewer("bob")]]
+        );
+        // The dropped stored duplicate was still read from the store.
+        assert_eq!(evaluator.tuples_scanned, 4);
+        assert_eq!(evaluator.store_calls, 1);
     }
 }
