@@ -331,7 +331,7 @@ work them in roughly this order of corpus impact:
 | Tasks 8-9 | 4 | one `ipaddress` stage; no other CEL feature fails in the corpora, so CEL work is low priority by corpus numbers |
 | permanent | 72 | deliberate divergences (24 strict-read checks, 13 negation-cycle cases, 4 DSL) and 30 inline-condition cases, 1 JSON-output rule case |
 
-## Task 5 [TODO]: Semantic validation parity
+## Task 5 [PROGRESS]: Semantic validation parity
 
 **Depends on:** Task 4.
 
