@@ -10,8 +10,11 @@ and rejected-fixture diagnostics.
 The syntax target is `openfga/language` revision
 `fbc62984d02fc8ff7e2a924e0b9c34193233007c`. The grammars and upstream license
 are vendored in `upstream/`; the runner and jar checksum are documented in
-`tools/conformance/README.md`. Valid/invalid fixtures classify syntax only.
-Semantic, manifest, and modular fixtures exercise crate-specific policies.
+`tools/conformance/README.md`. Valid/invalid fixtures classify syntax only:
+several `valid/` documents fail semantic validation (for example
+`computed-userset.fga` has no entry point and `types-before-conditions.fga`
+declares an unused condition). Semantic, manifest, and modular fixtures
+exercise crate-specific policies.
 
 ## Parser production matrix
 
@@ -107,29 +110,29 @@ longer covers a non-passing case, so the list only shrinks.
 
 Each entry has a `reason` and a `tag` from a fixed vocabulary (checked by the
 test; see `tests/support/skip_list.rs`): `unsupported-feature` entries name the
-missing area (`validation` and `manifest` are rules Relgraph does not implement
-yet), `semantic-divergence` entries are either a `bug` owned by a plan task or
+missing area (`manifest` rules Relgraph does not implement yet; the
+`validation` tag has no entries since Task 5), `semantic-divergence` entries are either a `bug` owned by a plan task or
 a `deliberate`, `permanent` difference, and `harness-gap` entries are harness
 limitations. Like upstream's `validateDSL`, the runner stops at upstream's
 parse-listener stage (`extend` outside a module, a type extended twice in one
 file) and validates a lone `module` document standalone, which yields
 `schema-version-required`.
 
-Measured at the pinned revision (2026-10-18, `-- --nocapture`):
+Measured at the pinned revision (2026-10-18 after plan Task 5, `-- --nocapture`):
 
 | Corpus file | Cases | Pass | Upstream `skip: true` | Skip-listed | Skip-listed by reason/tag |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `dsl-syntax-validation-cases.yaml` | 81 | 78 | 0 | 3 | semantic-divergence/bug 1, semantic-divergence/deliberate 2 |
-| `dsl-semantic-validation-cases.yaml` | 93 | 37 | 7 | 49 | unsupported-feature/validation 40, semantic-divergence/bug 7, semantic-divergence/deliberate 2 |
+| `dsl-semantic-validation-cases.yaml` | 93 | 77 | 7 | 9 | semantic-divergence/bug 7, semantic-divergence/deliberate 2 |
 | `fga-mod-transformer-cases.yaml` | 10 (9 manifests, 1 `json` output) | 7 | 0 | 3 | unsupported-feature/manifest 2, unsupported-feature/json-model 1 |
 
 What the skip-listed groups are:
 
-- `unsupported-feature/validation` (plan Task 5): rules Relgraph validation
-  lacks: relation entry points (17 cases), repeated type restrictions or
-  operands in one relation (14), `self` / `this` names (4), unused conditions
-  (2, plus 1 combined with a repeated restriction) and names that break
-  upstream's naming rule `^[^:#@\*\s]{1,50}$` (2).
+- Plan Task 5 added the validation rules the semantic corpus expected
+  (relation entry points, repeated type restrictions and operands, `self` /
+  `this` names, unused conditions, and upstream's type and relation naming
+  rules), which cleared all 40 former `unsupported-feature/validation` entries
+  (37 to 77 passing semantic cases).
 - `semantic-divergence/bug` (plan Task 12): eight documents with a comment
   after a header, schema or type line, or an indented comment between `model`
   and `schema`. Upstream's `parseDSL` strips comment lines and ` #` comment
@@ -146,5 +149,5 @@ What the skip-listed groups are:
   expected JSON output is not compared (Decision D3).
 
 Position and symbol matches are metrics, not gates: syntax 46/74 positions and
-40/58 symbols, semantic 2/54 positions and 17/24 symbols (Relgraph validation
+40/58 symbols, semantic 2/108 positions and 43/50 symbols (Relgraph validation
 spans cover the owning declaration).

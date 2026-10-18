@@ -13,12 +13,38 @@
 //! breaking API: parser errors changed from `String` to [`ParseError`], AST nodes
 //! gained span fields, and relationship conditions use [`RelationCondition`].
 //!
-//! Static validation implements the explicit crate rules for versions, duplicate
-//! declarations, references, and tuple-to-userset structure. It does not compile,
-//! evaluate, or type-check CEL; analyze cycles or entrypoints; enforce server
-//! resource limits; or claim complete OpenFGA server validation. Inline
-//! `$expression` conditions are accepted by syntax and bounded validation, though
-//! a server may reject them in a particular context.
+//! Static validation implements the explicit crate rules for versions, names,
+//! duplicate declarations, references, tuple-to-userset structure, repeated
+//! restrictions and operands, unused conditions, and relation entry points. It
+//! does not compile, evaluate, or type-check CEL; decide which cycles the
+//! authorization runtime can evaluate; enforce server resource limits; or claim
+//! complete OpenFGA server validation. Inline `$expression` conditions are
+//! accepted by syntax and bounded validation, though a server may reject them in
+//! a particular context.
+//!
+//! The following [`ValidationIssue`] rules follow the pinned `openfga/language`
+//! validator. They reject models that earlier releases of this crate accepted:
+//!
+//! - `ReservedTypeName` / `ReservedRelationName`: a type or relation named
+//!   `self` or `this`.
+//! - `InvalidName`: a type name outside 1 to 254 characters or a relation name
+//!   outside 1 to 50 characters, or one containing `:`, `#`, `@`, `*` or
+//!   whitespace. Characters are counted as Unicode scalar values.
+//! - `DuplicateTypeRestriction`: the same restriction twice in one direct
+//!   assignment (`[user, user]`); a different condition makes it distinct.
+//! - `DuplicateOperand`: the same computed userset or tuple-to-userset twice
+//!   among the operands of a relation's top-level union, intersection or
+//!   difference (`viewer or viewer`). A left-nested chain of one operator is
+//!   one operator, so `(a or b) or a` also repeats `a`; operands inside a
+//!   nested group of another operator are not compared.
+//! - `UnusedCondition`: a condition no type restriction names.
+//! - `NoEntryPoint`: a relation no relationship tuple can satisfy, such as
+//!   `define a: b` with `define b: a`. A union needs one operand with an entry
+//!   point; an intersection and, as in OpenFGA, a difference need all of them.
+//!   This check only runs when every other rule passed.
+//!
+//! Each diagnostic's span covers the owning type, relation or condition
+//! declaration.
 //!
 //! Condition-expression bodies preserve their source bytes and end at the first
 //! visible `RBRACE` token. Braces are not balanced: an unclosed `{` in a body can
