@@ -509,7 +509,7 @@ Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
 pass, including `relgraph-authz` without features and with `axum` and
 `cargo test -p relgraph-authz-postgres --lib` (live PostgreSQL tests not run).
 
-## Task 8 [PROGRESS]: CEL route evaluation (produces Decision D1)
+## Task 8 [DONE]: CEL route evaluation (produces Decision D1)
 
 **Depends on:** Task 4.
 
@@ -534,6 +534,17 @@ checker and evaluator accept them. This task makes no production change.
 
 **Acceptance:** D1 contains the comparison and a recommendation; maintainer
 sign-off recorded in D1 before Task 9 starts.
+
+Result: D1 holds the comparison and recommends option D (keep `cel-core =0.5.1`
+and add OpenFGA's `ipaddress` / `in_cidr` extension locally, no new
+dependency); maintainer sign-off is **pending**, so Task 9 stays blocked.
+Only one skip entry is CEL-related (the `ipaddress` ABAC stage, 7 cases);
+`cel-core` 0.5.1 is its latest release, so no upgrade exists. The extension
+was prototyped in the scratchpad only (nothing committed to the workspace).
+The Task 8 premise was corrected in a separate commit: comprehension macros,
+`bytes` and nested containers are Relgraph profile rejections, not cel-core
+ones. No production code changed; `cargo fmt --check`, `cargo check
+--workspace --all-targets --all-features` and the Check corpus test pass.
 
 ## Task 9 [TODO]: CEL coverage implementation
 
