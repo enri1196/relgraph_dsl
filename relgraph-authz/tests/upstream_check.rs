@@ -15,12 +15,15 @@
 //! model. Tuples therefore **accumulate across stages**; a stage never starts
 //! from an empty store. An assertion without `errorCode` requires `allowed ==
 //! expectation` (a missing `expectation` is Go's `false`); one with `errorCode`
-//! requires an error whose gRPC status code equals it. Upstream skips a stage
-//! whose model fails its internal `modelgraph.New`, and also replays every
-//! single-stage test a second time with the stage tuples sent as contextual
-//! tuples (`…_ctxTuples`). Neither of those two behaviors is replayed here: the
-//! first needs OpenFGA internals, the second needs contextual tuples (Task 7).
-//! List assertions are driven by other upstream files and are only parsed here.
+//! requires an error whose gRPC status code equals it. An assertion's
+//! `contextualTuples` go into the Check request; the server validates them like
+//! written tuples (`invalid_tuple`, 2027) after the checked tuple key. Upstream
+//! skips a stage whose model fails its internal `modelgraph.New` (not replayed
+//! here: it needs OpenFGA internals). It also runs every **single-stage** test a
+//! second time (`…_ctxTuples`) against an empty store, sending the assertion's
+//! contextual tuples followed by the stage tuples as contextual tuples, and
+//! skips that stage when it has more than 100 tuples (the API limit). List
+//! assertions are driven by other upstream files and are only parsed here.
 //!
 //! # Harness
 //!
@@ -37,29 +40,34 @@
 //!   run, and, because their tuples cannot be written through the validating
 //!   API, neither are the checks of later stages that would read them.
 //! - A rejected tuple write likewise leaves the stage's and later stages'
-//!   checks not run, because upstream requires every write to succeed.
+//!   `check` cases not run, because upstream requires every write to succeed.
 //! - `check::i` runs the assertion: `tuple.user` must be a concrete `type:id`
 //!   subject (a userset or wildcard check subject is not expressible by
-//!   `CheckRequest` and is not run), and `context` becomes the global request
-//!   context. Allow/deny is compared with `expectation`; an error with
+//!   `CheckRequest` and is not run), `context` becomes the global request
+//!   context, and `contextualTuples` become the request's contextual tuples
+//!   (same tenant). Allow/deny is compared with `expectation`; an error with
 //!   `errorCode` through [`ERROR_CODE_TABLE`]. An `errorCode` without a table
 //!   entry is a harness gap.
-//! - Assertions with `contextualTuples` are not run (rule `contextual-tuples`,
-//!   Task 7). `listObjectsAssertions` / `listUsersAssertions` entries are
+//! - `ctxCheck::i` is upstream's `_ctxTuples` replay of `check::i`, for
+//!   single-stage tests with at most `MAX_CONTEXTUAL_TUPLES` stage tuples: the
+//!   same model bound to a new empty store, with the stage tuples appended to
+//!   the assertion's contextual tuples. Only a failed model construction
+//!   blocks it.
+//! - `listObjectsAssertions` / `listUsersAssertions` entries are
 //!   `listObjects::i` / `listUsers::i` and are never run (rules
 //!   `list-objects-assertions` / `list-users-assertions`).
 //!
-//! Every stage's run checks are also replayed through `batch_check`, grouped
-//! by subject and context, as `authz_compatibility.rs` does for the hand-written
-//! fixtures. A batched result that differs from the individual check is a hard
-//! failure, not a skip-list candidate. Run with `-- --nocapture` to see
-//! per-file totals.
+//! Every stage's run checks (each replay separately) are also replayed through
+//! `batch_check`, grouped by subject, context and contextual tuples, as
+//! `authz_compatibility.rs` does for the hand-written fixtures. A batched
+//! result that differs from the individual check is a hard failure, not a
+//! skip-list candidate. Run with `-- --nocapture` to see per-file totals.
 
 #[allow(dead_code)] // Shared with relgraph-dsl; this runner does not use every item.
 #[path = "support/skip_list.rs"]
 mod skip_list;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -88,16 +96,22 @@ const SKIP_LIST_HEADER: &str = "\
 const CONSOLIDATED_FILE: &str = "consolidated_1_1_tests.yaml";
 const ABAC_FILE: &str = "abac_tests.yaml";
 
-const CONTEXTUAL_TUPLES_RULE: &str = "contextual-tuples";
 const LIST_OBJECTS_RULE: &str = "list-objects-assertions";
 const LIST_USERS_RULE: &str = "list-users-assertions";
-const KNOWN_RULES: &[&str] = &[CONTEXTUAL_TUPLES_RULE, LIST_OBJECTS_RULE, LIST_USERS_RULE];
+const KNOWN_RULES: &[&str] = &[LIST_OBJECTS_RULE, LIST_USERS_RULE];
 
 /// The single tenant every corpus tuple and check uses.
 const TENANT: &str = "upstream-corpus";
 
 /// Harness-local name for a request the typed constructors reject.
 const IDENTIFIER_ERROR: &str = "IdentifierError";
+
+/// Harness-local name for a contextual tuple the typed constructors reject.
+const CONTEXTUAL_IDENTIFIER_ERROR: &str = "ContextualIdentifierError";
+
+/// Upstream's driver skips the `_ctxTuples` replay of a stage with more stage
+/// tuples than one request may carry (`MAX_CONTEXTUAL_TUPLES`).
+const CONTEXTUAL_REPLAY_MAXIMUM: usize = relgraph_authz::MAX_CONTEXTUAL_TUPLES;
 
 /// Upstream Check `errorCode` → Relgraph error variants that count as the same
 /// outcome. Codes are `openfga.v1.ErrorCode` values from `openfga/api` at the
@@ -123,7 +137,15 @@ const ERROR_CODE_TABLE: &[(i64, &str, &[&str])] = &[
         "authorization_model_resolution_too_complex",
         &["RelationDepthExceeded"],
     ),
-    (2027, "invalid_tuple", &["InvalidTuple"]),
+    (
+        2027,
+        "invalid_tuple",
+        &[
+            "InvalidTuple",
+            "InvalidContextualTuple",
+            CONTEXTUAL_IDENTIFIER_ERROR,
+        ],
+    ),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +228,8 @@ struct FileStats {
     error_codes: BTreeMap<i64, (usize, usize)>,
     batches: usize,
     batch_items: usize,
+    /// Single-stage tests whose `ctxCheck` replay upstream skips (too many tuples).
+    ctx_replay_skipped: usize,
 }
 
 /// What one check assertion is expected to produce.
@@ -323,11 +347,20 @@ enum Request {
     Run(CheckRequest),
     /// The typed constructors reject the request (a validation error).
     Invalid(String),
+    /// The typed constructors reject a contextual tuple (an invalid tuple).
+    InvalidContextual(String),
     /// `CheckRequest` has no form for this subject.
     Unsupported(String),
 }
 
-fn check_request(tenant: &TenantId, assertion: &CheckAssertion) -> Request {
+/// Builds the check for an assertion. Its contextual tuples are the
+/// assertion's own followed by `extra_contextual` (the stage tuples in the
+/// `ctxCheck` replay), as upstream appends them.
+fn check_request(
+    tenant: &TenantId,
+    assertion: &CheckAssertion,
+    extra_contextual: &[TupleKey],
+) -> Request {
     let user = assertion.tuple.user.as_str();
     let subject = match parse_tuple_subject(user) {
         Ok(TupleSubject::Direct(subject)) => subject,
@@ -355,7 +388,22 @@ fn check_request(tenant: &TenantId, assertion: &CheckAssertion) -> Request {
         Ok(context) => context,
         Err(error) => return Request::Invalid(error),
     };
-    Request::Run(CheckRequest::new(tenant.clone(), subject, object, relation).with_context(context))
+    let contextual: Result<Vec<_>, _> = assertion
+        .contextual_tuples
+        .iter()
+        .flatten()
+        .chain(extra_contextual)
+        .map(|raw| build_tuple(tenant, raw))
+        .collect();
+    let contextual = match contextual {
+        Ok(contextual) => contextual,
+        Err(error) => return Request::InvalidContextual(error),
+    };
+    Request::Run(
+        CheckRequest::new(tenant.clone(), subject, object, relation)
+            .with_context(context)
+            .with_contextual_tuples(contextual),
+    )
 }
 
 fn expected(assertion: &CheckAssertion) -> Expected {
@@ -480,11 +528,12 @@ async fn replay_as_batches(
     checks: &[RunCheck],
     stats: &mut FileStats,
 ) -> Vec<String> {
-    let mut groups: BTreeMap<(String, String), Vec<&RunCheck>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String, String), Vec<&RunCheck>> = BTreeMap::new();
     for check in checks {
         let key = (
             format!("{:?}", check.request.subject()),
             serde_json::to_string(check.request.context()).expect("context serializes"),
+            format!("{:?}", check.request.contextual_tuples()),
         );
         groups.entry(key).or_default().push(check);
     }
@@ -502,7 +551,8 @@ async fn replay_as_batches(
                     )
                 }),
             )
-            .with_context(first.context().clone());
+            .with_context(first.context().clone())
+            .with_contextual_tuples(first.contextual_tuples().to_vec());
             stats.batches += 1;
             stats.batch_items += chunk.len();
             let batched: Vec<String> = match authz.batch_check(&batch).await {
@@ -522,11 +572,92 @@ async fn replay_as_batches(
     problems
 }
 
+type BoundAuthz = FgaAuthz<relgraph_authz::Bound<InMemoryRelationshipStore>>;
+
+/// Runs a stage's check assertions and records their outcomes.
+struct AssertionReplay<'a> {
+    file: &'static str,
+    tenant: &'a TenantId,
+    stats: &'a mut FileStats,
+    results: &'a mut Vec<CaseResult>,
+    batch_problems: &'a mut Vec<String>,
+}
+
+impl AssertionReplay<'_> {
+    /// Records `{prefix}::i` for each assertion, then replays the run checks
+    /// as batches. `block` explains why none can run.
+    async fn run(
+        &mut self,
+        prefix: &str,
+        authz: Option<&BoundAuthz>,
+        block: Option<&(String, SkipReason)>,
+        assertions: &[CheckAssertion],
+        extra_contextual: &[TupleKey],
+    ) {
+        let mut run_checks = Vec::new();
+        for (index, assertion) in assertions.iter().enumerate() {
+            let id = format!("{prefix}::{index}");
+            let outcome = if let Some((why, reason)) = block {
+                not_run(why.clone(), *reason, "4")
+            } else {
+                let authz = authz.expect("an unblocked stage has an authorizer");
+                match check_request(self.tenant, assertion, extra_contextual) {
+                    Request::Unsupported(detail) => {
+                        not_run(detail, SkipReason::UnsupportedFeature, "4")
+                    }
+                    Request::Invalid(detail) => compare(
+                        expected(assertion),
+                        Err((IDENTIFIER_ERROR.to_owned(), detail)),
+                    ),
+                    Request::InvalidContextual(detail) => compare(
+                        expected(assertion),
+                        Err((CONTEXTUAL_IDENTIFIER_ERROR.to_owned(), detail)),
+                    ),
+                    Request::Run(request) => {
+                        let result = authz.check(request.clone()).await;
+                        let actual = match &result {
+                            Ok(decision) => Ok(*decision == AuthorizationDecision::Allow),
+                            Err(error) => Err((variant_name(error), format!("{error:?}"))),
+                        };
+                        run_checks.push(RunCheck {
+                            id: id.clone(),
+                            request,
+                            individual: render(&result),
+                        });
+                        compare(expected(assertion), actual)
+                    }
+                }
+            };
+            if let Expected::Error(code) = expected(assertion)
+                && !matches!(
+                    outcome,
+                    Outcome::NotPassing {
+                        kind: NotPassingKind::NotRun,
+                        ..
+                    }
+                )
+            {
+                let tally = self.stats.error_codes.entry(code).or_default();
+                tally.0 += 1;
+                tally.1 += usize::from(outcome == Outcome::Pass);
+            }
+            self.results.push(CaseResult {
+                file: self.file,
+                id,
+                outcome,
+            });
+        }
+        if let Some(authz) = authz {
+            self.batch_problems
+                .extend(replay_as_batches(authz, &run_checks, self.stats).await);
+        }
+    }
+}
+
 async fn run_file(
     file: &'static str,
     stats: &mut FileStats,
     results: &mut Vec<CaseResult>,
-    contextual: &mut BTreeSet<String>,
     batch_problems: &mut Vec<String>,
 ) {
     let corpus = read_corpus(file);
@@ -602,70 +733,51 @@ async fn run_file(
                 }
             };
 
-            let mut run_checks = Vec::new();
-            for (index, assertion) in stage
-                .check_assertions
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-            {
-                let id = format!("{stage_id}::check::{index}");
-                let outcome = if assertion
-                    .contextual_tuples
-                    .as_ref()
-                    .is_some_and(|tuples| !tuples.is_empty())
-                {
-                    contextual.insert(id.clone());
-                    not_run(
-                        String::from("assertion uses contextualTuples"),
-                        SkipReason::UnsupportedFeature,
-                        "7",
+            let assertions = stage.check_assertions.as_deref().unwrap_or_default();
+            let mut replay = AssertionReplay {
+                file,
+                tenant: &tenant,
+                stats: &mut *stats,
+                results: &mut *results,
+                batch_problems: &mut *batch_problems,
+            };
+            replay
+                .run(
+                    &format!("{stage_id}::check"),
+                    authz.as_ref(),
+                    stage_block.as_ref(),
+                    assertions,
+                    &[],
+                )
+                .await;
+
+            // Upstream's `_ctxTuples` replay: a single-stage test runs again
+            // against an empty store with the stage tuples sent as
+            // contextual tuples, unless there are more than one request may
+            // carry.
+            if test.stages.len() == 1 && tuples.len() > CONTEXTUAL_REPLAY_MAXIMUM {
+                stats.ctx_replay_skipped += 1;
+            } else if test.stages.len() == 1 {
+                let empty = authz.as_ref().map(|_| {
+                    FgaAuthz::new(&stage.model)
+                        .expect("the model constructed above")
+                        .with_store(
+                            InMemoryRelationshipStore::new(),
+                            EvaluationLimits::default(),
+                        )
+                });
+                // Only a construction failure blocks this replay; stored
+                // tuples play no part in it.
+                let block = authz.is_none().then(|| stage_block.clone()).flatten();
+                replay
+                    .run(
+                        &format!("{stage_id}::ctxCheck"),
+                        empty.as_ref(),
+                        block.as_ref(),
+                        assertions,
+                        tuples,
                     )
-                } else if let Some((why, reason)) = &stage_block {
-                    not_run(why.clone(), *reason, "4")
-                } else {
-                    let authz = authz.as_ref().expect("stage has an authorizer");
-                    match check_request(&tenant, assertion) {
-                        Request::Unsupported(detail) => {
-                            not_run(detail, SkipReason::UnsupportedFeature, "4")
-                        }
-                        Request::Invalid(detail) => compare(
-                            expected(assertion),
-                            Err((IDENTIFIER_ERROR.to_owned(), detail)),
-                        ),
-                        Request::Run(request) => {
-                            let result = authz.check(request.clone()).await;
-                            let actual = match &result {
-                                Ok(decision) => Ok(*decision == AuthorizationDecision::Allow),
-                                Err(error) => Err((variant_name(error), format!("{error:?}"))),
-                            };
-                            run_checks.push(RunCheck {
-                                id: id.clone(),
-                                request,
-                                individual: render(&result),
-                            });
-                            compare(expected(assertion), actual)
-                        }
-                    }
-                };
-                if let Expected::Error(code) = expected(assertion)
-                    && !matches!(
-                        outcome,
-                        Outcome::NotPassing {
-                            kind: NotPassingKind::NotRun,
-                            ..
-                        }
-                    )
-                {
-                    let tally = stats.error_codes.entry(code).or_default();
-                    tally.0 += 1;
-                    tally.1 += usize::from(outcome == Outcome::Pass);
-                }
-                results.push(CaseResult { file, id, outcome });
-            }
-            if let Some(authz) = &authz {
-                batch_problems.extend(replay_as_batches(authz, &run_checks, stats).await);
+                    .await;
             }
 
             for (kind, rule, count) in [
@@ -698,7 +810,7 @@ async fn run_file(
 
 /// The assertion kind segment of a case ID.
 fn case_kind(id: &str) -> &'static str {
-    ["model", "check", "listObjects", "listUsers"]
+    ["model", "check", "ctxCheck", "listObjects", "listUsers"]
         .into_iter()
         .find(|kind| id.contains(&format!("::{kind}::")))
         .expect("every case ID has a kind")
@@ -708,14 +820,12 @@ fn case_kind(id: &str) -> &'static str {
 async fn upstream_check_corpora_match_or_are_skip_listed() {
     let mut results = Vec::new();
     let mut stats = BTreeMap::<&'static str, FileStats>::new();
-    let mut contextual = BTreeSet::new();
     let mut batch_problems = Vec::new();
     for file in [CONSOLIDATED_FILE, ABAC_FILE] {
         run_file(
             file,
             stats.entry(file).or_default(),
             &mut results,
-            &mut contextual,
             &mut batch_problems,
         )
         .await;
@@ -741,7 +851,6 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
     }
 
     let rule_covers = |rule: &str, id: &str| match rule {
-        CONTEXTUAL_TUPLES_RULE => contextual.contains(id),
         LIST_OBJECTS_RULE => id.contains("::listObjects::"),
         LIST_USERS_RULE => id.contains("::listUsers::"),
         _ => false,
@@ -768,7 +877,8 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
             report,
             "{file}: {} tests, {} stages, {} cases; {} pass; skip-listed {} (fail {}, \
              harness-gap {}, not-run {}); pass by kind: {kinds}; run error-code checks passing: [{error_codes}]; \
-             batch replay {} items in {} batches",
+             batch replay {} items in {} batches; ctxCheck replay skipped for {} test(s) with more \
+             than {CONTEXTUAL_REPLAY_MAXIMUM} tuples (as upstream)",
             file_stats.tests,
             file_stats.stages,
             file_stats.total,
@@ -779,6 +889,7 @@ async fn upstream_check_corpora_match_or_are_skip_listed() {
             file_stats.not_run,
             file_stats.batch_items,
             file_stats.batches,
+            file_stats.ctx_replay_skipped,
         );
         let reasons = by_reason.get(file).map_or_else(
             || String::from("none"),

@@ -73,6 +73,16 @@ entries:
   tag: userset-subject
   task: '13'
   justification: userset check subject folder:a#viewer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject
+- case: abac_tests.yaml::simple_userset_with_condition::0::ctxCheck::3
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: userset check subject folder:a#viewer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
+- case: abac_tests.yaml::simple_userset_with_condition::0::ctxCheck::4
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: userset check subject folder:a#viewer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
 - case: abac_tests.yaml::wildcard_with_condition::1::check::0
   reason: semantic-divergence
   tag: deliberate
@@ -168,6 +178,11 @@ entries:
   tag: userset-subject
   task: '13'
   justification: userset check subject group:x#member is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject
+- case: consolidated_1_1_tests.yaml::userset_as_user::0::ctxCheck::0
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: userset check subject group:x#member is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
 - case: consolidated_1_1_tests.yaml::userset_discard_invalid::1::check::0
   reason: semantic-divergence
   tag: deliberate
@@ -198,16 +213,31 @@ entries:
   tag: userset-subject
   task: '13'
   justification: userset check subject document:x#writer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject
+- case: consolidated_1_1_tests.yaml::validation_userset_relation_not_in_model::0::ctxCheck::0
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: userset check subject document:x#writer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
 - case: consolidated_1_1_tests.yaml::validation_userset_type_not_in_model::0::check::0
   reason: unsupported-feature
   tag: userset-subject
   task: '13'
   justification: userset check subject folder:x#writer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject
+- case: consolidated_1_1_tests.yaml::validation_userset_type_not_in_model::0::ctxCheck::0
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: userset check subject folder:x#writer is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
 - case: consolidated_1_1_tests.yaml::wildcard_direct::0::check::1
   reason: unsupported-feature
   tag: userset-subject
   task: '13'
   justification: wildcard check subject user:* is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject
+- case: consolidated_1_1_tests.yaml::wildcard_direct::0::ctxCheck::1
+  reason: unsupported-feature
+  tag: userset-subject
+  task: '13'
+  justification: wildcard check subject user:* is not expressible by CheckRequest; `CheckRequest` takes only a concrete `type:id` subject (upstream `_ctxTuples` replay of the same assertion)
 - case: consolidated_1_1_tests.yaml::wildcard_obeys_the_types_in_stages::1::check::0
   reason: semantic-divergence
   tag: deliberate
@@ -218,11 +248,6 @@ entries:
   tag: deliberate
   task: permanent
   justification: upstream expects deny; Relgraph errors InvalidTuple("tuple subject is incompatible with the relation restriction"); a tuple written under an earlier stage's model no longer fits this stage's model, and Relgraph reads are strict where upstream ignores such tuples (maintainer decision recorded in AGENTS.md; repair goes through the store)
-- rule: contextual-tuples
-  reason: unsupported-feature
-  tag: contextual-tuples
-  task: '7'
-  justification: CheckRequest has no contextual tuples yet; Task 7 adds them and wires contextualTuples into this runner.
 - rule: list-objects-assertions
   reason: unsupported-feature
   tag: list-api
