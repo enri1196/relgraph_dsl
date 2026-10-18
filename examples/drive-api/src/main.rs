@@ -8,7 +8,7 @@ mod error;
 /// Seeds the repository, starts the HTTP server, and drains requests on Ctrl-C.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = api::router(drive::Drive::seeded()?);
+    let app = api::router(drive::Drive::seeded().await?);
     let address = std::env::var("DRIVE_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".into());
     let listener = tokio::net::TcpListener::bind(&address).await?;
     println!("Drive API listening on http://{}", listener.local_addr()?);

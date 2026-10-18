@@ -121,15 +121,17 @@ async fn create_item(
         ));
     }
     let id = drive.allocate_id(input.kind.model_type());
-    let item = drive.add_item(
-        identity.tenant,
-        identity.user,
-        id,
-        input.kind,
-        input.name,
-        Some(input.parent_id),
-        input.content,
-    )?;
+    let item = drive
+        .add_item(
+            identity.tenant,
+            identity.user,
+            id,
+            input.kind,
+            input.name,
+            Some(input.parent_id),
+            input.content,
+        )
+        .await?;
     Ok((StatusCode::CREATED, Json(item)))
 }
 
@@ -218,7 +220,7 @@ async fn create_share(
     let mut drive = state.lock().await;
     let item = drive.item(&identity, &id)?;
     drive.require(&identity, &item, "can_manage").await?;
-    let share = drive.add_share(&item, input.grantee, input.role)?;
+    let share = drive.add_share(&item, input.grantee, input.role).await?;
     Ok((StatusCode::CREATED, Json(share)))
 }
 
@@ -231,7 +233,7 @@ async fn revoke_share(
     let mut drive = state.lock().await;
     let item = drive.item(&identity, &id)?;
     drive.require(&identity, &item, "can_manage").await?;
-    drive.revoke_share(&item, &share_id)?;
+    drive.revoke_share(&item, &share_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

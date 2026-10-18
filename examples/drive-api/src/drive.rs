@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use relgraph_authz::{
     AuthorizationDecision, Bound, CheckRequest, EvaluationLimits, FgaAuthz,
     InMemoryRelationshipStore, ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
-    TupleSubject,
+    TupleSubject, WriteError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,24 +97,26 @@ pub struct Share {
 }
 
 /// The local repository, authorizer, and grant ledger owned by this application.
+///
+/// Relationship writes go through the authorizer's validating write methods,
+/// so every stored tuple fits the model that checks read it with.
 pub struct Drive {
     pub items: BTreeMap<String, Item>,
     pub shares: BTreeMap<String, Vec<Share>>,
-    store: InMemoryRelationshipStore,
     authz: FgaAuthz<Bound<InMemoryRelationshipStore>>,
     next_id: u64,
 }
 
 impl Drive {
     /// Compiles the model and seeds two tenants with independent root workspaces.
-    pub fn seeded() -> Result<Self, Box<dyn std::error::Error>> {
-        let store = InMemoryRelationshipStore::new();
-        let authz = FgaAuthz::new(include_str!("../authorization.fga"))?
-            .with_store(store.clone(), EvaluationLimits::default());
+    pub async fn seeded() -> Result<Self, Box<dyn std::error::Error>> {
+        let authz = FgaAuthz::new(include_str!("../authorization.fga"))?.with_store(
+            InMemoryRelationshipStore::new(),
+            EvaluationLimits::default(),
+        );
         let mut drive = Self {
             items: BTreeMap::new(),
             shares: BTreeMap::new(),
-            store,
             authz,
             next_id: 1,
         };
@@ -122,43 +124,57 @@ impl Drive {
             ("acme", "alice", "acme-drive"),
             ("other", "eve", "other-drive"),
         ] {
-            drive.add_item(
-                TenantId::new(tenant)?,
-                user,
-                root.into(),
-                Kind::Workspace,
-                "Company drive".into(),
-                None,
-                String::new(),
-            )?;
+            drive
+                .add_item(
+                    TenantId::new(tenant)?,
+                    user,
+                    root.into(),
+                    Kind::Workspace,
+                    "Company drive".into(),
+                    None,
+                    String::new(),
+                )
+                .await?;
         }
         let acme = TenantId::new("acme")?;
-        drive.store.insert(RelationshipTuple::new(
-            acme.clone(),
-            ObjectRef::new("team", "design")?,
-            RelationName::new("member")?,
-            Subject::new("user", "bob")?,
-        ))?;
-        drive.add_item(
-            acme.clone(),
-            "alice",
-            "design-folder".into(),
-            Kind::Folder,
-            "Design".into(),
-            Some("acme-drive".into()),
-            String::new(),
-        )?;
-        drive.add_item(
-            acme,
-            "alice",
-            "roadmap-file".into(),
-            Kind::File,
-            "Roadmap.txt".into(),
-            Some("design-folder".into()),
-            "Ship the shared drive MVP.\n".into(),
-        )?;
+        drive
+            .authz
+            .write_tuple(
+                &acme,
+                &RelationshipTuple::new(
+                    acme.clone(),
+                    ObjectRef::new("team", "design")?,
+                    RelationName::new("member")?,
+                    Subject::new("user", "bob")?,
+                ),
+            )
+            .await?;
+        drive
+            .add_item(
+                acme.clone(),
+                "alice",
+                "design-folder".into(),
+                Kind::Folder,
+                "Design".into(),
+                Some("acme-drive".into()),
+                String::new(),
+            )
+            .await?;
+        drive
+            .add_item(
+                acme,
+                "alice",
+                "roadmap-file".into(),
+                Kind::File,
+                "Roadmap.txt".into(),
+                Some("design-folder".into()),
+                "Ship the shared drive MVP.\n".into(),
+            )
+            .await?;
         let folder = drive.items["design-folder"].clone();
-        drive.add_share(&folder, Grantee::Team("design".into()), Role::Editor)?;
+        drive
+            .add_share(&folder, Grantee::Team("design".into()), Role::Editor)
+            .await?;
         Ok(drive)
     }
 
@@ -213,9 +229,9 @@ impl Drive {
         }
     }
 
-    /// Creates metadata and its owner/parent tuples with rollback on partial insertion.
+    /// Creates metadata after atomically writing its owner and parent tuples.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_item(
+    pub async fn add_item(
         &mut self,
         tenant: TenantId,
         owner: &str,
@@ -233,24 +249,20 @@ impl Drive {
             RelationName::new("owner").map_err(ApiError::unavailable)?,
             Subject::new("user", owner).map_err(ApiError::unavailable)?,
         );
-        self.store
-            .insert(owner_tuple.clone())
-            .map_err(ApiError::unavailable)?;
+        let mut tuples = vec![owner_tuple];
         if let (Some(parent), Some(parent_kind)) = (&parent_id, kind.parent_kind()) {
-            let parent_tuple = RelationshipTuple::new(
+            tuples.push(RelationshipTuple::new(
                 tenant.clone(),
                 object,
                 RelationName::new("parent").map_err(ApiError::unavailable)?,
                 Subject::new(parent_kind.model_type(), parent.clone())
                     .map_err(ApiError::unavailable)?,
-            );
-            if let Err(error) = self.store.insert(parent_tuple) {
-                self.store
-                    .remove(&owner_tuple)
-                    .map_err(ApiError::unavailable)?;
-                return Err(ApiError::unavailable(error));
-            }
+            ));
         }
+        self.authz
+            .apply_changes(&tenant, &tuples, &[])
+            .await
+            .map_err(write_failed)?;
         let item = Item {
             id: id.clone(),
             kind,
@@ -266,7 +278,7 @@ impl Drive {
     }
 
     /// Adds a direct grant after the handler has checked management permission.
-    pub fn add_share(
+    pub async fn add_share(
         &mut self,
         item: &Item,
         grantee: Grantee,
@@ -306,9 +318,10 @@ impl Drive {
             RelationName::new(role.relation()).map_err(ApiError::unavailable)?,
             subject,
         );
-        self.store
-            .insert(tuple.clone())
-            .map_err(ApiError::unavailable)?;
+        self.authz
+            .write_tuple(&item.tenant, &tuple)
+            .await
+            .map_err(write_failed)?;
         let share = Share {
             id: self.allocate_id("share"),
             grantee,
@@ -323,7 +336,7 @@ impl Drive {
     }
 
     /// Removes a ledger entry only after its exact relationship has been removed.
-    pub fn revoke_share(&mut self, item: &Item, share_id: &str) -> Result<(), ApiError> {
+    pub async fn revoke_share(&mut self, item: &Item, share_id: &str) -> Result<(), ApiError> {
         let shares = self
             .shares
             .get_mut(&item.id)
@@ -332,10 +345,19 @@ impl Drive {
             .iter()
             .position(|share| share.id == share_id)
             .ok_or_else(ApiError::not_found)?;
-        self.store
-            .remove(&shares[index].tuple)
-            .map_err(ApiError::unavailable)?;
+        self.authz
+            .delete_tuple(&item.tenant, &shares[index].tuple)
+            .await
+            .map_err(write_failed)?;
         shares.remove(index);
         Ok(())
     }
+}
+
+/// Reports a rejected or failed relationship write as a safe service error.
+///
+/// The application builds every tuple itself, so a validation failure is a
+/// server bug rather than client input.
+fn write_failed(error: WriteError) -> ApiError {
+    ApiError::unavailable(error)
 }

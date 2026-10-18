@@ -2,6 +2,8 @@
 //!
 //! A session that already established its repeatable-read snapshot keeps
 //! observing that snapshot; sessions opened after a committed write see it.
+//! A change set commits in one transaction, so later sessions observe all of
+//! it or none of it.
 
 use super::{
     PostgresRelationshipStore,
@@ -11,8 +13,10 @@ use super::{
 use relgraph_authz::{
     RelationshipTuple, RelationshipWriteStore, StoreError, StoreErrorKind, StoreFuture, TenantId,
 };
+use sqlx::PgConnection;
 
 const DUPLICATE_TUPLE: &str = "relationship tuple identity already exists";
+const MISSING_DELETION: &str = "relationship tuple to delete does not exist";
 const TENANT_MISMATCH: &str = "relationship tuple tenant does not match the requested tenant";
 const REMOVAL_MISMATCH: &str = "persisted relationship tuple changed during removal";
 const IDENTITY_CONSTRAINT: &str = "relationship_tuples_identity_digest_key";
@@ -32,44 +36,18 @@ impl RelationshipWriteStore for PostgresRelationshipStore {
         tenant: &'a TenantId,
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        if tenant != tuple.tenant() {
-            return Box::pin(async { Err(tenant_mismatch_error()) });
-        }
-
-        let row = match TupleRow::from_tuple(tuple) {
+        let row = match write_row(tenant, tuple) {
             Ok(row) => row,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let pool = self.pool.clone();
 
         Box::pin(async move {
-            let result = sqlx::query(
-                r"INSERT INTO relgraph_authz.relationship_tuples
-                  (tenant, object_type, object_id, relation, subject_kind, subject_type,
-                   subject_id, subject_relation, condition_name, context_json, identity_digest)
-                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-            )
-            .bind(&row.tenant)
-            .bind(&row.object_type)
-            .bind(&row.object_id)
-            .bind(&row.relation)
-            .bind(&row.subject_kind)
-            .bind(&row.subject_type)
-            .bind(&row.subject_id)
-            .bind(&row.subject_relation)
-            .bind(&row.condition_name)
-            .bind(&row.context_json)
-            .bind(&row.identity_digest)
-            .execute(&pool)
-            .await;
-
-            match result {
-                Ok(_) => Ok(()),
-                Err(error) if is_identity_duplicate(&error) => {
-                    Err(StoreError::new(StoreErrorKind::Conflict, DUPLICATE_TUPLE))
-                }
-                Err(error) => Err(map_sqlx_error(&error)),
-            }
+            let mut connection = pool
+                .acquire()
+                .await
+                .map_err(|error| map_sqlx_error(&error))?;
+            insert_row(&mut connection, &row).await
         })
     }
 
@@ -78,11 +56,7 @@ impl RelationshipWriteStore for PostgresRelationshipStore {
         tenant: &'a TenantId,
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<bool, StoreError>> {
-        if tenant != tuple.tenant() {
-            return Box::pin(async { Err(tenant_mismatch_error()) });
-        }
-
-        let expected_row = match TupleRow::from_tuple(tuple) {
+        let expected_row = match write_row(tenant, tuple) {
             Ok(row) => row,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
@@ -90,52 +64,136 @@ impl RelationshipWriteStore for PostgresRelationshipStore {
 
         Box::pin(async move {
             let mut transaction = pool.begin().await.map_err(|error| map_sqlx_error(&error))?;
-            let row = sqlx::query_as::<_, TupleRow>(SELECT_MATCHING_TUPLE_FOR_UPDATE)
-                .bind(&expected_row.tenant)
-                .bind(&expected_row.identity_digest)
-                .bind(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES as i32)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(|error| map_sqlx_error(&error))?;
-
-            let Some(row) = row else {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|error| map_sqlx_error(&error))?;
-                return Ok(false);
-            };
-
-            let tuple_id = row.tuple_id.ok_or_else(corrupt_row_error)?;
-            let stored_tuple = row.into_tuple()?;
-            if &stored_tuple != tuple {
-                return Err(corrupt_row_error());
-            }
-
-            let deleted = sqlx::query(
-                r"DELETE FROM relgraph_authz.relationship_tuples
-                  WHERE tenant = $1 AND tuple_id = $2",
-            )
-            .bind(&expected_row.tenant)
-            .bind(tuple_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| map_sqlx_error(&error))?;
-
-            if deleted.rows_affected() != 1 {
-                return Err(StoreError::new(
-                    StoreErrorKind::CorruptData,
-                    REMOVAL_MISMATCH,
-                ));
-            }
-
+            let removed = remove_row(&mut transaction, &expected_row, tuple).await?;
             transaction
                 .commit()
                 .await
                 .map_err(|error| map_sqlx_error(&error))?;
-            Ok(true)
+            Ok(removed)
         })
     }
+
+    fn apply_changes<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        inserts: &'a [RelationshipTuple],
+        deletes: &'a [RelationshipTuple],
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        let rows = |tuples: &[RelationshipTuple]| {
+            tuples
+                .iter()
+                .map(|tuple| write_row(tenant, tuple))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let (insert_rows, delete_rows) = match (rows(inserts), rows(deletes)) {
+            (Ok(insert_rows), Ok(delete_rows)) => (insert_rows, delete_rows),
+            (Err(error), _) | (_, Err(error)) => return Box::pin(async move { Err(error) }),
+        };
+        let pool = self.pool.clone();
+
+        Box::pin(async move {
+            if insert_rows.is_empty() && delete_rows.is_empty() {
+                return Ok(());
+            }
+            // An early return drops the transaction, which rolls back every
+            // change already made in it.
+            let mut transaction = pool.begin().await.map_err(|error| map_sqlx_error(&error))?;
+            for (row, tuple) in delete_rows.iter().zip(deletes) {
+                if !remove_row(&mut transaction, row, tuple).await? {
+                    return Err(StoreError::new(StoreErrorKind::Conflict, MISSING_DELETION));
+                }
+            }
+            for row in &insert_rows {
+                insert_row(&mut transaction, row).await?;
+            }
+            transaction
+                .commit()
+                .await
+                .map_err(|error| map_sqlx_error(&error))
+        })
+    }
+}
+
+/// Checks tenant ownership and maps one caller-supplied tuple before any I/O.
+fn write_row(tenant: &TenantId, tuple: &RelationshipTuple) -> Result<TupleRow, StoreError> {
+    if tenant != tuple.tenant() {
+        return Err(tenant_mismatch_error());
+    }
+    TupleRow::from_tuple(tuple)
+}
+
+async fn insert_row(connection: &mut PgConnection, row: &TupleRow) -> Result<(), StoreError> {
+    let result = sqlx::query(
+        r"INSERT INTO relgraph_authz.relationship_tuples
+          (tenant, object_type, object_id, relation, subject_kind, subject_type,
+           subject_id, subject_relation, condition_name, context_json, identity_digest)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(&row.tenant)
+    .bind(&row.object_type)
+    .bind(&row.object_id)
+    .bind(&row.relation)
+    .bind(&row.subject_kind)
+    .bind(&row.subject_type)
+    .bind(&row.subject_id)
+    .bind(&row.subject_relation)
+    .bind(&row.condition_name)
+    .bind(&row.context_json)
+    .bind(&row.identity_digest)
+    .execute(connection)
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if is_identity_duplicate(&error) => {
+            Err(StoreError::new(StoreErrorKind::Conflict, DUPLICATE_TUPLE))
+        }
+        Err(error) => Err(map_sqlx_error(&error)),
+    }
+}
+
+/// Locks, verifies, and deletes the exact stored tuple inside the caller's
+/// transaction. Returns `false` when no row has the tuple's identity.
+async fn remove_row(
+    connection: &mut PgConnection,
+    expected_row: &TupleRow,
+    tuple: &RelationshipTuple,
+) -> Result<bool, StoreError> {
+    let row = sqlx::query_as::<_, TupleRow>(SELECT_MATCHING_TUPLE_FOR_UPDATE)
+        .bind(&expected_row.tenant)
+        .bind(&expected_row.identity_digest)
+        .bind(relgraph_authz::MAX_CONDITION_CONTEXT_SERIALIZED_BYTES as i32)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|error| map_sqlx_error(&error))?;
+
+    let Some(row) = row else {
+        return Ok(false);
+    };
+
+    let tuple_id = row.tuple_id.ok_or_else(corrupt_row_error)?;
+    let stored_tuple = row.into_tuple()?;
+    if &stored_tuple != tuple {
+        return Err(corrupt_row_error());
+    }
+
+    let deleted = sqlx::query(
+        r"DELETE FROM relgraph_authz.relationship_tuples
+          WHERE tenant = $1 AND tuple_id = $2",
+    )
+    .bind(&expected_row.tenant)
+    .bind(tuple_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| map_sqlx_error(&error))?;
+
+    if deleted.rows_affected() != 1 {
+        return Err(StoreError::new(
+            StoreErrorKind::CorruptData,
+            REMOVAL_MISMATCH,
+        ));
+    }
+    Ok(true)
 }
 
 fn is_identity_duplicate(error: &sqlx::Error) -> bool {

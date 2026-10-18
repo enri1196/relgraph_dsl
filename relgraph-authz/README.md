@@ -225,7 +225,13 @@ before writing directly. Validation applies the same model checks (object
 type, relation, declared subject targets and conditions, and stored context
 types) and rejects tuples that would make such checks fail with
 `WriteError::Validation`; the tenant check and store outcomes, including
-`Conflict` for a duplicate, are `WriteError::Store`. These wrappers validate
+`Conflict` for a duplicate, are `WriteError::Store`. `FgaAuthz::apply_changes`
+validates every tuple of a change set, then applies its deletions and
+insertions atomically through `RelationshipWriteStore::apply_changes`: the
+in-memory store publishes one snapshot and PostgreSQL commits one transaction.
+A missing deletion or a duplicate insertion returns `Conflict` and applies
+nothing; deleting and re-inserting a tuple in one set replaces its condition
+context. These wrappers validate
 against the bound model only: they do not authorize the caller to write, so
 the application still decides who may create or remove a relationship. Checks
 fail closed on a stored tuple that no longer fits the model after a model

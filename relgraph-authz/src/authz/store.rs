@@ -393,6 +393,22 @@ pub trait RelationshipWriteStore: Send + Sync {
         tenant: &'a TenantId,
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<bool, StoreError>>;
+
+    /// Atomically applies every deletion and then every insertion for the
+    /// supplied tenant: either all changes become visible to later read
+    /// sessions or none do.
+    ///
+    /// Deletions match exact tuples. A deletion whose tuple does not exist
+    /// (including a repeat within `deletes`) and an insertion of a tuple that
+    /// exists after the deletions (including a repeat within `inserts`) return
+    /// [`StoreErrorKind::Conflict`]. Deleting and inserting the same tuple in one
+    /// call is allowed, so a tuple's condition context can be replaced.
+    fn apply_changes<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        inserts: &'a [RelationshipTuple],
+        deletes: &'a [RelationshipTuple],
+    ) -> StoreFuture<'a, Result<(), StoreError>>;
 }
 
 /// An in-memory implementation intended for examples, tests, and small local
@@ -429,6 +445,78 @@ impl InMemoryRelationshipStore {
             .entry(key)
             .or_default()
             .push(tuple);
+        Ok(())
+    }
+
+    /// Synchronously applies a change set with the semantics of
+    /// [`RelationshipWriteStore::apply_changes`], publishing one new snapshot.
+    pub fn apply(
+        &self,
+        tenant: &TenantId,
+        inserts: &[RelationshipTuple],
+        deletes: &[RelationshipTuple],
+    ) -> Result<(), StoreError> {
+        for tuple in deletes.iter().chain(inserts) {
+            if tuple.tenant() != tenant {
+                return Err(write_tenant_mismatch());
+            }
+            tuple.validate_condition_context_limits()?;
+        }
+        let mut current = self.snapshot.write().map_err(|_| {
+            StoreError::new(
+                StoreErrorKind::Internal,
+                "in-memory relationship store lock was poisoned",
+            )
+        })?;
+        let is_stored = |tuple: &RelationshipTuple| {
+            current
+                .get(&tuple.key())
+                .is_some_and(|values| values.contains(tuple))
+        };
+
+        // Validate the whole change set before mutating so a rejected call
+        // publishes nothing. Stored tuples are unique, so each can be deleted
+        // at most once.
+        let mut deleted: Vec<&RelationshipTuple> = Vec::with_capacity(deletes.len());
+        for tuple in deletes {
+            if !is_stored(tuple) || deleted.contains(&tuple) {
+                return Err(StoreError::new(
+                    StoreErrorKind::Conflict,
+                    "relationship tuple to delete does not exist",
+                ));
+            }
+            deleted.push(tuple);
+        }
+        let mut inserted: Vec<&RelationshipTuple> = Vec::with_capacity(inserts.len());
+        for tuple in inserts {
+            if (is_stored(tuple) && !deleted.contains(&tuple)) || inserted.contains(&tuple) {
+                return Err(StoreError::new(
+                    StoreErrorKind::Conflict,
+                    "duplicate relationship tuple",
+                ));
+            }
+            inserted.push(tuple);
+        }
+        if deletes.is_empty() && inserts.is_empty() {
+            return Ok(());
+        }
+
+        let snapshot = Arc::make_mut(&mut *current);
+        for tuple in deletes {
+            let key = tuple.key();
+            let values = snapshot.get_mut(&key).expect("deletion validated above");
+            let index = values
+                .iter()
+                .position(|candidate| candidate == tuple)
+                .expect("deletion validated above");
+            values.remove(index);
+            if values.is_empty() {
+                snapshot.remove(&key);
+            }
+        }
+        for tuple in inserts {
+            snapshot.entry(tuple.key()).or_default().push(tuple.clone());
+        }
         Ok(())
     }
 
@@ -630,12 +718,7 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
         if tuple.tenant() != tenant {
-            return Box::pin(async {
-                Err(StoreError::new(
-                    StoreErrorKind::InvalidInput,
-                    "relationship tuple tenant does not match write tenant",
-                ))
-            });
+            return Box::pin(async { Err(write_tenant_mismatch()) });
         }
         if let Err(error) = tuple.validate_condition_context_limits() {
             return Box::pin(async move { Err(error) });
@@ -650,16 +733,27 @@ impl RelationshipWriteStore for InMemoryRelationshipStore {
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<bool, StoreError>> {
         if tuple.tenant() != tenant {
-            return Box::pin(async {
-                Err(StoreError::new(
-                    StoreErrorKind::InvalidInput,
-                    "relationship tuple tenant does not match write tenant",
-                ))
-            });
+            return Box::pin(async { Err(write_tenant_mismatch()) });
         }
         if let Err(error) = tuple.validate_condition_context_limits() {
             return Box::pin(async move { Err(error) });
         }
         Box::pin(async move { self.remove(tuple) })
     }
+
+    fn apply_changes<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        inserts: &'a [RelationshipTuple],
+        deletes: &'a [RelationshipTuple],
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move { self.apply(tenant, inserts, deletes) })
+    }
+}
+
+fn write_tenant_mismatch() -> StoreError {
+    StoreError::new(
+        StoreErrorKind::InvalidInput,
+        "relationship tuple tenant does not match write tenant",
+    )
 }

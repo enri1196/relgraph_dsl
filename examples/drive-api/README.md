@@ -170,6 +170,9 @@ sequenceDiagram
 - [`src/auth.rs`](src/auth.rs) supplies trusted identities.
 - [`src/drive.rs`](src/drive.rs) owns metadata, relationship tuples, and exact
   share removal. It compiles the model at startup and uses default check limits.
+  It writes tuples only through Relgraph's model-validating `write_tuple`,
+  `delete_tuple`, and `apply_changes`; an item's owner and parent tuples are
+  written atomically in one change set.
 - [`src/api.rs`](src/api.rs) maps domain operations to fixed capabilities,
   validates input, and checks revisions.
 - [`src/error.rs`](src/error.rs) maps errors to safe HTTP responses.

@@ -263,9 +263,15 @@ operator and the other branch results. A propagated store failure is an
 authorization error, while an exhausted evaluation tuple limit remains an
 evaluation-limit error.
 
-An insert or removal may have reached PostgreSQL even when the client observes
-a transport failure or its future is cancelled. The caller then cannot infer
-whether the write committed from that error alone. This adapter does not retry
+`apply_changes` runs every deletion (each locked and verified like a single
+removal) and then every insertion in one transaction. A missing deletion
+returns `Conflict` and a duplicate insertion returns `Conflict`; either error
+rolls the transaction back, so later read sessions observe the whole change set
+or none of it.
+
+An insert, removal, or change set may have reached PostgreSQL even when the
+client observes a transport failure or its future is cancelled. The caller then
+cannot infer whether the write committed from that error alone. This adapter does not retry
 writes automatically and does not provide an idempotency key. Reconcile an
 uncertain outcome through application-specific read/operation tracking before
 retrying; do not assume a failed response means no mutation occurred.

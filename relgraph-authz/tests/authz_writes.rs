@@ -111,3 +111,41 @@ fn tenant_mismatch_and_duplicates_are_store_errors() {
         Err(WriteError::Store(error)) if error.kind() == StoreErrorKind::Conflict
     ));
 }
+
+#[test]
+fn validating_change_sets_apply_atomically() {
+    let (store, authz) = authorizer();
+    let anne = document_tuple("owner", "user", "anne");
+    let bob = document_tuple("viewer", "user", "bob");
+
+    block_on(authz.apply_changes(&tenant("tenant-a"), &[anne.clone(), bob.clone()], &[])).unwrap();
+    assert_eq!(check(&authz, "anne"), AuthorizationDecision::Allow);
+    assert_eq!(check(&authz, "bob"), AuthorizationDecision::Allow);
+
+    // One invalid tuple rejects the whole change set before the store sees it.
+    let carol = document_tuple("viewer", "user", "carol");
+    let invalid = document_tuple("owner", "document", "7");
+    assert!(matches!(
+        block_on(authz.apply_changes(
+            &tenant("tenant-a"),
+            &[carol.clone(), invalid],
+            std::slice::from_ref(&bob)
+        )),
+        Err(WriteError::Validation(_))
+    ));
+    assert_eq!(stored(&store, "viewer"), std::slice::from_ref(&bob));
+
+    // A store conflict also leaves earlier changes in the set unapplied.
+    assert!(matches!(
+        block_on(authz.apply_changes(&tenant("tenant-a"), &[carol.clone(), anne.clone()], std::slice::from_ref(&bob))),
+        Err(WriteError::Store(error)) if error.kind() == StoreErrorKind::Conflict
+    ));
+    assert_eq!(stored(&store, "viewer"), std::slice::from_ref(&bob));
+    assert_eq!(check(&authz, "carol"), AuthorizationDecision::Deny);
+
+    block_on(authz.apply_changes(&tenant("tenant-a"), std::slice::from_ref(&carol), &[bob]))
+        .unwrap();
+    assert_eq!(stored(&store, "viewer"), [carol]);
+    assert_eq!(check(&authz, "bob"), AuthorizationDecision::Deny);
+    assert_eq!(check(&authz, "carol"), AuthorizationDecision::Allow);
+}

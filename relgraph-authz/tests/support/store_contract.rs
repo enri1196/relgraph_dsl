@@ -18,6 +18,7 @@ where
     complete_reads_and_pages(&store).await;
     strict_writes_and_context_identity(&store).await;
     subject_variants_round_trip(&store).await;
+    change_sets_are_atomic(&store).await;
     snapshots_are_fixed_before_the_first_read(&store).await;
     evaluation_limits_are_enforced(&store).await;
     evaluator_uses_backend_tuples_and_propagates_errors(store).await;
@@ -296,6 +297,145 @@ where
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+async fn change_sets_are_atomic<S>(store: &S)
+where
+    S: RelationshipStore + RelationshipWriteStore,
+{
+    let tenant_a = tenant("contract-changes");
+    let document = object("document", "change-contract");
+    let viewer = relation("viewer");
+    let user_tuple = |id: &str| {
+        tuple(
+            "contract-changes",
+            "document",
+            "change-contract",
+            "viewer",
+            subject("user", id),
+        )
+    };
+    let granted = |enabled: bool| {
+        conditional_tuple(
+            "contract-changes",
+            "document",
+            "change-contract",
+            "viewer",
+            subject("user", "dana"),
+            "grant",
+            BTreeMap::from([("enabled".to_owned(), json!(enabled))]),
+        )
+    };
+    let (anne, bob, carol) = (user_tuple("anne"), user_tuple("bob"), user_tuple("carol"));
+
+    store.apply_changes(&tenant_a, &[], &[]).await.unwrap();
+    let before = store.begin_read(&tenant_a).await.unwrap();
+    store
+        .apply_changes(&tenant_a, &[anne.clone(), bob.clone()], &[])
+        .await
+        .unwrap();
+    assert!(
+        before
+            .tuples(&document, &viewer, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let after_insert = store.begin_read(&tenant_a).await.unwrap();
+    assert_eq!(
+        after_insert.tuples(&document, &viewer, 100).await.unwrap(),
+        [anne.clone(), bob.clone()]
+    );
+
+    // Every rejected change set leaves the store unchanged.
+    let foreign = tuple(
+        "contract-changes-other",
+        "document",
+        "change-contract",
+        "viewer",
+        subject("user", "erin"),
+    );
+    for (inserts, deletes, expected) in [
+        (
+            vec![carol.clone(), foreign.clone()],
+            vec![],
+            StoreErrorKind::InvalidInput,
+        ),
+        (
+            vec![carol.clone()],
+            vec![foreign.clone()],
+            StoreErrorKind::InvalidInput,
+        ),
+        (
+            vec![carol.clone(), anne.clone()],
+            vec![],
+            StoreErrorKind::Conflict,
+        ),
+        (
+            vec![carol.clone(), carol.clone()],
+            vec![],
+            StoreErrorKind::Conflict,
+        ),
+        (
+            vec![carol.clone()],
+            vec![user_tuple("missing")],
+            StoreErrorKind::Conflict,
+        ),
+        (
+            vec![carol.clone()],
+            vec![anne.clone(), anne.clone()],
+            StoreErrorKind::Conflict,
+        ),
+        (
+            vec![carol.clone()],
+            vec![granted(true)],
+            StoreErrorKind::Conflict,
+        ),
+    ] {
+        assert_store_error(
+            store.apply_changes(&tenant_a, &inserts, &deletes).await,
+            expected,
+        );
+        let session = store.begin_read(&tenant_a).await.unwrap();
+        assert_eq!(
+            session.tuples(&document, &viewer, 100).await.unwrap(),
+            [anne.clone(), bob.clone()]
+        );
+    }
+
+    // Deletions apply before insertions, so one call can replace a tuple's
+    // condition context or remove and restore the same tuple.
+    store
+        .apply_changes(
+            &tenant_a,
+            &[granted(true), carol.clone()],
+            std::slice::from_ref(&bob),
+        )
+        .await
+        .unwrap();
+    store
+        .apply_changes(
+            &tenant_a,
+            &[granted(false), anne.clone()],
+            &[granted(true), anne.clone()],
+        )
+        .await
+        .unwrap();
+    let session = store.begin_read(&tenant_a).await.unwrap();
+    let mut current = session.tuples(&document, &viewer, 100).await.unwrap();
+    let expected = [carol.clone(), granted(false), anne.clone()];
+    assert_eq!(current.len(), expected.len());
+    for tuple in &expected {
+        let index = current
+            .iter()
+            .position(|candidate| candidate == tuple)
+            .unwrap_or_else(|| panic!("{tuple:?} should be stored"));
+        current.remove(index);
+    }
+    assert_eq!(
+        after_insert.tuples(&document, &viewer, 100).await.unwrap(),
+        [anne, bob]
     );
 }
 
@@ -809,6 +949,15 @@ where
         tuple: &'a RelationshipTuple,
     ) -> StoreFuture<'a, Result<bool, StoreError>> {
         self.0.as_ref().remove_tuple(tenant, tuple)
+    }
+
+    fn apply_changes<'a>(
+        &'a self,
+        tenant: &'a TenantId,
+        inserts: &'a [RelationshipTuple],
+        deletes: &'a [RelationshipTuple],
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        self.0.as_ref().apply_changes(tenant, inserts, deletes)
     }
 }
 

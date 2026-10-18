@@ -207,7 +207,7 @@ fixtures; truncation is explicit.
 
 ---
 
-## Task 3 — Model-aware writes [PROGRESS]
+## Task 3 — Model-aware writes [DONE]
 
 `FgaAuthz::validate_tuple` is done (`76c4312`). Remaining work wires it into
 writes and fixes write error categories.
@@ -233,16 +233,17 @@ writes and fixes write error categories.
 
 ### 3.3 Atomic multi-tuple changes
 
-- [ ] Add `RelationshipWriteStore::apply_changes(&tenant, inserts, deletes)`,
+- [x] Add `RelationshipWriteStore::apply_changes(&tenant, inserts, deletes)`,
   applied atomically (single snapshot publish in memory, single transaction in
   Postgres). Pre-1.0: make it a required method rather than a default shim.
-- [ ] Add the validating `FgaAuthz::apply_changes` counterpart.
-- [ ] Replace the manual rollback in `examples/drive-api/src/drive.rs::add_item`.
+- [x] Add the validating `FgaAuthz::apply_changes` counterpart.
+- [x] Replace the manual rollback in `examples/drive-api/src/drive.rs::add_item`.
 
 ### 3.4 Read-time drift policy
 
-- [ ] **Decision:** what checks do with stored tuples that no longer fit the
-  model after a model change. Recommendation: keep reads strict (fail closed),
+- [x] **Decision:** what checks do with stored tuples that no longer fit the
+  model after a model change. **Decided 2026-10-18: strict reads (the
+  recommendation).** No read-path change; `find_invalid_tuples` stays in 5B. Recommendation: keep reads strict (fail closed),
   and add an audit helper in 5B (`find_invalid_tuples`) that runs
   `validate_tuple` over stored tuples so operators can repair data before
   switching models. Skipping invalid tuples like OpenFGA can grant access when a
@@ -364,3 +365,27 @@ subject and list the tuples that fail validation against a candidate model.
 ## Execution record
 
 Record commands, results, and blockers here per task.
+
+### Task 3 (2026-10-18)
+
+- Commits: 3.1 write error kinds, 3.2 validating `write_tuple` /
+  `delete_tuple` with `WriteError`, 3.3 atomic `apply_changes` in both stores
+  plus the validating wrapper and drive example.
+- Semantics chosen for `apply_changes`: deletions run before insertions; a
+  missing deletion or duplicate insertion (including repeats within one call)
+  is `Conflict` and applies nothing; delete-then-insert of one tuple in a call
+  replaces its condition context. No batch-size cap was added.
+- `delete_tuple` validates against the model as specified, so repairing a
+  drifted tuple goes through the store directly (documented in the README).
+- Validation: `cargo fmt --all -- --check` clean; `cargo clippy --workspace
+  --all-targets --all-features` zero warnings; `cargo test --workspace
+  --all-targets --all-features` 198 passed, 12 ignored (live PostgreSQL);
+  `cargo test --workspace --doc --all-features` 6 passed; `cargo test -p
+  relgraph-authz` 107 passed; drive example smoke-tested over HTTP (share,
+  duplicate share 409, revoke, atomic item creation).
+- Live PostgreSQL: the configured `OPENFGA_POSTGRES_TEST_URL` server is 13.23,
+  below the tests' 14 minimum. A disposable PostgreSQL 14.23 cluster on
+  127.0.0.1:55432 ran `cargo test -p relgraph-authz-postgres --test postgres --
+  --ignored`: 11 passed, including the shared contract's change-set cases.
+- No compatibility surface changed; the differential harness was not needed
+  (Docker is also unavailable on this machine).

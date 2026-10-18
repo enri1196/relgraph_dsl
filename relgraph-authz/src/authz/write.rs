@@ -73,6 +73,28 @@ impl<S: RelationshipWriteStore> FgaAuthz<Bound<S>> {
             .map_err(WriteError::Store)
     }
 
+    /// Validates every tuple for `tenant` against this model, then applies the
+    /// deletions and insertions atomically through
+    /// [`RelationshipWriteStore::apply_changes`].
+    ///
+    /// Nothing reaches the store unless every tuple passes validation, and the
+    /// store applies all changes or none.
+    pub async fn apply_changes(
+        &self,
+        tenant: &TenantId,
+        inserts: &[RelationshipTuple],
+        deletes: &[RelationshipTuple],
+    ) -> Result<(), WriteError> {
+        for tuple in deletes.iter().chain(inserts) {
+            self.validate_write(tenant, tuple)?;
+        }
+        self.state
+            .store
+            .apply_changes(tenant, inserts, deletes)
+            .await
+            .map_err(WriteError::Store)
+    }
+
     fn validate_write(
         &self,
         tenant: &TenantId,
