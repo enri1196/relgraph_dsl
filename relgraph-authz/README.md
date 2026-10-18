@@ -414,6 +414,41 @@ extension functions, and comprehension macros are rejected during model
 construction. Parser support for a syntax form does not imply that the local
 authorization runtime can execute it.
 
+## Permanent differences from OpenFGA
+
+These differences are deliberate and are not planned to change. Each one is a
+`task: permanent` entry in the Check corpus skip list
+([`tests/fixtures/authz/upstream-skip.yaml`](tests/fixtures/authz/upstream-skip.yaml));
+the [fixtures README](tests/fixtures/authz/README.md#upstream-check-corpora)
+gives the measured case counts at OpenFGA `v1.21.0`.
+
+- **Negation cycles.** Construction rejects a dependency cycle through the
+  subtracted operand of `but not` (`RuntimeCapability::RecursiveDifference`),
+  which OpenFGA accepts when the cycle crosses a userset or tuple-to-userset
+  hop. The evaluator's least-fixed-point memoization is sound only because
+  such cycles never reach it (see
+  [Supported runtime profile](#supported-runtime-profile)). Corpus impact:
+  three models and their checks (15 cases).
+- **Inline condition expressions.** A restriction such as
+  `define editor: [user with $expression]` takes its CEL expression and
+  parameter declarations from each tuple's condition context. The DSL parser
+  accepts the syntax, but runtime construction rejects it
+  (`RuntimeCapability::InlineConditionExpression`): Relgraph compiles and
+  type-checks every condition once, from the model, and does not treat stored
+  tuple data as code. Corpus impact: nine ABAC models and their checks (51
+  cases).
+- **Strict reads of tuples that no longer fit the model.** When a stored tuple
+  stops matching the current model (its type restriction, condition or
+  tupleset target was removed), OpenFGA silently ignores it during Check;
+  Relgraph reports `AuthorizationError::InvalidTuple`, so drift is visible
+  instead of changing decisions. Repair goes through the store directly.
+  Corpus impact: 24 checks in multi-stage tests that change the model after
+  writing tuples.
+
+Two smaller deliberate differences have no corpus case: contextual tuples are
+checked against the request tenant and an exact repeat is rejected (see
+[Contextual tuples](#contextual-tuples)).
+
 ## Feature checks
 
 The parser crate has no authorization, Axum, or CEL runtime dependency. The
