@@ -442,8 +442,9 @@ impl EvaluationLimits {
     pub const DEFAULT_MAX_TUPLES_SCANNED: usize = 10_000;
     /// Largest tuple scan limit accepted by the runtime.
     pub const MAX_TUPLES_SCANNED: usize = 100_000;
-    /// Default number of relation-to-relation traversal steps.
-    pub const DEFAULT_MAX_RELATION_DEPTH: usize = 64;
+    /// Default number of relation-to-relation traversal steps, matching
+    /// OpenFGA's default resolve depth.
+    pub const DEFAULT_MAX_RELATION_DEPTH: usize = 25;
     /// Largest relation depth accepted by the runtime.
     pub const MAX_RELATION_DEPTH: usize = 256;
     /// Default maximum number of relationship-store page reads.

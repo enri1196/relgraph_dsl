@@ -253,8 +253,8 @@ not scan later pages as an integrity check. This behavior makes no
 upstream-equivalence claim for malformed custom-store results. The protected
 handler runs only after an allow.
 
-`EvaluationLimits::default()` bounds each check to 10,000 tuples scanned, 64
-relation traversal steps, 1,024 store page reads, and 100,000 expression/tuple
+`EvaluationLimits::default()` bounds each check to 10,000 tuples scanned, 25
+relation traversal steps (OpenFGA's default resolve depth), 1,024 store page reads, and 100,000 expression/tuple
 work units, and bounds each condition evaluation to an estimated CEL cost of
 100. Applications can configure these limits when binding a store; the
 condition-cost limit can be raised up to 100,000. A condition's estimated cost

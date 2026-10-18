@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use relgraph_authz::{
-    AuthorizationDecision, CheckRequest, ConditionContext, EvaluationLimits, FgaAuthz,
-    InMemoryRelationshipStore, ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
-    TupleSubject, TypeName,
+    AuthorizationDecision, CheckRequest, ConditionContext, ConstructionError, EvaluationLimits,
+    FgaAuthz, InMemoryRelationshipStore, ObjectRef, RelationName, RelationshipTuple, Subject,
+    TenantId, TupleSubject, TypeName,
 };
 use serde_json::{Value, json};
 
@@ -142,6 +142,7 @@ async fn checked_in_openfga_cases_match_the_offline_runtime() {
         "relationships.json",
         "conditions.json",
         "branch_errors.json",
+        "recursion.json",
     ] {
         let fixture = read_json(fixture_file);
         assert_eq!(fixture["server"]["version"], "v1.21.0");
@@ -191,6 +192,37 @@ async fn checked_in_openfga_cases_match_the_offline_runtime() {
                 );
             }
         }
+    }
+}
+
+/// Recorded OpenFGA model acceptance for cycle shapes the local runtime rejects.
+///
+/// Server decisions on accepted models are checked only by the differential
+/// runner; locally every listed model must fail construction with exactly the
+/// recorded capability diagnostics.
+#[test]
+fn checked_in_cyclic_models_are_rejected_with_their_recorded_capabilities() {
+    let fixture = read_json("recursion_models.json");
+    assert_eq!(fixture["server"]["version"], "v1.21.0");
+    for entry in fixture["models"].as_array().expect("fixture models") {
+        let id = entry["id"].as_str().expect("model id");
+        let definition = entry["definition"].as_str().expect("model definition");
+        let Err(ConstructionError::UnsupportedCapabilities(diagnostics)) =
+            FgaAuthz::new(definition)
+        else {
+            panic!("{id}: expected unsupported-capability diagnostics");
+        };
+        let actual = diagnostics
+            .iter()
+            .map(|diagnostic| format!("{:?}", diagnostic.capability))
+            .collect::<Vec<_>>();
+        let expected = entry["local_capabilities"]
+            .as_array()
+            .expect("local capabilities")
+            .iter()
+            .map(|capability| capability.as_str().expect("capability name").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{id}");
     }
 }
 

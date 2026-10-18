@@ -52,7 +52,7 @@ Tasks 1, 2A, 3, and 4 are independent and can run in parallel. 2B depends on
 
 ---
 
-## Task 1 — Recursive models [TODO]
+## Task 1 — Recursive models [DONE]
 
 Goal: accept models whose relation dependencies are cyclic through monotone
 operators (union, intersection, direct userset assignment, tuple-to-userset),
@@ -61,60 +61,68 @@ nested groups and same-type hierarchies.
 
 ### 1.1 Pin the target semantics (no production code)
 
-- [ ] Write differential cases for: nested groups (`member: [user, group#member]`),
+- [x] Write differential cases for: nested groups (`member: [user, group#member]`),
   folder hierarchies (`viewer: [user] or viewer from parent`, `parent: [folder]`),
   mutual recursion across two types, a data cycle (group A in B in A) for a
   non-member, recursion combined with a condition, recursion under intersection,
   and a cycle through the subtracted operand of `but not`.
-- [ ] Run them against OpenFGA v1.21.0 and record, per case, the decision or the
+- [x] Run them against OpenFGA v1.21.0 and record, per case, the decision or the
   model-write/check error. Expected: data cycles return deny, not an error.
-- [ ] **Decision:** which cyclic shapes to accept. Recommendation: accept cycles
+- [x] **Decision:** which cyclic shapes to accept. Recommendation: accept cycles
   through union, intersection, userset assignment, and tuple-to-userset; reject
   at construction any cycle that passes through the subtracted operand of a
   difference, because assume-false evaluation is unsound under negation. Match
-  OpenFGA wherever it accepts a shape we also accept.
+  OpenFGA wherever it accepts a shape we also accept. **Decided 2026-10-18:
+  match OpenFGA and reject negation.** OpenFGA v1.21.0 also rejects same-object
+  cycles made only of computed usersets (`a: b or x`, `b: a or y`), so those
+  are rejected too (`SameObjectRelationCycle`). Cycles through a subtracted
+  operand are rejected (`RecursiveDifference`) even where OpenFGA accepts them
+  through tuple-to-userset or userset hops, because it then answers data cycles
+  inconsistently.
 
 ### 1.2 Construction: classify cycles instead of rejecting them
 
-- [ ] Change `recursive_dependencies` / `collect_relation_edges` to label each
+- [x] Change `recursive_dependencies` / `collect_relation_edges` to label each
   edge with its polarity (positive, or subtracted operand of a difference).
-- [ ] Report a diagnostic only for cycles containing a subtracted edge (or the
+- [x] Report a diagnostic only for cycles containing a subtracted edge (or the
   shapes rejected in 1.1). Keep the existing `CapabilityDiagnostic` type and
   add a `RuntimeCapability` variant naming the rejected shape.
-- [ ] Tests in `relgraph-authz/tests/authz_model.rs`: the accepted shapes from
+- [x] Tests in `relgraph-authz/tests/authz_model.rs`: the accepted shapes from
   1.1 construct; each rejected shape returns the new diagnostic with its
   relation location and span.
 
 ### 1.3 Evaluator: least-fixed-point traversal
 
-- [ ] Reintroduce in-flight tracking as `HashMap<EvaluationKey, usize>` mapping
+- [x] Reintroduce in-flight tracking as `HashMap<EvaluationKey, usize>` mapping
   each in-flight key to its stack position.
-- [ ] Reaching an in-flight key returns a provisional `Ok(false)` and records
+- [x] Reaching an in-flight key returns a provisional `Ok(false)` and records
   the lowest stack position reached (the frame's "cycle floor") on the caller.
-- [ ] Memoization rules: always memoize `true` (sound for monotone operators);
+- [x] Memoization rules: always memoize `true` (sound for monotone operators);
   memoize `false` only when the frame's cycle floor is not below its own stack
   position; never memoize errors. Propagate the floor up through
   `evaluate_expression` results (return a small struct instead of `bool`).
-- [ ] Keep the three-valued union, intersection, and difference rules unchanged
+- [x] Keep the three-valued union, intersection, and difference rules unchanged
   for non-provisional results.
-- [ ] Unit test the soundness case the memo rules guard against: `A = B or x`,
+- [x] Unit test the soundness case the memo rules guard against: `A = B or x`,
   `B = A or y` with `x` true and `y` false must allow both A and B within one
   check.
-- [ ] Document that unmemoized provisional results can repeat work; the work
+- [x] Document that unmemoized provisional results can repeat work; the work
   budget bounds it. Add a stress test (wide nested groups) that stays inside
   default limits.
 
 ### 1.4 Limits, policy, and docs
 
-- [ ] Confirm `build_requirements` terminates on cyclic graphs (it uses a
+- [x] Confirm `build_requirements` terminates on cyclic graphs (it uses a
   visited set) and add a requirements test for a recursive model.
-- [ ] Decide whether `DEFAULT_MAX_RELATION_DEPTH` (64) should change for deep
+- [x] Decide whether `DEFAULT_MAX_RELATION_DEPTH` (64) should change for deep
   group nesting; OpenFGA's resolve depth default is 25. Recommendation: keep 64.
-- [ ] Add the 1.1 cases to `relgraph-authz/tests/fixtures/authz/relationships.json`
+  **Decided 2026-10-18: lower to 25** to match OpenFGA.
+- [x] Add the 1.1 cases to `relgraph-authz/tests/fixtures/authz/relationships.json`
   (or a new `recursion.json`) and to `authz_compatibility.rs`.
-- [ ] Update the README's supported-profile section and AGENTS.md (remove
+- [x] Update the README's supported-profile section and AGENTS.md (remove
   "recursive model dependencies are rejected", describe the cycle-floor rules).
-- [ ] Optional: let the drive example nest folders.
+- [ ] Optional: let the drive example nest folders. Not done; its README now
+  says nesting is possible in the model but the example keeps three levels.
 
 **Acceptance:** nested groups and same-type hierarchies construct and evaluate;
 a data cycle denies a non-member without error; differential cases match
@@ -389,3 +397,36 @@ Record commands, results, and blockers here per task.
   --ignored`: 11 passed, including the shared contract's change-set cases.
 - No compatibility surface changed; the differential harness was not needed
   (Docker is also unavailable on this machine).
+
+### Task 1 (2026-10-18)
+
+- 1.1: `recursion.fga` / `recursion.json` (23 cases) and `recursion_models.json`
+  (5 model-acceptance entries, 7 server checks on accepted negation models).
+  The differential runner gained model-acceptance fixtures. OpenFGA rejects the
+  implicit self tuple `group:x#member@group:x#member` at write time while the
+  local stores accept it; the self cycle is covered by local tests only, and
+  rejecting implicit tuples in `validate_tuple` is left open.
+- 1.2: dependency edges carry kind and polarity; two iterative Tarjan passes
+  replace the cycle-enumerating DFS. `RuntimeCapability::RecursiveRelationDependency`
+  was replaced by `RecursiveDifference` and `SameObjectRelationCycle`
+  (pre-1.0 break).
+- 1.3 deviations from the plan text: the low link (cycle floor) is an evaluator
+  field saved and restored per relation frame instead of a struct returned from
+  `evaluate_expression`. Evaluation is sequential, so the two are equivalent. It
+  uses monotonically increasing DFS indices rather than stack positions, so a
+  position is never reused by a sibling frame. A `false` cycle root memoizes its
+  whole unresolved suffix (Tarjan component), not only itself. Without that, a
+  check that reaches a dense group cycle from outside repeats the traversal per
+  entry. `dense_group_cycles_resolve_once_per_check` and the open-cycle
+  soundness test were each confirmed to fail under the corresponding
+  evaluator mutation.
+- 1.4: `DEFAULT_MAX_RELATION_DEPTH` is 25; `build_requirements` already
+  terminated through its visited set (test added); the drive example still has
+  fixed nesting.
+- Validation: `cargo fmt --all -- --check` clean; `cargo clippy --workspace
+  --all-targets --all-features` zero warnings; `cargo test --workspace
+  --all-targets --all-features` 208 passed, 12 ignored (live PostgreSQL, not
+  run: no store code changed); `cargo test --workspace --doc --all-features` 6
+  passed; `cargo test -p relgraph-authz` 117 passed; `python3
+  relgraph-authz/tools/openfga-differential.py` passed 52 cases against
+  OpenFGA v1.21.0 (`ab557c5`, digest `sha256:2113c664…` on linux/arm64).

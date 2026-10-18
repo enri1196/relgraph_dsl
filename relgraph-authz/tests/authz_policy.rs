@@ -102,6 +102,26 @@ fn requirements_preserve_branches_and_resolve_group_and_inherited_relations() {
 }
 
 #[test]
+fn requirements_visit_each_relation_of_a_recursive_model_once() {
+    let definition = "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user, group#member]\ntype folder\n  relations\n    define parent: [folder]\n    define viewer: [user, group#member] or viewer from parent\n";
+    let model = FgaAuthz::new(definition).unwrap();
+    let requirements = model.requirements("folder", "viewer").unwrap();
+
+    assert_eq!(
+        requirements.relations().keys().cloned().collect::<Vec<_>>(),
+        [
+            RelationKey::new("folder", "parent"),
+            RelationKey::new("folder", "viewer"),
+            RelationKey::new("group", "member"),
+        ]
+    );
+    assert_eq!(
+        requirements.candidate_subject_types(),
+        BTreeSet::from(["folder".to_owned(), "group".to_owned(), "user".to_owned()])
+    );
+}
+
+#[test]
 fn registration_rejects_unknown_relations_and_invalid_context_bindings() {
     let model = FgaAuthz::new(POLICY_MODEL).unwrap();
     assert_eq!(
