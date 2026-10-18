@@ -434,7 +434,7 @@ were unaffected. `AGENTS.md` manifest summary updated. Validation:
 all plan test commands and clippy on the DSL crate pass (live PostgreSQL tests
 not run).
 
-## Task 7 [PROGRESS]: Contextual tuples
+## Task 7 [DONE]: Contextual tuples
 
 **Depends on:** Task 4.
 
@@ -472,6 +472,42 @@ sets); wire `contextualTuples` into the Task 3 runner and remove the rule skip.
 **Acceptance:** contextual-tuple corpus cases pass or have justified entries;
 new tests green; README (authz) documents the API and trust boundary; Axum and
 no-feature builds green.
+
+Result: `CheckRequest` / `BatchCheckRequest::with_contextual_tuples` and
+`contextual_tuples()`; the tuples live in `CheckScope`, so a batch shares them
+and its memo, and different sets never share an evaluator. `ContextualTuples::prepare`
+(`evaluator.rs`) validates once per check or batch, after object/relation/
+subject-type resolution and before `begin_read` (as upstream validates the
+tuple key, then contextual tuples): at most `MAX_CONTEXTUAL_TUPLES` = 100
+(confirmed: `ContextualTupleKeys.tuple_keys` `max_items: 100` in `openfga/api`
+at the revision `v1.21.0` pins), request tenant, `CompiledModel::validate_tuple`,
+no exact repeat. Errors: `AuthorizationError::ContextualTupleLimitExceeded`,
+`InvalidContextualTuple { index, reason: ContextualTupleError::{TenantMismatch,
+Duplicate, Model(Box<AuthorizationError>)} }` (outer errors in a batch; Axum's
+catch-all maps them to 500, though no middleware path sets contextual tuples).
+`load_tuple_page` now returns tuples: a relation's contextual tuples are its
+first page (charged to tuple-scan and work budgets, not store calls), and
+stored tuples equal to one of that query's contextual tuples are dropped after
+being counted as scanned. Deliberate differences from upstream, documented:
+repeats are rejected (OpenFGA accepts them) and the tenant is checked. Tests:
+`tests/authz_contextual_tuples.rs` (12: tenant mismatch before store read,
+model-invalid tuples carrying the `validate_tuple` error, repeats, equal-to-
+stored, condition precedence and missing context, limit for check and batch,
+tuple budget, batch sharing vs individual checks, memo isolation, userset/
+tupleset/`but not` combinations) and an evaluator unit test for page order,
+dedup and accounting. Runner: `contextualTuples` are sent (invalid ones map to
+2027 via `InvalidContextualTuple`), the `contextual-tuples` rule is gone, and
+upstream's `_ctxTuples` replay is mirrored as `ctxCheck` cases (single-stage
+tests with at most 100 tuples; none exceeds it). All 9 contextual assertions
+pass; consolidated 481/1094 to 767/1380 (check 329/364, ctxCheck 280/286),
+ABAC 147/368 to 261/505 (check 123/152, ctxCheck 111/137); 2000 58/58, 2002
+2/2, 2027 14/14 across both replays; the only new skip entries are the 6
+`ctxCheck` replays of the Task 13 userset/wildcard subjects (stage entries
+cover the rest). Authz README, fixtures README and `AGENTS.md` updated.
+Validation: `cargo fmt --check`, `cargo check --workspace --all-targets
+--all-features`, clippy (workspace, all features), and all plan test commands
+pass, including `relgraph-authz` without features and with `axum` and
+`cargo test -p relgraph-authz-postgres --lib` (live PostgreSQL tests not run).
 
 ## Task 8 [TODO]: CEL route evaluation (produces Decision D1)
 
