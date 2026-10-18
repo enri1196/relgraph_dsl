@@ -102,7 +102,7 @@ test support rather than adding a shared crate.
 / `ConstructionError` variant (Check). A case with no table entry is a
 `harness-gap`, not a pass or a fail.
 
-## Task 1 [PROGRESS]: Vendor the pinned upstream corpora
+## Task 1 [DONE]: Vendor the pinned upstream corpora
 
 **Depends on:** none.
 
@@ -129,6 +129,19 @@ test support rather than adding a shared crate.
 
 **Acceptance:** files present and byte-identical to upstream; checksums
 documented; `cargo fmt` and the workspace tests unaffected.
+
+Result: the three language YAMLs are in `relgraph-dsl/tests/fixtures/openfga/upstream/`,
+and `consolidated_1_1_tests.yaml`, `abac_tests.yaml` and the openfga `LICENSE` are in
+`relgraph-authz/tests/fixtures/authz/upstream/`. Byte identity was checked
+against the GitHub Git blob IDs at the pins (`v1.21.0` resolves to
+`ab557c5592670c899de35297e7aa067015f06502`). Each directory has a
+`shasum -a 256`-format `CHECKSUMS` (the DSL one also covers the grammars and
+language `LICENSE`). A new `upstream_checksums` test in each crate recomputes
+the digests with a small SHA-256 in the test code (no new dependency) and fails
+on any unlisted file except `README.md` / `CHECKSUMS`, so later tasks must keep
+skip lists and runners outside `upstream/`. Both READMEs give source URLs.
+`cargo fmt --check`, `cargo check --workspace --all-targets --all-features` and
+all plan test commands pass (the live PostgreSQL tests were not run).
 
 ## Task 2 [TODO]: Language corpus runner (syntax, semantic, fga.mod)
 
