@@ -513,9 +513,12 @@ pass, including `relgraph-authz` without features and with `axum` and
 
 **Depends on:** Task 4.
 
-`cel-core` is pinned with `=0.5.1` and rejects `list.contains`, comprehension
-macros, `ipaddress` / `in_cidr`, `bytes`, and nested containers. This task makes
-no production change.
+`cel-core` is pinned with `=0.5.1`. It has no `ipaddress` type or `in_cidr`
+function, and no `list.contains` overload (standard CEL has none either; list
+membership is `in`). Comprehension macros, `bytes` parameters and nested
+containers are rejected by Relgraph's own construction profile
+(`inspect_expression` / `parameter_profile.rs`), not by the crate, whose
+checker and evaluator accept them. This task makes no production change.
 
 **Steps:**
 
