@@ -202,7 +202,7 @@ or type line (e.g. `schema 1.5 # a comment`) and an indented comment between
 `model` and `schema`, which the pinned corpus parses. Validation: all plan
 commands pass; `conformance` unchanged and green; clippy clean on the crate.
 
-## Task 3 [PROGRESS]: Check corpus runner
+## Task 3 [DONE]: Check corpus runner
 
 **Depends on:** Task 1.
 
@@ -234,6 +234,33 @@ Add `serde` (with `derive`) and `serde_yaml` to `relgraph-authz`'s
 **Acceptance:** `cargo test -p relgraph-authz --test upstream_check` is green
 with the skip list in place and prints per-file totals; it passes without
 features and with `--features axum`; existing authz tests unchanged.
+
+Result: `relgraph-authz/tests/upstream_check.rs`, `tests/support/skip_list.rs`
+(a copy of the DSL crate's; keep them in sync) and
+`tests/fixtures/authz/upstream-skip.yaml` added, plus a fixtures README section;
+`serde`/`serde_yaml` are dev-dependencies only. Upstream driver
+(`tests/check/check.go` at `v1.21.0`): one store per test, stages in order,
+**tuples accumulate across stages**, each stage checks against its own model;
+upstream also skips stages whose `modelgraph.New` fails and replays every
+single-stage test with its tuples as contextual tuples (`_ctxTuples`). Neither
+is replayed (the second is a candidate for Task 7). Case IDs add a
+`model::0` case per stage; a failed construction or rejected tuple write leaves
+that stage's (and, for missing tuples, later stages') checks not run.
+Baseline (`-- --nocapture`): consolidated 1094 cases, 481 pass (check 323/364,
+model 158/161, list 0/569); ABAC 368 cases, 147 pass (check 120/152, model
+27/37, list 0/179). Run error-code checks: 2000 29/29, 2002 1/1; 2027 occurs
+only with contextual tuples. `batch_check` agreed with individual checks on all
+467 replayed items. The skip list has 3 rules (`contextual-tuples` task 7,
+`list-objects-assertions` / `list-users-assertions` deferred list-API plan) and
+43 provisional case entries: 24 semantic-divergence checks where a tuple
+written under an earlier stage's model no longer fits the current one (Relgraph
+reads are strict, upstream ignores such tuples; `AGENTS.md` records strict
+reads as a maintainer decision), 3 `RecursiveDifference` stages (task 10), 9
+inline-condition stages (task 10), 1 `ipaddress` stage (task 8), and 6 userset
+or wildcard check subjects that `CheckRequest` cannot express. Check maps
+unknown types/relations to 2000, not 2021/2022 (those occur only in list
+assertions). Validation: all plan commands pass (live PostgreSQL tests not run);
+clippy clean on the crate.
 
 ## Task 4 [TODO]: Baseline classification and published pass rates
 
