@@ -3,7 +3,23 @@
 //! Parsing is a syntax operation. [`parse_fga_schema`] accepts the pinned grammar's
 //! syntax, preserves condition-expression bytes, and returns typed [`ParseError`]
 //! diagnostics with spans into the original input. It does not run semantic
-//! validation. The parser accepts numeric `major.minor` version tokens; standalone
+//! validation.
+//!
+//! `#` comments follow the OpenFGA tooling rather than the bare grammar. The
+//! tooling (`parseDSL` in `openfga/language`) blanks every line whose first
+//! non-blank character is `#` and cuts every other line at its first ` #` (a
+//! space, then `#`) before parsing. The parser accepts the same documents
+//! without rewriting the input: such comments are skipped as hidden tokens, so
+//! a comment may follow the `model`, `schema`, `module`, `type` or `relations`
+//! line, a relation definition, a restriction-list line or a condition's
+//! closing brace, and a comment line may stand wherever the grammar allows a
+//! line break outside a condition, including between `model` and `schema` and
+//! after the last declaration. The bare grammar rejects most of
+//! these positions. A `#` with no space before it (`group#member`), or after a
+//! tab, is not a comment. Inside a condition body no comment is recognized: the
+//! body keeps its exact bytes, where the tooling would also cut ` #` tails.
+//! The comment lines directly above a type, relation or condition are kept in
+//! its `comments_before`. The parser accepts numeric `major.minor` version tokens; standalone
 //! validation supports exactly `1.1` and `1.2`, while modular validation supports
 //! exactly `1.2`.
 //!

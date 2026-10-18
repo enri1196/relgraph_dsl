@@ -490,8 +490,9 @@ fn rejects_non_grammar_headers_declarations_and_rewrites() {
         "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or ([user])\n",
         "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or (([user]))\n",
         "model\nschema 1.1\ntype document\n  relations\n    define invalid: a or\n      b\n",
-        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a # not a grammar comment\n",
-        "model\nschema 1.1\ntype document\n# trailing prose\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a\t# a tab does not start a comment\n",
+        "model\nschema 1.1\ntype document\n  relations\n    define invalid: a# no space before the hash\n",
+        "model\nschema 1.1 #\tcomment\ntype document #\n  relations #\n    define invalid: [user, group #member]\n",
         "model\nschema 1.1\nmodel\nschema 1.2\n",
     ] {
         assert!(
@@ -573,4 +574,61 @@ fn manually_constructed_ast_nodes_can_omit_spans() {
         span: None,
     };
     assert_eq!(parameter.span, None);
+}
+
+#[test]
+fn hash_comments_follow_the_openfga_tooling_without_rewriting_input() {
+    // Every position the pinned language corpora exercise, plus relations,
+    // restriction lists, conditions and a final comment without a newline.
+    let source = "# file note\nmodel # header\n  # between model and schema\n  schema 1.1 # schema\n     # indented\ntype user # type\n\n# type note\n\n# second note\ntype document # type\n  # before relations\n  relations # block\n    # relation note\n    define editor: [user, # first\n      document#editor] # trailing\n\n    # spaced note\n    define viewer: [user] or editor # another\n\ncondition c(x: int) { x > 1 # kept in CEL\n} # after body\n# final";
+    let schema = parse_fga_schema(source).expect("tooling-style comments should parse");
+    assert_eq!(
+        schema.header_span,
+        Some(SourceSpan {
+            start: source.find("model").unwrap(),
+            end: source.find("1.1").unwrap() + "1.1".len(),
+        })
+    );
+    let user = &schema.type_definitions[0];
+    let user_start = source.find("type user").unwrap();
+    assert_eq!(
+        user.span,
+        Some(SourceSpan {
+            start: user_start,
+            end: user_start + "type user".len(),
+        })
+    );
+    let document = &schema.type_definitions[1];
+    assert_eq!(document.comments_before, ["type note", "second note"]);
+    assert_eq!(document.relations[0].comments_before, ["relation note"]);
+    assert_eq!(document.relations[1].comments_before, ["spaced note"]);
+    let RelationExpression::DirectAssignment(targets) =
+        &document.relations[0].definition.expression
+    else {
+        panic!("expected direct assignment");
+    };
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].relation_or_wildcard.as_deref(), Some("editor"));
+    let editor_start = source.find("define editor").unwrap();
+    let editor_end = source.find("document#editor]").unwrap() + "document#editor]".len();
+    assert_eq!(
+        document.relations[0].span,
+        Some(SourceSpan {
+            start: editor_start,
+            end: editor_end,
+        })
+    );
+    // Condition bodies keep their exact bytes: no comment is recognized there.
+    assert_eq!(
+        schema.condition_definitions[0].expression,
+        " x > 1 # kept in CEL\n"
+    );
+
+    for newline in ["\n", "\r\n", "\r"] {
+        let source = format!(
+            "model{newline}  schema 1.1 # a comment{newline}  # note{newline}type self # a comment{newline}"
+        );
+        let schema = parse_fga_schema(&source).expect("comments with any line ending");
+        assert_eq!(schema.type_definitions[0].name, "self");
+    }
 }

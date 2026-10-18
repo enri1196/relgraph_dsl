@@ -1,0 +1,10 @@
+{
+  "id": "hash-inside-rewrite",
+  "owner_task": "12",
+  "source_url": "https://github.com/openfga/language/blob/fbc62984d02fc8ff7e2a924e0b9c34193233007c/pkg/js/transformer/dsltojson.ts",
+  "production": "multiLineComment, relationDef",
+  "expected_parse": "accept",
+  "grammar_parse": "reject",
+  "evidence": "upstream-executed",
+  "notes": "The raw pinned grammar rejects a # after a rewrite (UnexpectedToken at byte 64; ANTLR runner result). The OpenFGA tooling's parseDSL cuts every line at its first ' #' before parsing, and Relgraph lexes that tail as a hidden comment, so the document parses (CONFORMANCE_PLAN.md Task 12)."
+}

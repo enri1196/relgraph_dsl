@@ -14,7 +14,12 @@ struct FixtureMetadata {
     owner_task: String,
     source_url: String,
     production: String,
+    /// Relgraph's parse outcome, checked by `parse_fga_schema`.
     expected_parse: String,
+    /// The raw pinned grammar's outcome, recorded only where it differs from
+    /// `expected_parse` (Relgraph strips `#` comments as the OpenFGA tooling
+    /// does; the ANTLR runner checks the grammar alone).
+    grammar_parse: Option<String>,
     evidence: String,
     notes: String,
     error_code: Option<String>,
@@ -127,6 +132,15 @@ fn fixtures() -> Vec<(PathBuf, FixtureMetadata)> {
                 metadata_path.display()
             );
 
+            if let Some(grammar_parse) = &metadata.grammar_parse {
+                assert!(
+                    matches!(grammar_parse.as_str(), "accept" | "reject")
+                        && grammar_parse != &metadata.expected_parse,
+                    "grammar_parse must be accept/reject and differ from expected_parse: {}",
+                    metadata_path.display()
+                );
+            }
+
             match metadata.expected_parse.as_str() {
                 "accept" => assert!(
                     metadata.error_code.is_none()
@@ -200,5 +214,61 @@ fn syntax_fixtures_match_parser_acceptance_and_diagnostics() {
             }
             _ => unreachable!("fixture metadata validated during discovery"),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrammarResult {
+    fixture_id: String,
+    accepted: bool,
+    diagnostic_count: usize,
+}
+
+/// The recorded ANTLR runner output (`tools/conformance`) must cover every
+/// fixture and agree with its raw-grammar outcome: `grammar_parse` where
+/// Relgraph deliberately differs, otherwise `expected_parse`.
+#[test]
+fn recorded_grammar_results_match_fixture_metadata() {
+    let results = fs::read_to_string(Path::new(FIXTURE_ROOT).join("upstream-results.jsonl"))
+        .expect("recorded ANTLR results should be readable");
+    let mut recorded = std::collections::BTreeMap::new();
+    for line in results.lines() {
+        let result: GrammarResult = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("invalid ANTLR result line {line:?}: {error}"));
+        assert_eq!(
+            result.accepted,
+            result.diagnostic_count == 0,
+            "inconsistent ANTLR result {line:?}"
+        );
+        assert!(
+            recorded
+                .insert(result.fixture_id.clone(), result.accepted)
+                .is_none(),
+            "duplicate ANTLR result for {}",
+            result.fixture_id
+        );
+    }
+
+    let fixtures = fixtures();
+    assert_eq!(
+        recorded.keys().collect::<BTreeSet<_>>(),
+        fixtures
+            .iter()
+            .map(|(_, metadata)| &metadata.id)
+            .collect::<BTreeSet<_>>(),
+        "ANTLR results and fixtures must name the same IDs"
+    );
+    for (_, metadata) in &fixtures {
+        let grammar = metadata
+            .grammar_parse
+            .as_deref()
+            .unwrap_or(&metadata.expected_parse);
+        assert_eq!(
+            recorded[&metadata.id],
+            grammar == "accept",
+            "fixture {} raw-grammar outcome disagrees with the recorded ANTLR result",
+            metadata.id
+        );
     }
 }

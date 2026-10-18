@@ -1,11 +1,16 @@
 # Pinned OpenFGA DSL syntax fixtures
 
-Syntax fixtures are split between `valid/` and `invalid/`. Every `.fga` file has
-same-stem JSON metadata with an ID, task owner, pinned source URL, production or
-token family, expected syntax acceptance, evidence status, and notes. Rejected
-fixtures also record the parser error code and half-open byte span. The
+Syntax fixtures are split between `valid/` and `invalid/` by Relgraph's parse
+outcome. Every `.fga` file has same-stem JSON metadata with an ID, task owner,
+pinned source URL, production or token family, expected syntax acceptance,
+evidence status, and notes. Rejected fixtures also record the parser error code
+and half-open byte span. Where the raw pinned grammar decides differently,
+`grammar_parse` records its outcome: Relgraph strips `#` comments as the
+OpenFGA tooling does (plan Task 12), so `hash-inside-rewrite` and
+`trailing-hash-prose` parse although the bare grammar rejects them. The
 conformance test checks pairs, unique IDs, metadata fields, parser acceptance,
-and rejected-fixture diagnostics.
+rejected-fixture diagnostics, and that the recorded ANTLR results agree with
+each fixture's raw-grammar outcome.
 
 The syntax target is `openfga/language` revision
 `fbc62984d02fc8ff7e2a924e0b9c34193233007c`. The grammars and upstream license
@@ -84,6 +89,11 @@ for every syntax fixture. The Task 10 audit executed **64 fixtures**: **26
 accepted** with zero diagnostics and **38 rejected**. All 64 results were
 present and each acceptance value matched its metadata. Every syntax metadata
 record is marked `upstream-executed`; none is labeled from inspection alone.
+The file was regenerated on 2026-10-18 for plan Task 12 with the same JDK and
+jar (SHA-256 verified) after two fixtures moved to `valid/`; the grammar
+results are unchanged (still 26 / 38), only the path order moved. The
+`recorded_grammar_results_match_fixture_metadata` test checks the file against
+`grammar_parse` / `expected_parse`.
 
 The parser preserves condition-body bytes and stops at the first visible
 `RBRACE` token. It does not balance braces: a nested map's first unquoted `}`
@@ -119,12 +129,12 @@ parse-listener stage (`extend` outside a module, a type extended twice in one
 file) and validates a lone `module` document standalone, which yields
 `schema-version-required`.
 
-Measured at the pinned revision (2026-10-18 after plan Task 6, `-- --nocapture`):
+Measured at the pinned revision (2026-10-18 after plan Task 12, `-- --nocapture`):
 
 | Corpus file | Cases | Pass | Upstream `skip: true` | Skip-listed | Skip-listed by reason/tag |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `dsl-syntax-validation-cases.yaml` | 81 | 78 | 0 | 3 | semantic-divergence/bug 1, semantic-divergence/deliberate 2 |
-| `dsl-semantic-validation-cases.yaml` | 93 | 77 | 7 | 9 | semantic-divergence/bug 7, semantic-divergence/deliberate 2 |
+| `dsl-syntax-validation-cases.yaml` | 81 | 79 | 0 | 2 | semantic-divergence/deliberate 2 |
+| `dsl-semantic-validation-cases.yaml` | 93 | 84 | 7 | 2 | semantic-divergence/deliberate 2 |
 | `fga-mod-transformer-cases.yaml` | 10 (9 manifests, 1 `json` output) | 9 | 0 | 1 | unsupported-feature/json-model 1 |
 
 What the skip-listed groups are:
@@ -134,11 +144,11 @@ What the skip-listed groups are:
   `this` names, unused conditions, and upstream's type and relation naming
   rules), which cleared all 40 former `unsupported-feature/validation` entries
   (37 to 77 passing semantic cases).
-- `semantic-divergence/bug` (plan Task 12): eight documents with a comment
-  after a header, schema or type line, or an indented comment between `model`
-  and `schema`. Upstream's `parseDSL` strips comment lines and ` #` comment
-  tails before running the grammar; Relgraph parses the raw text with the
-  pinned grammar and rejects them.
+- Plan Task 12 made `#` comments follow upstream's `parseDSL` (comment lines
+  and ` #` tails are hidden tokens, never inside a condition body; see the
+  crate docs), which cleared all 8 former `semantic-divergence/bug` entries
+  (comments after a header, schema or type line, and an indented comment
+  between `model` and `schema`): syntax 78 to 79, semantic 77 to 84 passing.
 - `semantic-divergence/deliberate` (permanent): a model with no type is
   rejected (`EmptyModel`, as the OpenFGA API requires at least one type
   definition; 2 cases), Relgraph also reports follow-on issues after a
@@ -153,7 +163,7 @@ What the skip-listed groups are:
   expected JSON output is not compared (Decision D3).
 
 Position and symbol matches are metrics, not gates: syntax 46/74 positions and
-40/58 symbols, semantic 2/108 positions and 43/50 symbols (Relgraph validation
+40/58 symbols, semantic 2/108 positions and 50/50 symbols (Relgraph validation
 spans cover the owning declaration). Manifest errors have no position metric,
 permanently: `serde_yaml` values carry no source positions, so a
 `ManifestError` names a field (`schema`, `contents[2]`) instead of a span.

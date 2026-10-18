@@ -49,6 +49,10 @@ pub(super) enum TokenKind {
     Whitespace,
     Newline,
     CelComment,
+    /// A hidden `#` comment that the OpenFGA tooling strips before parsing:
+    /// a line whose first non-blank character is `#`, or a ` #` tail with its
+    /// preceding horizontal whitespace. Never produced inside a condition body.
+    Comment,
     NumberFloat,
     NumberInt,
     NumberUint,
@@ -78,16 +82,43 @@ impl Token {
     }
 }
 
+/// Where the lexer is relative to a condition declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionState {
+    /// Outside any condition, or after a condition body's closing brace.
+    Outside,
+    /// Inside the parameter list (the pinned grammar's `CONDITION_DEF` mode).
+    Parameters,
+    /// After the parameter list, before the body's opening brace.
+    BeforeBody,
+    /// Inside the body, up to the first visible closing brace.
+    Body,
+}
+
 /// Tokenizes the complete original document before the parser sees any input.
+///
+/// `#` comments follow the OpenFGA tooling (`parseDSL` in `openfga/language`),
+/// which blanks every line whose first non-blank character is `#` and cuts
+/// every other line at its first ` #` before running the grammar. Relgraph
+/// does not rewrite the input: such comments become hidden [`TokenKind::Comment`]
+/// tokens with their original spans. Inside a condition body no comment is
+/// recognized, so CEL bytes are preserved exactly; elsewhere a `#` that is not
+/// a comment (for example in `group#member`) stays a visible `Hash` token.
 pub(super) fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
     let mut tokens = Vec::new();
     let mut offset = 0;
-    let mut condition_definition = false;
+    let mut condition = ConditionState::Outside;
+    // True while only horizontal whitespace precedes `offset` on its line.
+    let mut at_line_start = true;
 
     while offset < input.len() {
         let remaining = &input[offset..];
-        let candidate = if condition_definition {
+        let candidate = if condition == ConditionState::Parameters {
             lex_condition_token(remaining)
+        } else if condition != ConditionState::Body
+            && let Some(length) = hash_comment_length(remaining, at_line_start)
+        {
+            Some((length, TokenKind::Comment, true))
         } else {
             lex_default_token(remaining)
         };
@@ -117,16 +148,59 @@ pub(super) fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
 
         let end = offset + length;
         let token = Token::new(kind, offset, end, hidden);
-        if condition_definition && kind == TokenKind::RParen {
-            condition_definition = false;
-        } else if !condition_definition && kind == TokenKind::Condition {
-            condition_definition = true;
-        }
+        condition = match (condition, kind) {
+            (ConditionState::Parameters, TokenKind::RParen) => ConditionState::BeforeBody,
+            (ConditionState::Parameters, _) => ConditionState::Parameters,
+            (ConditionState::BeforeBody, TokenKind::LBrace) => ConditionState::Body,
+            (ConditionState::Body, TokenKind::RBrace) => ConditionState::Outside,
+            (ConditionState::Body, _) => ConditionState::Body,
+            (_, TokenKind::Condition) => ConditionState::Parameters,
+            (
+                ConditionState::BeforeBody,
+                TokenKind::Whitespace
+                | TokenKind::Newline
+                | TokenKind::CelComment
+                | TokenKind::Comment,
+            ) => ConditionState::BeforeBody,
+            _ => ConditionState::Outside,
+        };
+        at_line_start = match kind {
+            TokenKind::Newline => true,
+            TokenKind::Whitespace => at_line_start,
+            _ => false,
+        };
         tokens.push(token);
         offset = end;
     }
 
     Ok(tokens)
+}
+
+/// Length of a hidden `#` comment starting at `input`, if one starts here.
+///
+/// At the start of a line (only horizontal whitespace before it), a `#`
+/// begins a comment line. Elsewhere, a horizontal whitespace run whose last
+/// character is a space and that is followed by `#` begins a trailing
+/// comment, which includes that whitespace (the tooling trims it). Both run
+/// to the end of the line, excluding the line break.
+fn hash_comment_length(input: &str, at_line_start: bool) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let whitespace = bytes
+        .iter()
+        .take_while(|byte| is_horizontal_space(**byte))
+        .count();
+    if bytes.get(whitespace) != Some(&b'#') {
+        return None;
+    }
+    if !at_line_start && (whitespace == 0 || bytes[whitespace - 1] != b' ') {
+        return None;
+    }
+    Some(
+        bytes
+            .iter()
+            .position(|byte| matches!(byte, b'\n' | b'\r'))
+            .unwrap_or(bytes.len()),
+    )
 }
 
 fn lex_condition_token(input: &str) -> Option<(usize, TokenKind, bool)> {

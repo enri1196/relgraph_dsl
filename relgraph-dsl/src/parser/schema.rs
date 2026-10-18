@@ -8,7 +8,6 @@ use crate::ast::{Schema, SchemaHeader, TypeDefinition};
 use crate::diagnostics::{ParseError, ParseErrorCode, SourceSpan};
 
 fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
-    let (input, _) = skip_header_comments(input)?;
     match input.first().map(|token| token.kind) {
         Some(TokenKind::Model) => {
             let (input, model) = expect_kind(input, TokenKind::Model)?;
@@ -55,24 +54,6 @@ fn parse_header(input: TokenInput<'_>) -> Res<'_, (SchemaHeader, SourceSpan)> {
             nom::error::ErrorKind::Alt,
         ))),
     }
-}
-
-fn skip_header_comments(mut input: TokenInput<'_>) -> Res<'_, ()> {
-    while input
-        .first()
-        .is_some_and(|token| token.kind == TokenKind::Hash)
-    {
-        input = input.tail();
-        while input
-            .first()
-            .is_some_and(|token| token.kind != TokenKind::Newline)
-        {
-            input = input.tail();
-        }
-        let (rest, _) = expect_kind(input, TokenKind::Newline)?;
-        input = rest;
-    }
-    Ok((input, ()))
 }
 
 fn take_optional_whitespace(input: TokenInput<'_>) -> TokenInput<'_> {
@@ -241,6 +222,33 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
     }
 }
 
+/// Drops hidden tokens and joins line breaks separated only by `#` comment
+/// lines into one `Newline` token spanning them.
+///
+/// The OpenFGA tooling blanks comment lines before running the grammar, whose
+/// `NEWLINE` token then covers the blank lines too. The joined token keeps the
+/// original byte span, so declaration comments can still be read from it.
+fn visible_tokens(tokens: Vec<Token>) -> Vec<Token> {
+    let mut visible: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut join_newline = false;
+    for token in tokens {
+        if token.hidden {
+            join_newline &= token.kind == TokenKind::Comment;
+            continue;
+        }
+        if token.kind == TokenKind::Newline
+            && join_newline
+            && let Some(previous) = visible.last_mut()
+        {
+            previous.span.end = token.span.end;
+            continue;
+        }
+        join_newline = token.kind == TokenKind::Newline;
+        visible.push(token);
+    }
+    visible
+}
+
 /// Parses one OpenFGA DSL document into its syntax tree without static validation.
 ///
 /// Numeric `major.minor` versions are preserved as written and checked later by
@@ -257,11 +265,7 @@ fn parse_schema_internal<'a>(input: TokenInput<'a>, source: &str) -> Res<'a, Sch
 /// the token where parsing reached the limit.
 pub fn parse_fga_schema(input: &str) -> Result<Schema, ParseError> {
     let tokens = lex(input)?;
-    let visible_tokens: Vec<Token> = tokens
-        .iter()
-        .filter(|token| !token.hidden)
-        .cloned()
-        .collect();
+    let visible_tokens = visible_tokens(tokens);
     let mut parser = nom::combinator::all_consuming(|tokens| parse_schema_internal(tokens, input));
     let parse_result: IResult<_, _, Error<_>> =
         parser.parse(TokenInput::new(&visible_tokens, input));

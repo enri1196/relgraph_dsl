@@ -156,46 +156,27 @@ pub(super) fn skip_layout<'a>(mut input: TokenInput<'a>) -> Res<'a, Vec<String>>
     Ok((input, comments))
 }
 
-/// Recognizes the pinned grammar's declaration prefix: a required newline,
-/// optionally followed by one or more grammar-attached `#` comment lines and
-/// the newline that terminates that comment block.
+/// Recognizes a declaration prefix: the `Newline` token before a type,
+/// relation or condition, returning the `#` comment lines it spans.
 ///
-/// This is deliberately separate from `skip_layout`: declaration boundaries
-/// are significant, and comments are only consumed where a production allows
-/// `multiLineComment`.
+/// Comment lines are hidden tokens, and the line breaks around them are joined
+/// into this one token (see `visible_tokens`), so its source text holds the
+/// comments written directly above the declaration, separated by blank lines
+/// or not. Trailing ` #` comments of the previous line end before the token.
 pub(super) fn declaration_prefix<'a>(
     input: TokenInput<'a>,
 ) -> Option<(TokenInput<'a>, Vec<String>)> {
-    if input.first()?.kind != TokenKind::Newline {
+    let newline = input.first()?;
+    if newline.kind != TokenKind::Newline {
         return None;
     }
-
-    let mut rest = input.tail();
-    let mut comments = Vec::new();
-    while rest
-        .first()
-        .is_some_and(|token| token.kind == TokenKind::Hash)
-    {
-        rest = rest.tail();
-        let mut text = String::new();
-        while let Some(token) = rest.first() {
-            if token.kind == TokenKind::Newline {
-                break;
-            }
-            text.push_str(rest.text(token));
-            rest = rest.tail();
-        }
-        if !rest
-            .first()
-            .is_some_and(|token| token.kind == TokenKind::Newline)
-        {
-            return None;
-        }
-        comments.push(text.trim().to_string());
-        rest = rest.tail();
-    }
-
-    Some((rest, comments))
+    let comments = input
+        .text(newline)
+        .split(['\n', '\r'])
+        .filter_map(|line| line.trim_start().strip_prefix('#'))
+        .map(|comment| comment.trim().to_string())
+        .collect();
+    Some((input.tail(), comments))
 }
 
 pub(super) fn skip_horizontal_whitespace<'a>(mut input: TokenInput<'a>) -> TokenInput<'a> {

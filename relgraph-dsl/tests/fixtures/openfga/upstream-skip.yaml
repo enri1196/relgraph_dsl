@@ -8,51 +8,11 @@ entries:
   tag: deliberate
   task: permanent
   justification: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]. Both reject the duplicate type; upstream stops at it, while Relgraph also reports follow-on issues (DuplicateRelation, UnknownTuplesetRelation) from the relations of the second `account` block
-- case: dsl-semantic-validation-cases.yaml::invalid schema version with a trailing comment on the schema line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [invalid-schema]; Relgraph parse error UnexpectedToken at 1:13. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::invalid type in restriction with a trailing comment on the enclosing type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [invalid-type]; Relgraph parse error UnexpectedToken at 3:10. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::missing relation reference with a trailing comment on the type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [missing-definition]; Relgraph parse error UnexpectedToken at 6:9. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
 - case: dsl-semantic-validation-cases.yaml::model 1.1 should raise error if none of the children has such relation
   reason: semantic-divergence
   tag: deliberate
   task: permanent
   justification: upstream expects [invalid-relation-on-tupleset x4]; Relgraph validation [UnknownComputedRelation, UnknownComputedRelation]. Both reject for the same rule; upstream reports one error per tupleset target type that lacks the relation, Relgraph one per tuple-to-userset reference (diagnostic granularity only)
-- case: dsl-semantic-validation-cases.yaml::multiple missing relation references with module comments on every type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [missing-definition x2]; Relgraph parse error UnexpectedToken at 3:10. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::no entrypoint relation with a trailing comment on the enclosing type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [relation-no-entry-point]; Relgraph parse error UnexpectedToken at 3:11. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::reserved relation name with a trailing comment on the enclosing type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [reserved-relation-keywords]; Relgraph parse error UnexpectedToken at 3:10. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-semantic-validation-cases.yaml::reserved type name with a trailing comment on the type line
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream expects [reserved-type-keywords]; Relgraph parse error UnexpectedToken at 3:9. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
-- case: dsl-syntax-validation-cases.yaml::a valid model with comments should not have errors
-  reason: semantic-divergence
-  tag: bug
-  task: '12'
-  justification: 'upstream accepts; Relgraph parse error UnexpectedToken at 2:2. upstream `parseDSL` blanks lines whose first non-space character is `#` and cuts every line at ` #` before running the ANTLR grammar; Relgraph parses the raw text with the pinned grammar, which rejects a comment in this position. Users of the OpenFGA tooling write such comments, so this is a bug to decide in Task 12'
 - case: dsl-syntax-validation-cases.yaml::valid syntax (1)
   reason: semantic-divergence
   tag: deliberate
