@@ -638,7 +638,63 @@ entries `permanent` with a justification.
 
 ## Decisions
 
-- **D1 (CEL route):** _undecided_. Written by Task 8; needs maintainer approval.
+- **D1 (CEL route):** recommendation written by Task 8 (2026-10-18), below.
+  **Maintainer sign-off: pending, not recorded.** Task 9 stays blocked until
+  the maintainer records approval (or a different choice) here.
+
+  *Corpus need (Task 8 step 1).* One skip entry is CEL-related:
+  `abac_tests.yaml::nested_indirect_relation_with_condition::0`
+  (`unsupported-feature/ipaddress`), covering 7 cases (`model::0`, `check::0-2`,
+  `ctxCheck::0-2`; its 8 list assertions fall under the `list-api` rules). Its
+  condition is `user_ip.in_cidr(cidr)` with `user_ip: ipaddress`. No entry needs
+  comprehension macros, nested containers, `bytes`, `any`, `list.contains` or
+  any other CEL feature: every other ABAC condition already passes. The 9
+  `inline-condition` stages (51 cases) are a separate, permanent runtime
+  decision; `inline_expression_ipaddress_param` also uses `ipaddress` but stays
+  blocked by its inline expression under every option. The language corpora
+  need nothing (DSL validation does not compile CEL; their `ipaddress` models
+  already pass).
+
+  *OpenFGA's extension surface at `v1.21.0`* (`internal/condition/condition.go`,
+  `internal/condition/types/`): the cel-go standard library (macros included),
+  no `ext.*` libraries, plus one custom type. `ipaddress` is an opaque type
+  with `ipaddress(string)` (overload `string_to_ipaddress`), member
+  `in_cidr(string) -> bool` (`ipaddr_in_cidr`) and equality; addresses parse
+  with `netip.ParseAddr` and are unmapped (IPv4-mapped IPv6 matches IPv4), CIDRs
+  with `netip.ParsePrefix` (host bits allowed; IPv4-mapped prefixes of 96+ bits
+  are unmapped); a malformed CIDR is an evaluation error. Parameter types are
+  `any`, `bool`, `string`, `int`, `uint`, `double`, `duration`, `timestamp`,
+  `map`, `list`, `ipaddress`. The output must be `bool`; missing parameters use
+  partial evaluation (Relgraph already maps that to `MissingConditionContext`,
+  code 2000).
+
+  *Comparison* (crates.io / GitHub, checked 2026-10-18):
+
+  | Option | Newly passing corpus cases | Dependency footprint | Maintenance | Impact |
+  | --- | --- | --- | --- | --- |
+  | A. Upgrade `cel-core` | 0 | none | 0.5.1 is the latest release (8 releases 2026-01-26 to 2026-02-16, last repository commit 2026-02-16, about 3.7k downloads, MIT OR Apache-2.0); there is nothing to upgrade to | none possible |
+  | B. Switch to `cel` (cel-rust) 0.15.0 | 7, only after writing the same `ipaddress` extension (custom `Val` types exist since 0.15) | `antlr4rust` 0.6, `nom` 7 (a second `nom` beside the DSL's 8), `lazy_static`, `pastey`, `thiserror` 2, `serde`, plus optional `chrono`, `chrono-tz`, `regex`, `serde_json` | active (MIT; 18 releases, 0.15.0 on 2026-10-06 with many breaking API changes; about 4.4M downloads; reports 67% of cel-spec conformance) | no static type checker: the "CEL must compile to `bool`" rule, parameter typing and unknown-function rejection at construction would need a local checker; `conditions.rs` (AST profile walk, context conversion, cost estimate over a different AST) rewritten; README profile rewritten; churn risk from pre-1.0 breaking releases |
+  | C. `cel-cxx` 0.2.5 (cel-cpp over FFI) | 7, with an extension | C++ toolchain and cel-cpp build via `cxx`; about 4.8k downloads | single maintainer, last release 2026-07-01 | adds native build requirements to a pure-Rust library; not pursued further |
+  | D. Keep `cel-core =0.5.1`, add OpenFGA's `ipaddress` extension locally | 7 (CEL behaviour verified in a scratch prototype against the corpus values: `192.168.0.1` in `192.168.0.0/24` true, `192.168.1.0` false; IPv4-mapped and IPv6 prefixes; `in_cidr(1)` rejected by the checker; malformed CIDR is an evaluation error) | none (`std::net` parsing and masking) | Relgraph owns about 100 lines of extension code; the crate itself is quiet but unchanged | `parameter_profile.rs`: `RuntimeScalarType::IpAddress` (scalar and one-level containers); `conditions.rs`: declare `CelType::abstract_type("ipaddress")`, the two overloads with implementations (`Env::with_function` + `OverloadDecl::with_impl`), an opaque value through `MessageValue`, JSON string to address conversion in context preparation, `ipaddress` / `in_cidr` added to `supported_function`; `policy.rs`: `ContextValueType::IpAddress`, since the runtime profile is shared with route bindings; cost: each call is one AST node in the existing static estimate (no runtime cost tracking needed, as both functions are constant-time); README profile and `AGENTS.md` updated |
+
+  Not needed by the corpora and not recommended now: enabling comprehension
+  macros (cel-core can evaluate them, but its programs have no runtime cost
+  tracking or interruption, so the local static estimate could not bound them
+  over request-sized lists), nested containers, `any`, and OpenFGA cost-limit
+  parity (the corpora assert no cost limit).
+
+  *Recommendation:* option D. It unblocks the only CEL-related corpus entry
+  with no new dependency, keeps the static type checker that enforces the
+  `bool` result and parameter typing, and leaves the cost model unchanged.
+  Option A is impossible today, and option B costs a large rewrite and a
+  heavier, fast-moving dependency for the same 7 cases. Task 9 scope under D:
+  the items in row D; reject IPv6 zone identifiers (`fe80::1%eth0`), which
+  `std::net` cannot parse but Go's `netip` accepts, and document it; add a
+  hand-written authz fixture and a Docker differential fixture for
+  `ipaddress` / `in_cidr`; remove the `ipaddress` skip entry (ABAC expected
+  261 to 268 of 505). Revisit option B only if a later need (comprehension
+  macros with runtime cost limits, broader cel-spec conformance) appears and
+  cel-rust has gained a type checker.
 - **D2 (CI):** the repository has no CI today (`.github/` is absent). The corpus
   runners are plain `cargo test` targets. Whether to add a workflow that runs
   the validation commands is _undecided_; it is not part of this plan.
