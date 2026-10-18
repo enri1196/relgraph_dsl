@@ -249,15 +249,87 @@ while the batch runs is not observed by later items, and items share memoized
 relation decisions (for example a group membership or parent folder reached by
 several items) and converted request values. An item's error, including an
 unknown object type or relation, stays in that item's result; the outer error
-reports a batch larger than `max_batch_items`, an unknown subject type, or a
-failure to open the read session. Each item gets fresh tuple, store-call, and
+reports a batch larger than `max_batch_items`, an unknown subject type, invalid
+contextual tuples, or a failure to open the read session. Each item gets fresh tuple, store-call, and
 work budgets. A memoized decision spends no budget, so an item can succeed in a
 batch where a separate check would exceed a limit. `max_batch_items` defaults
 to 100 and accepts up to 1,000. `filter_objects(tenant, subject, relation,
-candidates)` runs one batch without request context and returns the allowed
+candidates)` runs one batch without request context or contextual tuples and
+returns the allowed
 candidates and per-candidate errors separately; candidates may mix object types
 that define the relation. A durable store may hold one connection and
 transaction for the whole batch.
+
+## Contextual tuples
+
+`CheckRequest::with_contextual_tuples` and
+`BatchCheckRequest::with_contextual_tuples` add relationship tuples that exist
+only for that check or batch, like OpenFGA's `contextual_tuples`. They are
+read together with the stored tuples of the request's tenant snapshot and are
+never written. The same example is compile-checked in the
+`CheckRequest::with_contextual_tuples` documentation:
+
+```rust,no_run
+use relgraph_authz::{
+    CheckRequest, EvaluationLimits, FgaAuthz, InMemoryRelationshipStore,
+    ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let authorizer = FgaAuthz::new(
+    "model\n  schema 1.1\ntype user\ntype group\n  relations\n    define member: [user]\ntype document\n  relations\n    define viewer: [group#member]\n",
+)?
+.with_store(InMemoryRelationshipStore::new(), EvaluationLimits::default());
+let tenant = TenantId::new("acme")?;
+let anne = Subject::new("user", "anne")?;
+// Membership asserted by the application for this check only, for example
+// from the authenticated user's verified identity-provider groups.
+let membership = RelationshipTuple::new(
+    tenant.clone(),
+    ObjectRef::new("group", "eng")?,
+    RelationName::new("member")?,
+    anne.clone(),
+);
+let request = CheckRequest::new(
+    tenant,
+    anne,
+    ObjectRef::new("document", "42")?,
+    RelationName::new("viewer")?,
+)
+.with_contextual_tuples([membership]);
+let _decision = authorizer.check(request).await?;
+# Ok(())
+# }
+```
+
+**Trust boundary.** Contextual tuples are facts the caller asserts, with the
+same authority as a stored tuple: whoever controls them controls the decision.
+Build them only from trusted application state, never directly from
+unauthenticated request input. The Axum middleware and `RoutePolicy` have no
+way to fill them from an HTTP request (no `ContextBinding` source exists for
+them), and `filter_objects` never carries any; an application that needs them
+calls `check` or `batch_check` itself.
+
+Validation happens once per check or batch, after the request's object,
+relation and subject type are resolved and before the store is read. The whole
+request fails with `AuthorizationError::ContextualTupleLimitExceeded` for more
+than `MAX_CONTEXTUAL_TUPLES` (100, OpenFGA's limit at `v1.21.0`), or with
+`AuthorizationError::InvalidContextualTuple { index, reason }` for the first
+tuple (in request order) that names another tenant, fails
+`FgaAuthz::validate_tuple` (the error is kept in `ContextualTupleError::Model`),
+or exactly repeats an earlier contextual tuple. In a batch these are outer
+errors. OpenFGA has no tenants and accepts repeated contextual tuples; Relgraph
+rejects both.
+
+During evaluation, a relation's contextual tuples are read before its stored
+tuples, and a stored tuple equal to a contextual one (the same tenant, object,
+relation, subject and condition context) is read only once. Contextual tuples
+count toward the tuple-scan and work budgets like stored tuples but use no
+store call. A contextual tuple's condition context is tuple context: it keeps
+precedence over condition-scoped and global request context. A batch shares
+its contextual tuples, memoized decisions and converted request values across
+items; requests with different contextual tuples never share memoized
+decisions.
 
 ## Construction cost measurements
 

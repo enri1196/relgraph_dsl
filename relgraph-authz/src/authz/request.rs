@@ -459,6 +459,39 @@ impl CheckRequest {
     /// equal to a stored tuple is read once. Its condition context is tuple
     /// context, so it keeps precedence over request context, and contextual
     /// tuples count toward the tuple-scan and work budgets like stored ones.
+    ///
+    /// ```no_run
+    /// use relgraph_authz::{
+    ///     CheckRequest, EvaluationLimits, FgaAuthz, InMemoryRelationshipStore,
+    ///     ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
+    /// };
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let authorizer = FgaAuthz::new(
+    ///     "model\n  schema 1.1\ntype user\ntype group\n  relations\n    define member: [user]\ntype document\n  relations\n    define viewer: [group#member]\n",
+    /// )?
+    /// .with_store(InMemoryRelationshipStore::new(), EvaluationLimits::default());
+    /// let tenant = TenantId::new("acme")?;
+    /// let anne = Subject::new("user", "anne")?;
+    /// // Membership asserted by the application for this check only, for example
+    /// // from the authenticated user's verified identity-provider groups.
+    /// let membership = RelationshipTuple::new(
+    ///     tenant.clone(),
+    ///     ObjectRef::new("group", "eng")?,
+    ///     RelationName::new("member")?,
+    ///     anne.clone(),
+    /// );
+    /// let request = CheckRequest::new(
+    ///     tenant,
+    ///     anne,
+    ///     ObjectRef::new("document", "42")?,
+    ///     RelationName::new("viewer")?,
+    /// )
+    /// .with_contextual_tuples([membership]);
+    /// let _decision = authorizer.check(request).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_contextual_tuples(
         mut self,
         tuples: impl IntoIterator<Item = RelationshipTuple>,

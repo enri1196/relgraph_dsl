@@ -49,12 +49,15 @@ and `CHECKSUMS` together.
 corpora offline. It mirrors upstream's `tests/check/check.go` driver: one
 in-memory store per test, stages run in order with tuples accumulating across
 them, each stage's model constructed with `FgaAuthz::new` and its tuples
-written through the validating `write_tuple`. Check assertions compare
-allow/deny, or an upstream `errorCode` through the runner's error-code table;
-each stage's checks are also replayed through `batch_check`, which must agree
-with the individual checks. The runner's module docs describe case IDs and
-what is not run (contextual tuples, list assertions, userset or wildcard check
-subjects). Run with `-- --nocapture` for per-file totals.
+written through the validating `write_tuple`. Check assertions send their
+`contextualTuples` as the request's contextual tuples and compare allow/deny,
+or an upstream `errorCode` through the runner's error-code table. Like
+upstream's `_ctxTuples` run, every single-stage test is replayed a second time
+(`ctxCheck` cases) against an empty store, with the stage tuples sent as
+contextual tuples. Each stage's checks are also replayed through
+`batch_check`, which must agree with the individual checks. The runner's
+module docs describe case IDs and what is not run (list assertions, userset or
+wildcard check subjects). Run with `-- --nocapture` for per-file totals.
 
 Every case that does not pass is covered by a reviewed entry in
 [`upstream-skip.yaml`](upstream-skip.yaml); the test also fails when an entry no
@@ -64,12 +67,18 @@ longer covers a non-passing case, so the list only shrinks. Each entry has a
 differential runner, which covers only the hand-written fixtures above.
 
 Measured at `v1.21.0` (2026-10-18, `-- --nocapture`). Cases are per stage: one
-`model` case, then one case per check, `listObjects` or `listUsers` assertion.
+`model` case, then one case per check, `ctxCheck` (single-stage tests only),
+`listObjects` or `listUsers` assertion. No single-stage test has more than 100
+tuples, so no `ctxCheck` replay is skipped for the contextual tuple limit.
 
 | Corpus file | Tests / stages | Cases | Pass | Pass by kind | Skip-listed by reason/tag |
 | --- | ---: | ---: | ---: | --- | --- |
-| `consolidated_1_1_tests.yaml` | 138 / 161 | 1094 | 481 | check 323/364, model 158/161, list 0/569 | unsupported-feature/list-api 569, semantic-divergence/deliberate 34, unsupported-feature/contextual-tuples 6, unsupported-feature/userset-subject 4 |
-| `abac_tests.yaml` | 33 / 37 | 368 | 147 | check 120/152, model 27/37, list 0/179 | unsupported-feature/list-api 179, unsupported-feature/inline-condition 30, unsupported-feature/ipaddress 4, unsupported-feature/contextual-tuples 3, semantic-divergence/deliberate 3, unsupported-feature/userset-subject 2 |
+| `consolidated_1_1_tests.yaml` | 138 / 161 | 1380 | 767 | check 329/364, ctxCheck 280/286, model 158/161, list 0/569 | unsupported-feature/list-api 569, semantic-divergence/deliberate 36, unsupported-feature/userset-subject 8 |
+| `abac_tests.yaml` | 33 / 37 | 505 | 261 | check 123/152, ctxCheck 111/137, model 27/37, list 0/179 | unsupported-feature/list-api 179, unsupported-feature/inline-condition 51, unsupported-feature/ipaddress 7, semantic-divergence/deliberate 3, unsupported-feature/userset-subject 4 |
+
+Before contextual tuples (Task 7) the files had 1094 / 368 cases with 481 / 147
+passing: the 9 assertions with `contextualTuples` were skip-listed by rule and
+the `ctxCheck` replay did not exist. All 9 now pass.
 
 What the skip-listed groups are:
 
@@ -80,22 +89,25 @@ What the skip-listed groups are:
   one; upstream ignores such tuples, Relgraph reads are strict and report
   `InvalidTuple` (a recorded maintainer decision). 13 cases (3 models and
   their 10 checks) of three negation-cycle models that construction rejects
-  as `RecursiveDifference`, which the evaluator's memoization relies on.
-- `unsupported-feature/inline-condition` (permanent): 9 ABAC stages whose
-  models use inline condition expressions, which runtime construction
-  rejects; their 21 checks are not run.
-- `unsupported-feature/contextual-tuples` (rule; plan Task 7): 9 checks with
-  `contextualTuples`.
+  as `RecursiveDifference`, which the evaluator's memoization relies on, and
+  the `ctxCheck` replays of those that are single-stage tests.
+- `unsupported-feature/inline-condition` (permanent): 9 ABAC stages (all
+  single-stage tests) whose models use inline condition expressions, which
+  runtime construction rejects; their 21 checks and 21 `ctxCheck` replays are
+  not run.
 - `unsupported-feature/userset-subject` (plan Task 13): 6 checks whose subject
   is a userset (`group:x#member`) or a wildcard (`user:*`), which
-  `CheckRequest` cannot express.
+  `CheckRequest` cannot express, and their 6 `ctxCheck` replays.
 - `unsupported-feature/ipaddress` (plan Tasks 8 and 9): one ABAC stage whose
-  condition takes an `ipaddress` parameter.
+  condition takes an `ipaddress` parameter (its model, 3 checks and 3
+  `ctxCheck` replays).
 
-Error codes: every run check expecting `validation_error` (2000) passes
-(29/29), as does the one `authorization_model_resolution_too_complex` (2002)
-check. `invalid_tuple` (2027) occurs in Check assertions only together with
-contextual tuples, and 2021 / 2022 only in list assertions. The 2002 check
+Error codes (run `check` and `ctxCheck` cases together): every case expecting
+`validation_error` (2000) passes (58/58), as do the
+`authorization_model_resolution_too_complex` (2002) cases (2/2) and the
+`invalid_tuple` (2027) cases (14/14). 2027 occurs in Check assertions only
+for an invalid contextual tuple, which Relgraph reports as
+`InvalidContextualTuple`; 2021 / 2022 occur only in list assertions. The 2002 check
 needs a chain of about 27 usersets; the corpus result is unchanged for any
 relation-depth limit from 7 through 26, so the default of 25 (OpenFGA's
 resolve depth) agrees with it.
