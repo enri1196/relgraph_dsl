@@ -12,7 +12,7 @@
 //!     CheckRequest, EvaluationLimits, FgaAuthz, ObjectRef, RelationName,
 //!     RelationshipTuple, RelationshipWriteStore, Subject, TenantId,
 //! };
-//! use relgraph_authz_postgres::{MIGRATION_0001, PostgresRelationshipStore};
+//! use relgraph_authz_postgres::{MIGRATION_0001, MIGRATION_0002, PostgresRelationshipStore};
 //! use sqlx::{PgPool, postgres::{PgConnectOptions, PgPoolOptions, PgSslMode}};
 //!
 //! const MODEL: &str = r#"
@@ -26,7 +26,10 @@
 //!     define viewer: [user]
 //! "#;
 //!
-//! const MIGRATION_KEY: &str = "relgraph-authz/0001_relationship_tuples";
+//! const MIGRATIONS: [(&str, &str); 2] = [
+//!     ("relgraph-authz/0001_relationship_tuples", MIGRATION_0001),
+//!     ("relgraph-authz/0002_subject_lookup_index", MIGRATION_0002),
+//! ];
 //!
 //! fn pool(
 //!     url: &str,
@@ -84,21 +87,23 @@
 //!     .execute(&mut *transaction)
 //!     .await?;
 //!
-//!     let already_applied: bool = sqlx::query_scalar(
-//!         "SELECT EXISTS (SELECT 1 FROM app_metadata.schema_migrations WHERE migration_key = $1)",
-//!     )
-//!     .bind(MIGRATION_KEY)
-//!     .fetch_one(&mut *transaction)
-//!     .await?;
+//!     for (migration_key, migration) in MIGRATIONS {
+//!         let already_applied: bool = sqlx::query_scalar(
+//!             "SELECT EXISTS (SELECT 1 FROM app_metadata.schema_migrations WHERE migration_key = $1)",
+//!         )
+//!         .bind(migration_key)
+//!         .fetch_one(&mut *transaction)
+//!         .await?;
 //!
-//!     if !already_applied {
-//!         sqlx::raw_sql(MIGRATION_0001)
-//!             .execute(&mut *transaction)
-//!             .await?;
-//!         sqlx::query("INSERT INTO app_metadata.schema_migrations (migration_key) VALUES ($1)")
-//!             .bind(MIGRATION_KEY)
-//!             .execute(&mut *transaction)
-//!             .await?;
+//!         if !already_applied {
+//!             sqlx::raw_sql(migration)
+//!                 .execute(&mut *transaction)
+//!                 .await?;
+//!             sqlx::query("INSERT INTO app_metadata.schema_migrations (migration_key) VALUES ($1)")
+//!                 .bind(migration_key)
+//!                 .execute(&mut *transaction)
+//!                 .await?;
+//!         }
 //!     }
 //!
 //!     transaction.commit().await?;
@@ -154,10 +159,11 @@
 
 //! PostgreSQL storage components for [`relgraph_authz`].
 //!
-//! The schema supports PostgreSQL 14 and later. Apply [`MIGRATION_0001`]
-//! transactionally through the application's migration ledger before using
-//! the adapter. This migration creates the `relgraph_authz` schema queried by
-//! the adapter. Databases created by an earlier mismatched migration are not
+//! The schema supports PostgreSQL 14 and later. Apply [`MIGRATION_0001`] and
+//! then [`MIGRATION_0002`] transactionally through the application's migration
+//! ledger before using the adapter. The first creates the `relgraph_authz`
+//! schema queried by the adapter; the second adds the subject lookup index
+//! used by the list operations. Databases created by an earlier mismatched migration are not
 //! upgraded automatically. Constructing [`PostgresRelationshipStore`]
 //! performs no database I/O and does not run migrations.
 //!
@@ -179,6 +185,11 @@ use sqlx::PgPool;
 
 /// SQL schema migration for the initial relationship-tuple table.
 pub const MIGRATION_0001: &str = include_str!("../migrations/0001_relationship_tuples.sql");
+
+/// SQL schema migration adding the subject lookup index that the
+/// [`ReverseLookupSession`](relgraph_authz::ReverseLookupSession) reads (the
+/// list operations) page through. Apply it after [`MIGRATION_0001`].
+pub const MIGRATION_0002: &str = include_str!("../migrations/0002_subject_lookup_index.sql");
 
 /// A cloneable handle to the fixed PostgreSQL relationship-tuple table.
 ///
@@ -229,5 +240,25 @@ mod schema_tests {
         assert!(sql.contains("collate \"c\""));
         assert!(!sql.contains("create table if not exists"));
         assert!(!sql.contains("jsonb"));
+    }
+
+    #[test]
+    fn subject_lookup_migration_adds_one_index_matching_the_subject_query() {
+        let sql = super::MIGRATION_0002
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            sql,
+            "create index relationship_tuples_subject_lookup_idx \
+             on relgraph_authz.relationship_tuples \
+             (tenant, object_type, relation, subject_kind, subject_type, \
+             (coalesce(subject_id, '')), (coalesce(subject_relation, '')), tuple_id);"
+        );
     }
 }

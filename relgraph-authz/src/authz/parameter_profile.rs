@@ -17,6 +17,8 @@ pub(super) enum RuntimeScalarType {
     Duration,
     /// CEL timestamp.
     Timestamp,
+    /// OpenFGA's opaque `ipaddress` extension type.
+    IpAddress,
 }
 
 impl RuntimeScalarType {
@@ -30,6 +32,7 @@ impl RuntimeScalarType {
             "string" => Some(Self::String),
             "duration" => Some(Self::Duration),
             "timestamp" => Some(Self::Timestamp),
+            "ipaddress" => Some(Self::IpAddress),
             _ => None,
         }
     }
@@ -69,7 +72,7 @@ mod tests {
     use relgraph_dsl::ParameterType;
 
     use super::{RuntimeParameterType, RuntimeScalarType};
-    use crate::authz::{conditions::cel_type, policy::ContextValueType};
+    use crate::authz::{conditions::cel_type, ipaddress, policy::ContextValueType};
 
     fn scalar(name: &str) -> ParameterType {
         ParameterType::Simple(name.to_owned())
@@ -127,6 +130,12 @@ mod tests {
                 ContextValueType::Timestamp,
                 CelType::Timestamp,
             ),
+            (
+                "ipaddress",
+                RuntimeScalarType::IpAddress,
+                ContextValueType::IpAddress,
+                ipaddress::cel_type(),
+            ),
         ];
 
         for (name, scalar_kind, route_type, cel_type_expected) in scalars {
@@ -155,6 +164,18 @@ mod tests {
                 ContextValueType::Map(Box::new(ContextValueType::String)),
                 CelType::map(CelType::String, CelType::String),
             ),
+            (
+                container("list", "ipaddress"),
+                RuntimeParameterType::List(RuntimeScalarType::IpAddress),
+                ContextValueType::List(Box::new(ContextValueType::IpAddress)),
+                CelType::list(ipaddress::cel_type()),
+            ),
+            (
+                container("map", "ipaddress"),
+                RuntimeParameterType::Map(RuntimeScalarType::IpAddress),
+                ContextValueType::Map(Box::new(ContextValueType::IpAddress)),
+                CelType::map(CelType::String, ipaddress::cel_type()),
+            ),
         ];
 
         for (parameter_type, runtime_type, route_type, cel_type_expected) in containers {
@@ -173,9 +194,9 @@ mod tests {
     #[test]
     fn unsupported_parameter_shapes_stay_outside_both_runtime_profiles() {
         let unsupported = [
-            scalar("ipaddress"),
-            container("list", "ipaddress"),
-            container("map", "ipaddress"),
+            scalar("any"),
+            scalar("bytes"),
+            container("list", "any"),
             container("set", "string"),
             container("list", "list<string>"),
         ];

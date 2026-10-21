@@ -57,6 +57,10 @@ pub enum ValidationIssue {
     ReservedTypeName,
     /// A relation is named `self` or `this`.
     ReservedRelationName,
+    /// A condition is declared, or a restriction names a condition, as
+    /// `$expression`, the reserved marker of an inline condition expression
+    /// ([`RelationCondition::InlineExpression`]).
+    ReservedConditionName,
     /// A type or relation name breaks the OpenFGA naming rule: 1 to 254
     /// (type) or 1 to 50 (relation) characters, none of them `:`, `#`, `@`,
     /// `*` or whitespace.
@@ -99,6 +103,7 @@ impl ValidationIssue {
             Self::DuplicateExtension => "DuplicateExtension",
             Self::ReservedTypeName => "ReservedTypeName",
             Self::ReservedRelationName => "ReservedRelationName",
+            Self::ReservedConditionName => "ReservedConditionName",
             Self::InvalidName => "InvalidName",
             Self::DuplicateTypeRestriction => "DuplicateTypeRestriction",
             Self::DuplicateOperand => "DuplicateOperand",
@@ -512,6 +517,19 @@ impl Validator {
                         }
 
                         if let Some(RelationCondition::Named(condition)) = &target.condition
+                            && condition == INLINE_EXPRESSION_CONDITION
+                        {
+                            self.push(
+                                ValidationIssue::ReservedConditionName,
+                                owner_location.clone(),
+                                Vec::new(),
+                                format!(
+                                    "relation '{}' names the reserved inline condition marker \
+                                     '{INLINE_EXPRESSION_CONDITION}' as a named condition",
+                                    owner_relation.name
+                                ),
+                            );
+                        } else if let Some(RelationCondition::Named(condition)) = &target.condition
                             && !condition_symbols.contains_key(condition)
                         {
                             self.push(
@@ -645,7 +663,8 @@ impl Validator {
         );
     }
 
-    /// Reserved (`self`, `this`) and malformed type and relation names.
+    /// Reserved (`self`, `this`) and malformed type and relation names, and
+    /// conditions declared with the reserved name `$expression`.
     fn check_names(&mut self, schema: &Schema, origins: Option<ValidationOrigins<'_>>) {
         for (type_index, type_definition) in schema.type_definitions.iter().enumerate() {
             let type_location = declared_type_location(origins, type_index, type_definition);
@@ -694,6 +713,23 @@ impl Validator {
                         ),
                     );
                 }
+            }
+        }
+
+        for (condition_index, condition) in schema.condition_definitions.iter().enumerate() {
+            if condition.name == INLINE_EXPRESSION_CONDITION {
+                self.push(
+                    ValidationIssue::ReservedConditionName,
+                    origin_location(
+                        origins.and_then(|origins| origins.condition_origins.get(condition_index)),
+                        condition.span.as_ref(),
+                    ),
+                    Vec::new(),
+                    format!(
+                        "condition name '{INLINE_EXPRESSION_CONDITION}' is reserved for inline \
+                         condition expressions"
+                    ),
+                );
             }
         }
     }
@@ -899,6 +935,9 @@ fn origin_location(origin: Option<&SourceLocation>, span: Option<&SourceSpan>) -
 
 /// Names OpenFGA reserves for types and relations.
 const RESERVED_NAMES: &[&str] = &["self", "this"];
+/// The condition name OpenFGA reserves for inline condition expressions; the
+/// pinned lexer makes it a `DOLLAR_EXPRESSION` token, never an identifier.
+const INLINE_EXPRESSION_CONDITION: &str = "$expression";
 /// OpenFGA's type name rule is `^[^:#@\*\s]{1,254}$`.
 const MAX_TYPE_NAME_CHARS: usize = 254;
 /// OpenFGA's relation name rule is `^[^:#@\*\s]{1,50}$`.

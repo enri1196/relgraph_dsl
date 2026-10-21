@@ -3,21 +3,34 @@
 //! The runtime pins `cel-core` 0.5.1. Its checked environment supplies CEL
 //! parsing, type checking, timestamps, durations, lists, and maps. This local
 //! profile accepts bool, int, uint, double, string, duration, timestamp,
-//! `list<T>`, and `map<T>` declarations where `T` is one of those scalar types.
-//! Conditions may use CEL operators, indexing/member access, `has`, `size`,
-//! `contains`, `startsWith`, `endsWith`, `matches`, and scalar conversion/time
-//! functions (`int`, `uint`, `double`, `string`, `bytes`, `duration`,
-//! `timestamp`). Extensions, custom/message types, `ipaddress`, and comprehension
-//! macros (`all`, `exists`, `map`, `filter`, and related forms) are rejected at
-//! construction. The deterministic cost estimate below is a local upper-bound
-//! profile, not a claim to reproduce the OpenFGA server's CEL cost estimator.
+//! ipaddress, `list<T>`, and `map<T>` declarations where `T` is one of those
+//! scalar types. Conditions may use CEL operators, indexing/member access,
+//! `has`, `size`, `contains`, `startsWith`, `endsWith`, `matches`, scalar
+//! conversion/time functions (`int`, `uint`, `double`, `string`, `bytes`,
+//! `duration`, `timestamp`), and OpenFGA's `ipaddress` extension
+//! (`ipaddress(string)`, `<ipaddress>.in_cidr(string)`, address equality; see
+//! the `ipaddress` module). Other extensions, custom/message types, and
+//! comprehension macros (`all`, `exists`, `map`, `filter`, and related forms)
+//! are rejected at construction. The deterministic cost estimate below is a
+//! local upper-bound profile, not a claim to reproduce the OpenFGA server's CEL
+//! cost estimator; an `ipaddress` value is charged like its source string and
+//! each extension call like any other AST node.
+//!
+//! Inline condition expressions (`[user with $expression]`) follow OpenFGA's
+//! `internal/condition/inline.go`: each tuple stores the CEL source and its
+//! parameter types, and an identifier used without a declaration is a `string`
+//! parameter. They are compiled with the same profile, `bool` result rule and
+//! cost estimate as model conditions, when a write validates the tuple and on
+//! first use in a check or batch ([`InlineConditionCache`]). Their values come
+//! from the request only; the stored context holds no parameter values.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::ipaddress::{self, IpAddress};
 use super::parameter_profile::{RuntimeParameterType, RuntimeScalarType};
 use cel_core::types::{Expr, SpannedExpr};
 use cel_core::{CelType, Env, MapActivation, Program, Value};
-use relgraph_dsl::{ConditionDefinition, ParameterType, Schema};
+use relgraph_dsl::{ConditionDefinition, ConditionParameter, ParameterType, Schema};
 use serde_json::Value as JsonValue;
 
 use super::request::{AuthorizationError, ConditionContextSource, ConstructionError};
@@ -29,9 +42,21 @@ const STRING_BYTES_PER_COST_UNIT: usize = 10;
 /// Regex pattern bytes per CEL cost unit, after cel-go's regex length factor.
 const REGEX_PATTERN_BYTES_PER_COST_UNIT: usize = 4;
 
+/// The condition name OpenFGA reserves for an inline condition expression.
+///
+/// A tuple for a `[type with $expression]` restriction carries this name and
+/// a context holding the CEL source (`expression`) and its declared parameter
+/// types (`parameters`, name to type name). The DSL validator rejects it as a
+/// named condition, so it never collides with a model condition.
+pub(crate) const INLINE_EXPRESSION_NAME: &str = "$expression";
+const INLINE_EXPRESSION_KEY: &str = "expression";
+const INLINE_PARAMETERS_KEY: &str = "parameters";
+
 #[derive(Debug)]
 pub(crate) struct CompiledCondition {
     name: String,
+    /// Keys this condition's converted request values in [`RequestValueCache`].
+    cache_key: ConditionCacheKey,
     parameters: HashMap<String, ParameterType>,
     /// Declared parameters referenced by the expression, in sorted order.
     used_parameters: Vec<String>,
@@ -98,18 +123,50 @@ impl ContextBudget {
     }
 }
 
-/// Request values converted once per check, keyed by condition name and the
-/// index of the parameter in [`CompiledCondition::used_parameters`].
+/// Identifies one compiled condition's request-value slots.
+///
+/// Inline conditions all share the name `$expression` but differ in their
+/// parameters, so each one compiled during a check or batch gets its own key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ConditionCacheKey {
+    Named(String),
+    /// The index of the condition in its [`InlineConditionCache`].
+    Inline(usize),
+}
+
+/// Request values converted once per check, keyed by condition and the index
+/// of the parameter in [`CompiledCondition::used_parameters`].
 ///
 /// A request is immutable for the duration of a check, so each value resolves
 /// identically for every tuple that uses the condition. Conversion failures are
 /// cached as the expected-type description of the resulting error.
 #[derive(Default)]
 pub(crate) struct RequestValueCache {
-    conditions: HashMap<String, Vec<Option<Result<PreparedConditionValue, String>>>>,
+    conditions: HashMap<ConditionCacheKey, Vec<Option<Result<PreparedConditionValue, String>>>>,
 }
 
-#[derive(Debug)]
+/// The CEL source and declared parameter types an inline-condition tuple
+/// stores, which together determine its compiled condition.
+///
+/// Parameter types keep their stored spelling; parsing them is part of
+/// compilation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct InlineConditionSource {
+    expression: String,
+    parameters: BTreeMap<String, String>,
+}
+
+/// Inline conditions compiled during one check or batch, by stored source.
+///
+/// Compilation is deterministic, so failures are cached too: a stored tuple
+/// with an invalid expression is reported again without recompiling it.
+#[derive(Default)]
+pub(crate) struct InlineConditionCache {
+    compiled: Vec<CompiledCondition>,
+    by_source: HashMap<InlineConditionSource, Result<usize, &'static str>>,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct PreparedConditionContext {
     values: BTreeMap<String, PreparedConditionValue>,
 }
@@ -145,18 +202,24 @@ pub(crate) fn compile_all(
 ) -> Result<HashMap<String, CompiledCondition>, ConstructionError> {
     let mut conditions = HashMap::with_capacity(schema.condition_definitions.len());
     for definition in &schema.condition_definitions {
-        let condition =
-            compile_one(definition).map_err(|message| ConstructionError::ConditionCompilation {
-                condition: definition.name.clone(),
-                span: definition.span.clone(),
-                message,
-            })?;
+        let condition = compile_one(
+            definition,
+            ConditionCacheKey::Named(definition.name.clone()),
+        )
+        .map_err(|message| ConstructionError::ConditionCompilation {
+            condition: definition.name.clone(),
+            span: definition.span.clone(),
+            message,
+        })?;
         conditions.insert(definition.name.clone(), condition);
     }
     Ok(conditions)
 }
 
-fn compile_one(definition: &ConditionDefinition) -> Result<CompiledCondition, String> {
+fn compile_one(
+    definition: &ConditionDefinition,
+    cache_key: ConditionCacheKey,
+) -> Result<CompiledCondition, String> {
     if definition.expression.len() > MAX_CONDITION_SOURCE_BYTES {
         return Err(format!(
             "condition expression exceeds the {MAX_CONDITION_SOURCE_BYTES}-byte source limit"
@@ -165,6 +228,9 @@ fn compile_one(definition: &ConditionDefinition) -> Result<CompiledCondition, St
 
     let mut parameter_types = HashMap::with_capacity(definition.parameters.len());
     let mut environment = Env::with_standard_library();
+    for function in ipaddress::functions() {
+        environment = environment.with_function(function);
+    }
     for parameter in &definition.parameters {
         let cel_type = cel_type(&parameter.param_type).ok_or_else(|| {
             format!(
@@ -201,6 +267,7 @@ fn compile_one(definition: &ConditionDefinition) -> Result<CompiledCondition, St
 
     Ok(CompiledCondition {
         name: definition.name.clone(),
+        cache_key,
         parameters: parameter_types,
         used_parameters,
         program,
@@ -210,6 +277,254 @@ fn compile_one(definition: &ConditionDefinition) -> Result<CompiledCondition, St
         has_regex: profile.has_regex,
         regex_pattern_bytes: profile.regex_pattern_bytes,
     })
+}
+
+impl InlineConditionSource {
+    /// Reads an inline condition's stored context: a non-empty `expression`
+    /// string and an optional `parameters` map of names to type names, and
+    /// nothing else. The persisted-context byte and element limits apply as
+    /// they do to a named condition's context.
+    ///
+    /// Reading work is added to `work` whether or not it succeeds.
+    pub(crate) fn from_stored_context(
+        values: &BTreeMap<String, JsonValue>,
+        work: &mut usize,
+    ) -> Result<Self, AuthorizationError> {
+        let mut budget = ContextBudget::default();
+        let source = Self::read_stored_context(values, &mut budget);
+        *work = work.saturating_add(budget.work);
+        source
+    }
+
+    fn read_stored_context(
+        values: &BTreeMap<String, JsonValue>,
+        budget: &mut ContextBudget,
+    ) -> Result<Self, AuthorizationError> {
+        let over_limit = |parameter: &str, expected| {
+            invalid_context(
+                INLINE_EXPRESSION_NAME,
+                parameter,
+                ConditionContextSource::StoredTuple,
+                expected,
+            )
+        };
+        const MALFORMED_PARAMETERS: AuthorizationError = AuthorizationError::InvalidTuple(
+            "inline condition parameters must map names to type names",
+        );
+        budget
+            .charge_elements(values.len())
+            .map_err(|expected| over_limit("<context>", expected))?;
+        let mut expression = None;
+        let mut parameters = BTreeMap::new();
+        for (key, value) in values {
+            budget
+                .charge_bytes(key.len())
+                .map_err(|expected| over_limit(key, expected))?;
+            budget.work = budget.work.saturating_add(1);
+            match (key.as_str(), value) {
+                (INLINE_EXPRESSION_KEY, JsonValue::String(text)) if !text.is_empty() => {
+                    budget
+                        .charge_string(text.len())
+                        .map_err(|expected| over_limit(key, expected))?;
+                    expression = Some(text.clone());
+                }
+                (INLINE_EXPRESSION_KEY, _) => {
+                    return Err(AuthorizationError::InvalidTuple(
+                        "inline condition expression must be a non-empty string",
+                    ));
+                }
+                (INLINE_PARAMETERS_KEY, JsonValue::Object(declared)) => {
+                    budget
+                        .charge_elements(declared.len())
+                        .map_err(|expected| over_limit(key, expected))?;
+                    for (name, type_name) in declared {
+                        let JsonValue::String(type_name) = type_name else {
+                            return Err(MALFORMED_PARAMETERS);
+                        };
+                        budget
+                            .charge_string(name.len())
+                            .and_then(|_| budget.charge_string(type_name.len()))
+                            .map_err(|expected| over_limit(name, expected))?;
+                        parameters.insert(name.clone(), type_name.clone());
+                    }
+                }
+                (INLINE_PARAMETERS_KEY, _) => return Err(MALFORMED_PARAMETERS),
+                _ => {
+                    return Err(AuthorizationError::InvalidTuple(
+                        "inline condition context may hold only `expression` and `parameters`",
+                    ));
+                }
+            }
+        }
+        let expression = expression.ok_or(AuthorizationError::InvalidTuple(
+            "inline condition context lacks its `expression`",
+        ))?;
+        Ok(Self {
+            expression,
+            parameters,
+        })
+    }
+
+    /// Work charged for one compilation attempt: the source traversal plus
+    /// one unit per declared parameter.
+    fn compile_work(&self) -> usize {
+        string_cost(self.expression.len()).saturating_add(self.parameters.len())
+    }
+
+    /// Compiles the stored expression with the profile checks, `bool` result
+    /// rule and cost estimate of a model condition.
+    ///
+    /// As in OpenFGA, an identifier the expression uses without declaring it
+    /// is a `string` parameter.
+    fn compile(&self, cache_key: ConditionCacheKey) -> Result<CompiledCondition, &'static str> {
+        if self.expression.len() > MAX_CONDITION_SOURCE_BYTES {
+            return Err("inline condition expression exceeds the condition source limit");
+        }
+        let mut parameters = Vec::with_capacity(self.parameters.len());
+        for (name, type_name) in &self.parameters {
+            let param_type = inline_parameter_type(type_name);
+            if cel_type(&param_type).is_none() {
+                return Err("inline condition parameter type is outside the supported CEL profile");
+            }
+            parameters.push(ConditionParameter {
+                name: name.clone(),
+                param_type,
+                span: None,
+            });
+        }
+        let ast = Env::with_standard_library()
+            .parse_only(&self.expression)
+            .map_err(|_| "inline condition expression is not valid CEL")?;
+        let mut identifiers = BTreeSet::new();
+        free_identifiers(ast.expr(), &mut identifiers);
+        for name in identifiers {
+            if !self.parameters.contains_key(&name) {
+                parameters.push(ConditionParameter {
+                    name,
+                    param_type: ParameterType::Simple("string".into()),
+                    span: None,
+                });
+            }
+        }
+        let definition = ConditionDefinition {
+            name: INLINE_EXPRESSION_NAME.into(),
+            parameters,
+            expression: self.expression.clone(),
+            comments_before: Vec::new(),
+            span: None,
+        };
+        compile_one(&definition, cache_key).map_err(|_| {
+            "inline condition expression does not compile to a bool in the supported CEL profile"
+        })
+    }
+}
+
+/// Validates a tuple's inline condition for writing: its stored context must
+/// be well formed and its expression must compile.
+pub(crate) fn validate_inline_condition(
+    values: &BTreeMap<String, JsonValue>,
+) -> Result<(), AuthorizationError> {
+    let mut work = 0;
+    let source = InlineConditionSource::from_stored_context(values, &mut work)?;
+    source
+        .compile(ConditionCacheKey::Inline(0))
+        .map(drop)
+        .map_err(AuthorizationError::InvalidTuple)
+}
+
+impl InlineConditionCache {
+    /// Returns the ID of a stored inline condition, compiling it on its first
+    /// use in this check or batch. Reading the context and each compilation
+    /// attempt are charged to `work`, even when they fail.
+    pub(crate) fn resolve(
+        &mut self,
+        values: &BTreeMap<String, JsonValue>,
+        work: &mut usize,
+    ) -> Result<usize, AuthorizationError> {
+        let source = InlineConditionSource::from_stored_context(values, work)?;
+        if let Some(cached) = self.by_source.get(&source) {
+            return (*cached).map_err(AuthorizationError::InvalidTuple);
+        }
+        *work = work.saturating_add(source.compile_work());
+        let id = self.compiled.len();
+        let compiled = source
+            .compile(ConditionCacheKey::Inline(id))
+            .map(|condition| {
+                self.compiled.push(condition);
+                id
+            });
+        self.by_source.insert(source, compiled);
+        compiled.map_err(AuthorizationError::InvalidTuple)
+    }
+
+    /// Returns a condition [`Self::resolve`] compiled.
+    pub(crate) fn get(&self, id: usize) -> &CompiledCondition {
+        &self.compiled[id]
+    }
+}
+
+/// Reads a stored parameter type name such as `int` or `list<string>`; the
+/// profile check in [`cel_type`] rejects anything it cannot represent.
+fn inline_parameter_type(type_name: &str) -> ParameterType {
+    match type_name
+        .strip_suffix('>')
+        .and_then(|generic| generic.split_once('<'))
+    {
+        Some((container, inner)) => ParameterType::Generic {
+            container: container.into(),
+            inner: inner.into(),
+        },
+        None => ParameterType::Simple(type_name.into()),
+    }
+}
+
+/// Collects the variables an expression reads, following OpenFGA's
+/// `extractIdents`: identifiers and the operands of selections and method
+/// calls, but not the names of global functions. Comprehension, bind and
+/// message forms are not walked; the profile check rejects them.
+fn free_identifiers(expression: &SpannedExpr, identifiers: &mut BTreeSet<String>) {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match &expression.node {
+            Expr::Ident(name) => {
+                identifiers.insert(name.clone());
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Member { expr, .. }
+            | Expr::MemberTestOnly { expr, .. } => pending.push(expr),
+            Expr::Binary { left, right, .. } => pending.extend([&**left, &**right]),
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => pending.extend([&**cond, &**then_expr, &**else_expr]),
+            Expr::Index { expr, index, .. } => pending.extend([&**expr, &**index]),
+            Expr::List(values) => pending.extend(values.iter().map(|value| &value.expr)),
+            Expr::Map(entries) => {
+                for entry in entries {
+                    pending.extend([&entry.key, &entry.value]);
+                }
+            }
+            Expr::Call { expr, args } => {
+                if let Expr::Member { expr: receiver, .. } = &expr.node {
+                    pending.push(receiver);
+                }
+                pending.extend(args);
+            }
+            Expr::Null
+            | Expr::Bool(_)
+            | Expr::Int(_)
+            | Expr::UInt(_)
+            | Expr::Float(_)
+            | Expr::String(_)
+            | Expr::Bytes(_)
+            | Expr::RootIdent(_)
+            | Expr::Struct { .. }
+            | Expr::Comprehension(_)
+            | Expr::Bind { .. }
+            | Expr::Error => {}
+        }
+    }
 }
 
 fn inspect_expression(
@@ -399,6 +714,8 @@ fn supported_function(name: &str) -> bool {
             | "bytes"
             | "duration"
             | "timestamp"
+            | "ipaddress"
+            | "in_cidr"
     )
 }
 
@@ -412,6 +729,7 @@ pub(super) fn cel_type(parameter_type: &ParameterType) -> Option<CelType> {
         RuntimeScalarType::String => CelType::String,
         RuntimeScalarType::Duration => CelType::Duration,
         RuntimeScalarType::Timestamp => CelType::Timestamp,
+        RuntimeScalarType::IpAddress => ipaddress::cel_type(),
     };
 
     Some(match runtime_type {
@@ -557,14 +875,15 @@ impl CompiledCondition {
         cache: &mut RequestValueCache,
         work: &mut usize,
     ) -> Result<PreparedConditionValue, AuthorizationError> {
-        if !cache.conditions.contains_key(self.name.as_str()) {
-            cache
-                .conditions
-                .insert(self.name.clone(), vec![None; self.used_parameters.len()]);
+        if !cache.conditions.contains_key(&self.cache_key) {
+            cache.conditions.insert(
+                self.cache_key.clone(),
+                vec![None; self.used_parameters.len()],
+            );
         }
         let slot = &mut cache
             .conditions
-            .get_mut(self.name.as_str())
+            .get_mut(&self.cache_key)
             .expect("condition cache entry was inserted above")[index];
         let name = &self.used_parameters[index];
         let cached = slot.get_or_insert_with(|| {
@@ -657,6 +976,13 @@ fn convert_value(
                         .and_then(|value| cel_core::time::parse_timestamp(value).ok())
                         .map(|value| (Value::from(value), input_cost))
                         .ok_or_else(|| "an RFC3339 timestamp string".into());
+                }
+                "ipaddress" => {
+                    return value
+                        .as_str()
+                        .and_then(IpAddress::parse)
+                        .map(|value| (value.into_value(), input_cost))
+                        .ok_or_else(|| "a well-formed IP address string".into());
                 }
                 _ => return Err("a value with a supported CEL scalar type".into()),
             };

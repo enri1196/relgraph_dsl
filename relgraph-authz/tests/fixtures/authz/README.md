@@ -18,6 +18,8 @@ The run used for Task 7 executed OpenFGA `v1.21.0`, commit `ab557c5592670c899de3
 
 `recursion.json` (added 2026-10-18 with the same server version and digest) covers nested groups, same-type folder hierarchies, mutual recursion across two types, data cycles for members and non-members, recursion through conditioned tuples (including missing context), recursion under intersection, and an open cycle whose provisional denial must not be memoized. `recursion_models.json` records model acceptance instead of one shared model. Each entry carries its DSL `definition`, its JSON `model`, the expected server model-write outcome, and `local_capabilities`, the diagnostics local construction must report. For the negation cycles that OpenFGA accepts, the entry also records the server's decisions on data cycles. The runner checks those decisions against the server, and the offline test checks only that local construction rejects the model. OpenFGA rejects the implicit self tuple `group:x#member@group:x#member` at write time, so the self-cycle case is covered only by local tests.
 
+`ipaddress.json` (added 2026-10-19 by plan Task 9, same server version and digest; the runner passed all 72 cases, 20 of them from this fixture) covers OpenFGA's `ipaddress` extension: `in_cidr` with a stored and a request CIDR, IPv4-mapped addresses and prefixes, host bits, IPv4 versus IPv6 families, stored `ipaddress`, `list<ipaddress>` and `map<ipaddress>` context with stored-over-request precedence, `ipaddress(...)` literals with `!=`, and the missing, malformed-address and malformed-CIDR errors. One case records a deliberate difference with separate expectations: an IPv6 zone identifier (`fe80::1%eth0`) is `InvalidConditionContext` locally and a deny on the server. Before writing it, a scratch probe of 600 address/CIDR/function cases against the same server agreed with the local runtime on every case except the 28 that use zone identifiers.
+
 ## Vendored upstream Check corpora
 
 `upstream/` holds unmodified copies from `openfga/openfga` tag `v1.21.0` (commit
@@ -55,9 +57,13 @@ or an upstream `errorCode` through the runner's error-code table. Like
 upstream's `_ctxTuples` run, every single-stage test is replayed a second time
 (`ctxCheck` cases) against an empty store, with the stage tuples sent as
 contextual tuples. Each stage's checks are also replayed through
-`batch_check`, which must agree with the individual checks. The runner's
-module docs describe case IDs and what is not run (list assertions, userset or
-wildcard check subjects). Run with `-- --nocapture` for per-file totals.
+`batch_check`, which must agree with the individual checks. Each
+`listObjectsAssertions` / `listUsersAssertions` entry runs through
+`list_objects` / `list_users` against the stage's store and is compared with
+`expectation` as a set, or its `errorCode` through that list kind's own table
+(the list APIs report an unknown type or relation as 2021 / 2022). The
+runner's module docs describe case IDs. Run with `-- --nocapture` for per-file
+totals.
 
 Every case that does not pass is covered by a reviewed entry in
 [`upstream-skip.yaml`](upstream-skip.yaml); the test also fails when an entry no
@@ -69,15 +75,19 @@ Running that runner over OpenFGA's own corpus at the same tag would be
 circular: the corpus expectations are already the `v1.21.0` server's answers,
 so the server would only be compared with itself.
 
-Measured at `v1.21.0` (2026-10-18, `-- --nocapture`). Cases are per stage: one
+Measured at `v1.21.0` (2026-10-20, after skip-list plan Task 8, `-- --nocapture`). Cases are per stage: one
 `model` case, then one case per check, `ctxCheck` (single-stage tests only),
 `listObjects` or `listUsers` assertion. No single-stage test has more than 100
 tuples, so no `ctxCheck` replay is skipped for the contextual tuple limit.
 
 | Corpus file | Tests / stages | Cases | Pass | Pass by kind | Skip-listed by reason/tag |
 | --- | ---: | ---: | ---: | --- | --- |
-| `consolidated_1_1_tests.yaml` | 138 / 161 | 1380 | 767 | check 329/364, ctxCheck 280/286, model 158/161, list 0/569 | unsupported-feature/list-api 569, semantic-divergence/deliberate 36, unsupported-feature/userset-subject 8 |
-| `abac_tests.yaml` | 33 / 37 | 505 | 261 | check 123/152, ctxCheck 111/137, model 27/37, list 0/179 | unsupported-feature/list-api 179, unsupported-feature/inline-condition 51, unsupported-feature/ipaddress 7, semantic-divergence/deliberate 3, unsupported-feature/userset-subject 4 |
+| `consolidated_1_1_tests.yaml` | 138 / 161 | 1380 | 1316 | check 333/364, ctxCheck 284/286, listObjects 258/272, listUsers 283/297, model 158/161 | semantic-divergence/deliberate 64 |
+| `abac_tests.yaml` | 33 / 37 | 505 | 494 | check 149/152, ctxCheck 137/137, listObjects 79/82, listUsers 92/97, model 37/37 | semantic-divergence/deliberate 7, semantic-divergence/bug 4 |
+
+Before the list replay (skip-list plan Task 8) every list assertion was
+skip-listed by the two `unsupported-feature/list-api` rules, and the files
+passed 775 / 323 cases.
 
 Before contextual tuples (Task 7) the files had 1094 / 368 cases with 481 / 147
 passing: the 9 assertions with `contextualTuples` were skip-listed by rule and
@@ -85,32 +95,57 @@ the `ctxCheck` replay did not exist. All 9 now pass.
 
 What the skip-listed groups are:
 
-- `unsupported-feature/list-api` (rules; deferred list-API plan): every
-  `listObjectsAssertions` / `listUsersAssertions` entry.
-- `semantic-divergence/deliberate` (permanent): 24 checks that read a tuple
-  written under an earlier stage's model which no longer fits the current
-  one; upstream ignores such tuples, Relgraph reads are strict and report
-  `InvalidTuple` (a recorded maintainer decision). 13 cases (3 models and
-  their 10 checks) of three negation-cycle models that construction rejects
-  as `RecursiveDifference`, which the evaluator's memoization relies on, and
-  the `ctxCheck` replays of those that are single-stage tests.
-- `unsupported-feature/inline-condition` (permanent): 9 ABAC stages (all
-  single-stage tests) whose models use inline condition expressions, which
-  runtime construction rejects; their 21 checks and 21 `ctxCheck` replays are
-  not run.
-- `unsupported-feature/userset-subject` (plan Task 13): 6 checks whose subject
-  is a userset (`group:x#member`) or a wildcard (`user:*`), which
-  `CheckRequest` cannot express, and their 6 `ctxCheck` replays.
-- `unsupported-feature/ipaddress` (plan Tasks 8 and 9): one ABAC stage whose
-  condition takes an `ipaddress` parameter (its model, 3 checks and 3
-  `ctxCheck` replays).
+- `semantic-divergence/deliberate` (permanent): 24 checks and 18 list
+  assertions (consolidated 4 listObjects and 10 listUsers, ABAC 2 and 2)
+  that read a tuple written under an earlier stage's model which no longer
+  fits the current one; upstream ignores such tuples, Relgraph reads are
+  strict and report `InvalidTuple` (decision S1). 29 cases of three
+  negation-cycle models that construction rejects as `RecursiveDifference`
+  (decision S2), which the evaluator's memoization relies on: the 3 models,
+  their 10 checks, the `ctxCheck` replays of the single-stage ones (2) and
+  their 14 list assertions (10 listObjects, 4 listUsers).
+- `semantic-divergence/bug` (task 8, a maintainer decision is needed; 4 ABAC
+  list cases). `relation_through_ttu_with_condition::0::listUsers::1` and
+  `::2`: one tuple-to-userset branch allows and the other lacks its condition
+  parameter; upstream Check allows the same inputs, but upstream ListUsers
+  reports the missing parameter (2000), while Relgraph decides each candidate
+  with the check path, where a decisive allow masks a branch error, and lists
+  `user:jon`. `condition_bound_to_correct_type_restriction_facet::1::listObjects::0`
+  and `::listUsers::0`: a contextual tuple carries a condition on a type
+  restriction facet that does not declare it; Relgraph reports
+  `InvalidContextualTuple` (2027, as upstream Check does for the same tuple),
+  upstream's list APIs `validation_error` (2000).
+- Skip-list plan Task 8 replayed the list corpora with `list_objects` and
+  `list_users` (decisions S4, S4a to S4e), which removed both
+  `unsupported-feature/list-api` rules: 712 of the 748 list assertions pass.
+  The `list-api` tag stays in the vocabulary with no entries.
+- Skip-list plan Task 3 added inline condition expressions (decision S3),
+  which cleared the 9 former `unsupported-feature/inline-condition` stage
+  entries: the `inline_expression_*` models, their 21 checks and 21 `ctxCheck`
+  replays (51 cases; ABAC 272 to 323 passing). Their list assertions ran
+  from Task 8 on. The `inline-condition` tag stays in the vocabulary with no
+  entries.
+- Plan Task 13 made `CheckRequest` accept userset and typed-wildcard
+  subjects, which cleared all 12 former `unsupported-feature/userset-subject`
+  entries (6 checks and their 6 `ctxCheck` replays, two of them expecting
+  `validation_error` for a userset whose type or relation is not in the
+  model).
+- Plan Task 9 added OpenFGA's `ipaddress` extension (Decision D1, option D),
+  which cleared the only `unsupported-feature/ipaddress` entry: the ABAC
+  `nested_indirect_relation_with_condition` stage (its model, 3 checks and 3
+  `ctxCheck` replays; ABAC 265 to 272 passing). The `ipaddress` tag stays in
+  the vocabulary with no entries. `inline_expression_ipaddress_param` also
+  uses `ipaddress`; it passes since Task 3.
 
 Error codes (run `check` and `ctxCheck` cases together): every case expecting
-`validation_error` (2000) passes (58/58), as do the
+`validation_error` (2000) passes (68/68), as do the
 `authorization_model_resolution_too_complex` (2002) cases (2/2) and the
 `invalid_tuple` (2027) cases (14/14). 2027 occurs in Check assertions only
 for an invalid contextual tuple, which Relgraph reports as
-`InvalidContextualTuple`; 2021 / 2022 occur only in list assertions. The 2002 check
+`InvalidContextualTuple`; 2021 / 2022 occur only in list assertions. Run list
+cases (both files): listObjects 2000 21/22, 2021 3/3, 2022 3/3, 2027 8/8;
+listUsers 2000 24/27, 2002 1/1, 2021 3/3, 2022 2/2, 2027 8/8. The four
+failures are the `semantic-divergence/bug` cases above. The 2002 check
 needs a chain of about 27 usersets; the corpus result is unchanged for any
 relation-depth limit from 7 through 26, so the default of 25 (OpenFGA's
 resolve depth) agrees with it.
@@ -151,10 +186,10 @@ change, reviewed in a single pull request:
 ## Compatibility boundary
 
 - The server is used as an evaluator reference for the checked-in acyclic model profile; this does not add a remote OpenFGA store adapter to the Rust library.
-- The local runtime evaluates recursive models as least fixed points. It rejects cycles through a `but not` subtracted operand and same-object computed-userset cycles, as well as unsupported CEL types/functions, during construction. It supports the scalar types and one-level `list<T>` / `map<T>` declarations recorded in Task 4; bytes, `any`, IP addresses, nested containers, custom/message types, extension functions, and comprehension macros remain outside its profile.
+- The local runtime evaluates recursive models as least fixed points. It rejects cycles through a `but not` subtracted operand and same-object computed-userset cycles, as well as unsupported CEL types/functions, during construction. It supports the scalar types and one-level `list<T>` / `map<T>` declarations recorded in Task 4, plus `ipaddress` and OpenFGA's `ipaddress` / `in_cidr` extension (plan Task 9, `ipaddress.json`); bytes, `any`, nested containers, custom/message types, other extension functions, and comprehension macros remain outside its profile. IPv6 zone identifiers are rejected locally where OpenFGA parses them.
 - Task 7 found that `cel-core = 0.5.1` rejects `list.contains(value)` during model construction. It is therefore excluded from the supported profile. The list fixture verifies typed list conversion with `size(tags)` and the map fixture verifies typed lookup. This does not claim parity for every CEL standard-library overload.
 - The condition fixture raises the local condition-cost limit to 512 so the full typed input can be evaluated. Local cost estimates are a separate resource budget and are not asserted to equal OpenFGA's CEL cost accounting.
 - OpenFGA error text can change between releases. Error fixtures require a non-success HTTP status and the stable `context` category text; decisions are compared exactly.
-- Permanent divergences in the upstream Check corpora (every one a `task: permanent` entry with a written justification in `upstream-skip.yaml`; rationale in the crate README's "Permanent differences from OpenFGA"): negation-cycle models rejected as `RecursiveDifference` (`semantic-divergence/deliberate`, 3 stage entries, 15 cases: 3 models, 10 checks, 2 `ctxCheck` replays), inline condition expressions rejected by runtime construction as `InlineConditionExpression` (`unsupported-feature/inline-condition`, 9 stage entries, 51 cases: 9 models, 21 checks, 21 `ctxCheck` replays), and strict reads of tuples that no longer fit a later stage's model (`semantic-divergence/deliberate`, 24 case entries).
+- Permanent divergences in the upstream Check corpora (every one a `task: permanent` entry with a written justification in `upstream-skip.yaml`; rationale in the crate README's "Permanent differences from OpenFGA"): negation-cycle models rejected as `RecursiveDifference` (`semantic-divergence/deliberate`, 3 stage entries, 29 cases: 3 models, 10 checks, 2 `ctxCheck` replays, 14 list assertions), and strict reads of tuples that no longer fit a later stage's model (`semantic-divergence/deliberate`, 42 case entries: 24 checks, 18 list assertions).
 
 The harness must fail on any decision or error-category mismatch. Do not increase the declared compatibility profile from these cases alone; add a fixture for each newly supported semantic surface.

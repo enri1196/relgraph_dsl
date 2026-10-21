@@ -5,7 +5,7 @@ use std::fmt;
 
 use relgraph_dsl::{ParseError, SourceSpan, ValidationError};
 
-use super::store::RelationshipTuple;
+use super::store::{RelationshipTuple, TupleSubject};
 
 /// A relation's owning object type and declared relation name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -55,8 +55,6 @@ pub enum RuntimeCapability {
     WildcardRestriction,
     /// A tuple restriction has a named condition attached.
     ConditionalRelationship,
-    /// A tuple restriction uses an inline condition expression.
-    InlineConditionExpression,
     /// The model declares conditions, which are not compiled in this runtime slice.
     ConditionDefinitions,
     /// A relation dependency cycle passes through the subtracted operand of
@@ -295,6 +293,14 @@ impl Subject {
     pub fn id(&self) -> &EntityId {
         &self.id
     }
+
+    /// Names an object as a concrete subject, as a tupleset tuple does.
+    pub(crate) fn from_object(object: &ObjectRef) -> Self {
+        Self {
+            type_name: object.type_name.clone(),
+            id: object.id.clone(),
+        }
+    }
 }
 
 /// A concrete object whose relation is being checked.
@@ -337,7 +343,7 @@ pub const MAX_CONTEXTUAL_TUPLES: usize = 100;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CheckScope {
     tenant: TenantId,
-    subject: Subject,
+    subject: TupleSubject,
     context: std::collections::BTreeMap<String, serde_json::Value>,
     condition_context:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
@@ -345,7 +351,7 @@ pub(crate) struct CheckScope {
 }
 
 impl CheckScope {
-    fn new(tenant: TenantId, subject: Subject) -> Self {
+    fn new(tenant: TenantId, subject: TupleSubject) -> Self {
         Self {
             tenant,
             subject,
@@ -363,7 +369,7 @@ impl CheckScope {
         &self.tenant
     }
 
-    pub(crate) fn subject(&self) -> &Subject {
+    pub(crate) fn subject(&self) -> &TupleSubject {
         &self.subject
     }
 
@@ -406,14 +412,32 @@ impl fmt::Display for ConditionContextSource {
 }
 
 impl CheckRequest {
+    /// Creates a check of whether `subject` has `relation` on `object`.
+    ///
+    /// The subject is usually a concrete [`Subject`]. Like OpenFGA's Check it
+    /// may also be a userset ([`TupleSubject::Userset`], `group:eng#member`) or
+    /// a typed wildcard ([`TupleSubject::TypedWildcard`], `user:*`):
+    ///
+    /// - a concrete subject is granted by a tuple naming it, a wildcard tuple of
+    ///   its type, or membership of a userset tuple;
+    /// - a userset subject is granted by a tuple naming that exact userset, by
+    ///   membership of another userset tuple, or when it is the checked object
+    ///   and relation itself; wildcard tuples never grant it;
+    /// - a wildcard subject is granted only by a wildcard tuple of its type,
+    ///   directly or through a userset; a concrete tuple never grants it.
+    ///
+    /// A userset subject whose type or relation is not in the model fails with
+    /// [`AuthorizationError::UnknownSubjectType`] or
+    /// [`AuthorizationError::UnknownSubjectRelation`]. The Axum middleware
+    /// always checks the authenticated principal as a concrete subject.
     pub fn new(
         tenant: TenantId,
-        subject: Subject,
+        subject: impl Into<TupleSubject>,
         object: ObjectRef,
         relation: RelationName,
     ) -> Self {
         Self {
-            scope: CheckScope::new(tenant, subject),
+            scope: CheckScope::new(tenant, subject.into()),
             object,
             relation,
         }
@@ -504,7 +528,7 @@ impl CheckRequest {
         self.scope.tenant()
     }
 
-    pub fn subject(&self) -> &Subject {
+    pub fn subject(&self) -> &TupleSubject {
         self.scope.subject()
     }
 
@@ -553,13 +577,16 @@ pub struct BatchCheckRequest {
 
 impl BatchCheckRequest {
     /// Creates a batch whose results are returned in `items` order.
+    ///
+    /// The subject may be concrete, a userset or a typed wildcard, with the
+    /// semantics described for [`CheckRequest::new`].
     pub fn new(
         tenant: TenantId,
-        subject: Subject,
+        subject: impl Into<TupleSubject>,
         items: impl IntoIterator<Item = (ObjectRef, RelationName)>,
     ) -> Self {
         Self {
-            scope: CheckScope::new(tenant, subject),
+            scope: CheckScope::new(tenant, subject.into()),
             items: items.into_iter().collect(),
         }
     }
@@ -604,7 +631,7 @@ impl BatchCheckRequest {
         self.scope.tenant()
     }
 
-    pub fn subject(&self) -> &Subject {
+    pub fn subject(&self) -> &TupleSubject {
         self.scope.subject()
     }
 
@@ -635,6 +662,335 @@ impl BatchCheckRequest {
     }
 }
 
+/// Typed inputs to a ListObjects query: the objects of one type on which one
+/// subject holds one relation.
+///
+/// The subject, contexts and contextual tuples have the meaning they have in
+/// a [`CheckRequest`]: every object returned by
+/// [`FgaAuthz::list_objects`](crate::FgaAuthz::list_objects) is one whose
+/// check with this request's inputs allows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListObjectsRequest {
+    scope: CheckScope,
+    object_type: TypeName,
+    relation: RelationName,
+}
+
+impl ListObjectsRequest {
+    /// Creates a query for the `object_type` objects on which `subject` holds
+    /// `relation`.
+    ///
+    /// The subject may be concrete, a userset or a typed wildcard, with the
+    /// semantics described for [`CheckRequest::new`].
+    pub fn new(
+        tenant: TenantId,
+        subject: impl Into<TupleSubject>,
+        object_type: TypeName,
+        relation: RelationName,
+    ) -> Self {
+        Self {
+            scope: CheckScope::new(tenant, subject.into()),
+            object_type,
+            relation,
+        }
+    }
+
+    /// Sets global request context for every candidate's check.
+    pub fn with_context(
+        mut self,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.scope.context = context;
+        self
+    }
+
+    /// Adds request context scoped to one named condition.
+    ///
+    /// Precedence is the same as [`CheckRequest::with_condition_context`].
+    pub fn with_condition_context(
+        mut self,
+        condition: impl Into<String>,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.scope
+            .condition_context
+            .insert(condition.into(), context);
+        self
+    }
+
+    /// Sets contextual tuples, replacing any set earlier.
+    ///
+    /// They are trusted input, validated once as described for
+    /// [`CheckRequest::with_contextual_tuples`], with one difference: an
+    /// exact repeat within the set is dropped rather than rejected, as
+    /// OpenFGA's ListObjects does. They can grant objects that no stored tuple
+    /// reaches.
+    pub fn with_contextual_tuples(
+        mut self,
+        tuples: impl IntoIterator<Item = RelationshipTuple>,
+    ) -> Self {
+        self.scope.contextual_tuples = tuples.into_iter().collect();
+        self
+    }
+
+    pub fn tenant(&self) -> &TenantId {
+        self.scope.tenant()
+    }
+
+    pub fn subject(&self) -> &TupleSubject {
+        self.scope.subject()
+    }
+
+    /// Returns the type of the listed objects.
+    pub fn object_type(&self) -> &TypeName {
+        &self.object_type
+    }
+
+    pub fn relation(&self) -> &RelationName {
+        &self.relation
+    }
+
+    /// Returns the contextual tuples in the order they were supplied.
+    pub fn contextual_tuples(&self) -> &[RelationshipTuple] {
+        self.scope.contextual_tuples()
+    }
+
+    pub fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
+        self.scope.context()
+    }
+
+    /// Returns request context explicitly bound to one condition.
+    pub fn condition_context(
+        &self,
+        condition: &str,
+    ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
+        self.scope.condition_context(condition)
+    }
+
+    pub(crate) fn scope(&self) -> &CheckScope {
+        &self.scope
+    }
+}
+
+/// The subjects a ListUsers query returns: one subject type, or one userset
+/// relation of a type.
+///
+/// A type filter (`user`) selects concrete subjects of that type (`user:anne`)
+/// and its typed wildcard (`user:*`). A userset filter (`group#member`)
+/// selects usersets of that type and relation (`group:eng#member`), the
+/// queried object's own userset included.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UserFilter {
+    type_name: TypeName,
+    relation: Option<RelationName>,
+}
+
+impl UserFilter {
+    /// Selects concrete subjects of `type_name` and its typed wildcard.
+    pub fn new(type_name: TypeName) -> Self {
+        Self {
+            type_name,
+            relation: None,
+        }
+    }
+
+    /// Selects usersets `type_name:<id>#relation`.
+    pub fn userset(type_name: TypeName, relation: RelationName) -> Self {
+        Self {
+            type_name,
+            relation: Some(relation),
+        }
+    }
+
+    pub fn type_name(&self) -> &TypeName {
+        &self.type_name
+    }
+
+    /// Returns the userset relation, or `None` for a type filter.
+    pub fn relation(&self) -> Option<&RelationName> {
+        self.relation.as_ref()
+    }
+}
+
+/// Parses the OpenFGA filter forms `type` and `type#relation`.
+///
+/// Any other form is rejected with [`UserFilterError`]: an object or
+/// wildcard (`user:anne`, `user:*`), more than one `#`, or an empty or
+/// otherwise invalid type or relation.
+impl std::str::FromStr for UserFilter {
+    type Err = UserFilterError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (type_name, relation) = match value.split_once('#') {
+            Some((type_name, relation)) => (type_name, Some(relation)),
+            None => (value, None),
+        };
+        if type_name.contains(':') || relation.is_some_and(|relation| relation.contains(['#', ':']))
+        {
+            return Err(UserFilterError::UnsupportedForm);
+        }
+        let type_name = TypeName::new(type_name).map_err(UserFilterError::Identifier)?;
+        Ok(match relation {
+            Some(relation) => Self::userset(
+                type_name,
+                RelationName::new(relation).map_err(UserFilterError::Identifier)?,
+            ),
+            None => Self::new(type_name),
+        })
+    }
+}
+
+/// Why a string is not a ListUsers [`UserFilter`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserFilterError {
+    /// The string is neither `type` nor `type#relation`, for example an
+    /// object, a wildcard, or a filter with more than one `#`.
+    UnsupportedForm,
+    /// The type or relation is not a valid identifier.
+    Identifier(IdentifierError),
+}
+
+impl fmt::Display for UserFilterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedForm => {
+                f.write_str("user filter must have the form `type` or `type#relation`")
+            }
+            Self::Identifier(error) => write!(f, "invalid user filter: {error}"),
+        }
+    }
+}
+
+impl Error for UserFilterError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::UnsupportedForm => None,
+            Self::Identifier(error) => Some(error),
+        }
+    }
+}
+
+/// Typed inputs to a ListUsers query: the subjects selected by one filter
+/// that hold one relation on one object.
+///
+/// Contexts and contextual tuples have the meaning they have in a
+/// [`CheckRequest`]: every subject returned by
+/// [`FgaAuthz::list_users`](crate::FgaAuthz::list_users) is one whose check
+/// on the object and relation with this request's inputs allows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListUsersRequest {
+    tenant: TenantId,
+    object: ObjectRef,
+    relation: RelationName,
+    filter: UserFilter,
+    context: std::collections::BTreeMap<String, serde_json::Value>,
+    condition_context:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    contextual_tuples: Vec<RelationshipTuple>,
+}
+
+impl ListUsersRequest {
+    /// Creates a query for the subjects selected by `filter` that hold
+    /// `relation` on `object`.
+    pub fn new(
+        tenant: TenantId,
+        object: ObjectRef,
+        relation: RelationName,
+        filter: UserFilter,
+    ) -> Self {
+        Self {
+            tenant,
+            object,
+            relation,
+            filter,
+            context: std::collections::BTreeMap::new(),
+            condition_context: std::collections::BTreeMap::new(),
+            contextual_tuples: Vec::new(),
+        }
+    }
+
+    /// Sets global request context for every candidate's check.
+    pub fn with_context(
+        mut self,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Adds request context scoped to one named condition.
+    ///
+    /// Precedence is the same as [`CheckRequest::with_condition_context`].
+    pub fn with_condition_context(
+        mut self,
+        condition: impl Into<String>,
+        context: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.condition_context.insert(condition.into(), context);
+        self
+    }
+
+    /// Sets contextual tuples, replacing any set earlier.
+    ///
+    /// They are trusted input, validated once as described for
+    /// [`CheckRequest::with_contextual_tuples`], with one difference: an
+    /// exact repeat within the set is dropped rather than rejected, as for
+    /// [`ListObjectsRequest::with_contextual_tuples`]. They can grant
+    /// subjects that no stored tuple names.
+    pub fn with_contextual_tuples(
+        mut self,
+        tuples: impl IntoIterator<Item = RelationshipTuple>,
+    ) -> Self {
+        self.contextual_tuples = tuples.into_iter().collect();
+        self
+    }
+
+    pub fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+
+    pub fn object(&self) -> &ObjectRef {
+        &self.object
+    }
+
+    pub fn relation(&self) -> &RelationName {
+        &self.relation
+    }
+
+    pub fn filter(&self) -> &UserFilter {
+        &self.filter
+    }
+
+    /// Returns the contextual tuples in the order they were supplied.
+    pub fn contextual_tuples(&self) -> &[RelationshipTuple] {
+        &self.contextual_tuples
+    }
+
+    pub fn context(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
+        &self.context
+    }
+
+    /// Returns request context explicitly bound to one condition.
+    pub fn condition_context(
+        &self,
+        condition: &str,
+    ) -> Option<&std::collections::BTreeMap<String, serde_json::Value>> {
+        self.condition_context.get(condition)
+    }
+
+    /// The scope of one candidate's check: this request's inputs with
+    /// `subject` as the checked subject.
+    pub(crate) fn scope_for(&self, subject: TupleSubject) -> CheckScope {
+        CheckScope {
+            tenant: self.tenant.clone(),
+            subject,
+            context: self.context.clone(),
+            condition_context: self.condition_context.clone(),
+            contextual_tuples: self.contextual_tuples.clone(),
+        }
+    }
+}
+
 /// The result of an authorization check. Operational errors are represented by
 /// [`AuthorizationError`] and never collapse into a denial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -653,10 +1009,13 @@ pub struct FilteredObjects {
     pub errors: Vec<(ObjectRef, AuthorizationError)>,
 }
 
-/// Work limits for one authorization check, and the item bound for a batch.
+/// Work limits for one authorization check, the item bound for a batch, and
+/// the candidate bound for a list.
 ///
 /// In a batch, tuple, store-call, and work budgets apply to each item
-/// separately; `max_batch_items` bounds the number of items.
+/// separately; `max_batch_items` bounds the number of items. A list spends one
+/// set of these budgets finding its candidates and a fresh set deciding each
+/// one; `max_list_candidates` bounds the number of candidates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvaluationLimits {
     max_tuples_scanned: usize,
@@ -665,6 +1024,7 @@ pub struct EvaluationLimits {
     max_work_units: usize,
     max_condition_cost: usize,
     max_batch_items: usize,
+    max_list_candidates: usize,
 }
 
 impl EvaluationLimits {
@@ -693,6 +1053,11 @@ impl EvaluationLimits {
     pub const DEFAULT_MAX_BATCH_ITEMS: usize = 100;
     /// Largest batch item limit accepted by the runtime.
     pub const MAX_BATCH_ITEMS: usize = 1_000;
+    /// Default maximum number of candidates (objects or subjects) one list
+    /// decides, matching the OpenFGA server's default list result bounds.
+    pub const DEFAULT_MAX_LIST_CANDIDATES: usize = 1_000;
+    /// Largest list candidate limit accepted by the runtime.
+    pub const MAX_LIST_CANDIDATES: usize = 10_000;
 
     /// Creates limits with the supplied tuple budget and defaults for other bounds.
     pub fn new(max_tuples_scanned: usize) -> Result<Self, EvaluationLimitsError> {
@@ -711,6 +1076,7 @@ impl EvaluationLimits {
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
             max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
             max_batch_items: Self::DEFAULT_MAX_BATCH_ITEMS,
+            max_list_candidates: Self::DEFAULT_MAX_LIST_CANDIDATES,
         })
     }
 
@@ -800,6 +1166,28 @@ impl EvaluationLimits {
         Ok(self)
     }
 
+    /// Sets the maximum number of distinct candidates (objects for
+    /// ListObjects, subjects for ListUsers) one list decides.
+    ///
+    /// A list whose candidates exceed it fails with
+    /// [`AuthorizationError::ListCandidateLimitExceeded`]; it never returns a
+    /// partial list.
+    pub fn with_max_list_candidates(
+        mut self,
+        maximum: usize,
+    ) -> Result<Self, EvaluationLimitsError> {
+        if maximum == 0 {
+            return Err(EvaluationLimitsError::ZeroListCandidateLimit);
+        }
+        if maximum > Self::MAX_LIST_CANDIDATES {
+            return Err(EvaluationLimitsError::ListCandidateLimitTooLarge {
+                maximum: Self::MAX_LIST_CANDIDATES,
+            });
+        }
+        self.max_list_candidates = maximum;
+        Ok(self)
+    }
+
     /// Returns the relation traversal depth budget.
     pub const fn max_relation_depth(self) -> usize {
         self.max_relation_depth
@@ -824,6 +1212,11 @@ impl EvaluationLimits {
     pub const fn max_batch_items(self) -> usize {
         self.max_batch_items
     }
+
+    /// Returns the maximum number of candidates one list decides.
+    pub const fn max_list_candidates(self) -> usize {
+        self.max_list_candidates
+    }
 }
 
 impl Default for EvaluationLimits {
@@ -835,6 +1228,7 @@ impl Default for EvaluationLimits {
             max_work_units: Self::DEFAULT_MAX_WORK_UNITS,
             max_condition_cost: Self::DEFAULT_MAX_CONDITION_COST,
             max_batch_items: Self::DEFAULT_MAX_BATCH_ITEMS,
+            max_list_candidates: Self::DEFAULT_MAX_LIST_CANDIDATES,
         }
     }
 }
@@ -865,6 +1259,10 @@ pub enum EvaluationLimitsError {
     ZeroBatchItemLimit,
     /// The batch item limit exceeds the runtime maximum.
     BatchItemLimitTooLarge { maximum: usize },
+    /// The list candidate limit must be nonzero.
+    ZeroListCandidateLimit,
+    /// The list candidate limit exceeds the runtime maximum.
+    ListCandidateLimitTooLarge { maximum: usize },
 }
 
 impl std::fmt::Display for EvaluationLimitsError {
@@ -894,6 +1292,12 @@ impl std::fmt::Display for EvaluationLimitsError {
             Self::BatchItemLimitTooLarge { maximum } => {
                 write!(f, "batch item limit must not exceed {maximum}")
             }
+            Self::ZeroListCandidateLimit => {
+                write!(f, "list candidate limit must be greater than zero")
+            }
+            Self::ListCandidateLimitTooLarge { maximum } => {
+                write!(f, "list candidate limit must not exceed {maximum}")
+            }
         }
     }
 }
@@ -905,6 +1309,11 @@ impl std::error::Error for EvaluationLimitsError {}
 pub enum AuthorizationError {
     UnknownObjectType(String),
     UnknownSubjectType(String),
+    /// A userset check subject names a relation its type does not define.
+    UnknownSubjectRelation {
+        subject_type: String,
+        relation: String,
+    },
     UnknownRelation {
         object_type: String,
         relation: String,
@@ -959,6 +1368,12 @@ pub enum AuthorizationError {
     BatchLimitExceeded {
         maximum_items: usize,
     },
+    /// A list found more distinct candidates (objects for ListObjects,
+    /// subjects for ListUsers) than its configured bound. No partial list is
+    /// returned.
+    ListCandidateLimitExceeded {
+        maximum_candidates: usize,
+    },
     /// A request carried more than [`MAX_CONTEXTUAL_TUPLES`] contextual tuples.
     ContextualTupleLimitExceeded {
         maximum_tuples: usize,
@@ -1008,6 +1423,15 @@ impl std::fmt::Display for AuthorizationError {
                 write!(
                     f,
                     "subject type '{subject_type}' is not in the authorization model"
+                )
+            }
+            Self::UnknownSubjectRelation {
+                subject_type,
+                relation,
+            } => {
+                write!(
+                    f,
+                    "subject userset relation '{subject_type}#{relation}' is not in the authorization model"
                 )
             }
             Self::UnknownRelation {
@@ -1077,6 +1501,10 @@ impl std::fmt::Display for AuthorizationError {
             Self::BatchLimitExceeded { maximum_items } => {
                 write!(f, "batch check exceeded its limit of {maximum_items} items")
             }
+            Self::ListCandidateLimitExceeded { maximum_candidates } => write!(
+                f,
+                "list exceeded its limit of {maximum_candidates} candidates"
+            ),
             Self::ContextualTupleLimitExceeded { maximum_tuples } => write!(
                 f,
                 "request exceeded its limit of {maximum_tuples} contextual tuples"

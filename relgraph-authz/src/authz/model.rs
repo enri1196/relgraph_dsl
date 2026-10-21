@@ -2,9 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use relgraph_dsl::{
-    RelationCondition, RelationExpression, RelationTarget, Schema, validate_schema,
-};
+use relgraph_dsl::{RelationCondition, RelationExpression, Schema, validate_schema};
 
 use super::conditions::{self, CompiledCondition};
 use super::request::{
@@ -57,7 +55,18 @@ impl CompiledTargetRestriction {
 pub(crate) struct CompiledTarget {
     pub(crate) type_id: usize,
     pub(crate) restriction: CompiledTargetRestriction,
-    pub(crate) condition_id: Option<usize>,
+    pub(crate) condition: CompiledTargetCondition,
+}
+
+/// The condition a direct-assignment target requires its tuples to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompiledTargetCondition {
+    Unconditioned,
+    /// A model condition, by its index in the schema's declarations.
+    Named(usize),
+    /// An inline expression (`$expression`) whose CEL source and parameter
+    /// types each tuple stores.
+    Inline,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,8 +118,7 @@ impl CompiledModel {
     /// Compiles runtime structures from a schema that already passed semantic
     /// validation at its trust boundary.
     pub(crate) fn compile_validated(schema: Schema) -> Result<Self, ConstructionError> {
-        let mut capability_errors = unsupported_capabilities(&schema);
-        capability_errors.extend(recursive_dependencies(&schema));
+        let capability_errors = recursive_dependencies(&schema);
         if !capability_errors.is_empty() {
             return Err(ConstructionError::UnsupportedCapabilities(
                 capability_errors,
@@ -327,6 +335,9 @@ impl CompiledModel {
         }
 
         if let Some(context) = tuple.condition() {
+            if context.name().as_str() == conditions::INLINE_EXPRESSION_NAME {
+                return conditions::validate_inline_condition(context.values());
+            }
             let condition =
                 self.condition(context.name().as_str())
                     .ok_or(AuthorizationError::InvalidTuple(
@@ -371,7 +382,7 @@ impl CompiledModel {
             let target = self.target(target_id);
             target.type_id == type_id
                 && target.restriction.matches(restriction)
-                && self.condition_matches(target.condition_id, tuple)
+                && self.condition_matches(target.condition, tuple)
         });
         if matches {
             Ok(restriction)
@@ -385,13 +396,16 @@ impl CompiledModel {
     /// Returns whether a tuple carries exactly the condition a target declares.
     pub(crate) fn condition_matches(
         &self,
-        condition_id: Option<usize>,
+        condition: CompiledTargetCondition,
         tuple: &RelationshipTuple,
     ) -> bool {
-        match (condition_id, tuple.condition()) {
-            (None, None) => true,
-            (Some(expected), Some(context)) => {
+        match (condition, tuple.condition()) {
+            (CompiledTargetCondition::Unconditioned, None) => true,
+            (CompiledTargetCondition::Named(expected), Some(context)) => {
                 self.condition_id(context.name().as_str()) == Some(expected)
+            }
+            (CompiledTargetCondition::Inline, Some(context)) => {
+                context.name().as_str() == conditions::INLINE_EXPRESSION_NAME
             }
             _ => false,
         }
@@ -438,21 +452,19 @@ fn compile_targets(
                     .expect("validated target relation has a compiled index"),
             ),
         };
-        let condition_id = match &target.condition {
-            None => None,
-            Some(relgraph_dsl::RelationCondition::Named(name)) => Some(
+        let condition = match &target.condition {
+            None => CompiledTargetCondition::Unconditioned,
+            Some(RelationCondition::Named(name)) => CompiledTargetCondition::Named(
                 *condition_index
                     .get(name)
                     .expect("validated target condition has a compiled index"),
             ),
-            Some(relgraph_dsl::RelationCondition::InlineExpression) => {
-                unreachable!("unsupported inline conditions were rejected above")
-            }
+            Some(RelationCondition::InlineExpression) => CompiledTargetCondition::Inline,
         };
         targets.push(CompiledTarget {
             type_id: target_type_id,
             restriction,
-            condition_id,
+            condition,
         });
     }
     range
@@ -556,73 +568,6 @@ impl ExpressionCompiler<'_> {
         let expression_id = self.expressions.len();
         self.expressions.push(expression);
         expression_id
-    }
-}
-
-/// Collects all model constructs that exceed the initial runtime profile.
-fn unsupported_capabilities(schema: &Schema) -> Vec<CapabilityDiagnostic> {
-    let mut diagnostics = Vec::new();
-
-    for type_definition in &schema.type_definitions {
-        for relation in &type_definition.relations {
-            let location = RelationLocation {
-                object_type: type_definition.name.clone(),
-                relation: relation.name.clone(),
-            };
-            inspect_expression(
-                &relation.definition.expression,
-                &location,
-                relation.span.clone(),
-                &mut diagnostics,
-            );
-        }
-    }
-
-    diagnostics
-}
-
-/// Recursively checks one relation expression and all of its operands.
-fn inspect_expression(
-    expression: &RelationExpression,
-    location: &RelationLocation,
-    span: Option<relgraph_dsl::SourceSpan>,
-    diagnostics: &mut Vec<CapabilityDiagnostic>,
-) {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
-        match expression {
-            RelationExpression::DirectAssignment(targets) => {
-                for target in targets {
-                    inspect_target(target, location, span.clone(), diagnostics);
-                }
-            }
-            RelationExpression::ComputedUserset(_) | RelationExpression::TupleToUserset { .. } => {}
-            RelationExpression::Union(left, right)
-            | RelationExpression::Intersection(left, right)
-            | RelationExpression::Difference(left, right) => {
-                pending.push(right);
-                pending.push(left);
-            }
-        }
-    }
-}
-
-/// Checks whether a direct-assignment target requires unsupported semantics.
-fn inspect_target(
-    target: &RelationTarget,
-    location: &RelationLocation,
-    span: Option<relgraph_dsl::SourceSpan>,
-    diagnostics: &mut Vec<CapabilityDiagnostic>,
-) {
-    match target.condition {
-        Some(RelationCondition::Named(_)) => {}
-        Some(RelationCondition::InlineExpression) => diagnostics.push(CapabilityDiagnostic {
-            capability: RuntimeCapability::InlineConditionExpression,
-            relation: Some(location.clone()),
-            span,
-            message: "inline condition expressions are not supported yet".into(),
-        }),
-        None => {}
     }
 }
 

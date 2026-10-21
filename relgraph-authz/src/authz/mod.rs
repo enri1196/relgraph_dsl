@@ -2,6 +2,7 @@
 
 mod conditions;
 mod evaluator;
+mod ipaddress;
 mod model;
 mod parameter_profile;
 pub mod policy;
@@ -13,21 +14,26 @@ pub use request::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, CapabilityDiagnostic,
     CheckRequest, ConditionContextSource, ConditionName, ConstructionError, ContextualTupleError,
     EntityId, EvaluationLimits, EvaluationLimitsError, FilteredObjects, IdentifierError,
-    MAX_CONTEXTUAL_TUPLES, ObjectRef, RelationExpressionKind, RelationLocation, RelationName,
-    RuntimeCapability, Subject, TenantId, TypeName,
+    ListObjectsRequest, ListUsersRequest, MAX_CONTEXTUAL_TUPLES, ObjectRef, RelationExpressionKind,
+    RelationLocation, RelationName, RuntimeCapability, Subject, TenantId, TypeName, UserFilter,
+    UserFilterError,
 };
 pub use store::{
     ConditionContext, InMemoryReadSession, InMemoryRelationshipStore,
     MAX_CONDITION_CONTEXT_ELEMENTS, MAX_CONDITION_CONTEXT_SERIALIZED_BYTES, RelationshipPage,
     RelationshipReadSession, RelationshipStore, RelationshipTuple, RelationshipWriteStore,
-    StoreCursor, StoreError, StoreErrorKind, StoreFuture, TupleSubject,
+    ReverseLookupSession, ReverseLookupStore, StoreCursor, StoreError, StoreErrorKind, StoreFuture,
+    TupleSubject,
 };
 pub use write::WriteError;
 
 use std::fmt;
 use std::sync::Arc;
 
-use evaluator::{batch_check as evaluate_batch_check, check as evaluate_check};
+use evaluator::{
+    batch_check as evaluate_batch_check, check as evaluate_check,
+    list_objects as evaluate_list_objects, list_users as evaluate_list_users,
+};
 use model::CompiledModel;
 
 /// Marker for a compiled authorization model that has no relationship store.
@@ -268,6 +274,172 @@ impl<S: RelationshipStore> FgaAuthz<Bound<S>> {
             }
         }
         Ok(filtered)
+    }
+
+    /// Lists the subjects selected by `request.filter()` that hold
+    /// `request.relation()` on `request.object()`, sorted by type, ID (a
+    /// typed wildcard as `*`) and userset relation.
+    ///
+    /// A subject is listed exactly when [`Self::check`] with it as the
+    /// subject, and the request's contexts and contextual tuples, would
+    /// allow. A type filter (`user`) lists concrete subjects (`user:anne`)
+    /// and the typed wildcard (`user:*`); a subject granted only through a
+    /// wildcard tuple is not listed by ID, the wildcard is. A userset filter
+    /// (`group#member`) lists usersets (`group:eng#member`), including the
+    /// object's own userset when the filter names the listed relation.
+    ///
+    /// One read session serves the whole list, and the store needs no reverse
+    /// lookup. A forward expansion from the object over stored and contextual
+    /// tuples (computed usersets, userset tuples and tuple-to-userset, never a
+    /// subtracted operand) finds the candidates; conditions never prune them.
+    /// Each candidate is then decided by its own check on that session, with
+    /// its own memo and budgets. Denied candidates are omitted.
+    ///
+    /// The list fails, and never returns a partial result, when the object
+    /// type or relation is unknown, the filter's type or userset relation is
+    /// not in the model ([`AuthorizationError::UnknownSubjectType`],
+    /// [`AuthorizationError::UnknownSubjectRelation`]), a contextual tuple is
+    /// invalid, a stored tuple no longer fits the model, any candidate's
+    /// check fails, or a limit is hit: more distinct candidates than
+    /// [`EvaluationLimits::max_list_candidates`]
+    /// ([`AuthorizationError::ListCandidateLimitExceeded`]), or a tuple,
+    /// store-call, depth or work budget. The expansion has one set of those
+    /// budgets and each candidate's check has its own. Unlike a check, an
+    /// exact repeat among the contextual tuples is dropped, not rejected.
+    ///
+    /// ```
+    /// use relgraph_authz::{
+    ///     EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ListUsersRequest, ObjectRef,
+    ///     RelationName, RelationshipTuple, Subject, TenantId, TupleSubject, TypeName,
+    ///     UserFilter,
+    /// };
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # tokio::runtime::Builder::new_current_thread().build()?.block_on(async {
+    /// let tenant = TenantId::new("acme")?;
+    /// let document = ObjectRef::new("document", "1")?;
+    /// let store = InMemoryRelationshipStore::new();
+    /// store.insert(RelationshipTuple::new(
+    ///     tenant.clone(),
+    ///     document.clone(),
+    ///     RelationName::new("editor")?,
+    ///     Subject::new("user", "bob")?,
+    /// ))?;
+    /// store.insert(RelationshipTuple::new(
+    ///     tenant.clone(),
+    ///     document.clone(),
+    ///     RelationName::new("viewer")?,
+    ///     TupleSubject::TypedWildcard(TypeName::new("user")?),
+    /// ))?;
+    /// let authorizer = FgaAuthz::new(
+    ///     "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define editor: [user]\n    define viewer: [user, user:*] or editor\n",
+    /// )?
+    /// .with_store(store, EvaluationLimits::default());
+    ///
+    /// let request = ListUsersRequest::new(
+    ///     tenant,
+    ///     document,
+    ///     RelationName::new("viewer")?,
+    ///     "user".parse::<UserFilter>()?,
+    /// );
+    /// let users = authorizer.list_users(&request).await?;
+    /// assert_eq!(
+    ///     users,
+    ///     [
+    ///         TupleSubject::TypedWildcard(TypeName::new("user")?),
+    ///         Subject::new("user", "bob")?.into(),
+    ///     ]
+    /// );
+    /// # Ok(())
+    /// # })
+    /// # }
+    /// ```
+    pub async fn list_users(
+        &self,
+        request: &ListUsersRequest,
+    ) -> Result<Vec<TupleSubject>, AuthorizationError> {
+        evaluate_list_users(
+            &self.compiled,
+            self.state.store.as_ref(),
+            self.state.limits,
+            request,
+        )
+        .await
+    }
+}
+
+impl<S: ReverseLookupStore> FgaAuthz<Bound<S>> {
+    /// Lists the objects of `request.object_type()` on which the subject holds
+    /// `request.relation()`, sorted by object ID.
+    ///
+    /// An object is listed exactly when [`Self::check`] with the request's
+    /// subject, contexts and contextual tuples would allow it. One read
+    /// session serves the whole list. A reverse traversal from the subject
+    /// over stored and contextual tuples (through
+    /// [`ReverseLookupSession::tuples_by_subject_page`]) finds the candidates;
+    /// conditions never prune them. Each candidate is then checked, sharing
+    /// memoized decisions as a batch does. Denied candidates are omitted.
+    ///
+    /// The list fails, and never returns a partial result, when the object
+    /// type or relation is unknown, the subject is invalid as for `check`, a
+    /// contextual tuple is invalid, a stored tuple no longer fits the model,
+    /// any candidate's check fails, or a limit is hit: more distinct
+    /// candidates than [`EvaluationLimits::max_list_candidates`]
+    /// ([`AuthorizationError::ListCandidateLimitExceeded`]), or a tuple,
+    /// store-call, depth or work budget. The traversal has one set of those
+    /// budgets and each candidate's check has its own. Unlike a check, an
+    /// exact repeat among the contextual tuples is dropped, not rejected.
+    ///
+    /// ```
+    /// use relgraph_authz::{
+    ///     EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ListObjectsRequest,
+    ///     ObjectRef, RelationName, RelationshipTuple, Subject, TenantId, TypeName,
+    /// };
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # tokio::runtime::Builder::new_current_thread().build()?.block_on(async {
+    /// let tenant = TenantId::new("acme")?;
+    /// let anne = Subject::new("user", "anne")?;
+    /// let store = InMemoryRelationshipStore::new();
+    /// for id in ["2", "1"] {
+    ///     store.insert(RelationshipTuple::new(
+    ///         tenant.clone(),
+    ///         ObjectRef::new("document", id)?,
+    ///         RelationName::new("editor")?,
+    ///         anne.clone(),
+    ///     ))?;
+    /// }
+    /// let authorizer = FgaAuthz::new(
+    ///     "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define editor: [user]\n    define viewer: [user] or editor\n",
+    /// )?
+    /// .with_store(store, EvaluationLimits::default());
+    ///
+    /// let request = ListObjectsRequest::new(
+    ///     tenant,
+    ///     anne,
+    ///     TypeName::new("document")?,
+    ///     RelationName::new("viewer")?,
+    /// );
+    /// let objects = authorizer.list_objects(&request).await?;
+    /// assert_eq!(
+    ///     objects,
+    ///     [ObjectRef::new("document", "1")?, ObjectRef::new("document", "2")?]
+    /// );
+    /// # Ok(())
+    /// # })
+    /// # }
+    /// ```
+    pub async fn list_objects(
+        &self,
+        request: &ListObjectsRequest,
+    ) -> Result<Vec<ObjectRef>, AuthorizationError> {
+        evaluate_list_objects(
+            &self.compiled,
+            self.state.store.as_ref(),
+            self.state.limits,
+            request,
+        )
+        .await
     }
 }
 

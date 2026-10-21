@@ -249,8 +249,9 @@ while the batch runs is not observed by later items, and items share memoized
 relation decisions (for example a group membership or parent folder reached by
 several items) and converted request values. An item's error, including an
 unknown object type or relation, stays in that item's result; the outer error
-reports a batch larger than `max_batch_items`, an unknown subject type, invalid
-contextual tuples, or a failure to open the read session. Each item gets fresh tuple, store-call, and
+reports a batch larger than `max_batch_items`, an unknown subject type or
+userset relation, invalid contextual tuples, or a failure to open the read
+session. Each item gets fresh tuple, store-call, and
 work budgets. A memoized decision spends no budget, so an item can succeed in a
 batch where a separate check would exceed a limit. `max_batch_items` defaults
 to 100 and accepts up to 1,000. `filter_objects(tenant, subject, relation,
@@ -259,6 +260,190 @@ returns the allowed
 candidates and per-candidate errors separately; candidates may mix object types
 that define the relation. A durable store may hold one connection and
 transaction for the whole batch.
+
+## Listing objects
+
+`list_objects` answers OpenFGA's ListObjects: the objects of one type on which
+a subject holds a relation, sorted by object ID. It needs a store whose read
+session implements `ReverseLookupSession` (`ReverseLookupStore` is implemented
+for every such store); the in-memory store does. Check-only stores are
+unaffected. The same example is compile-checked in the `list_objects`
+documentation:
+
+```rust,no_run
+use relgraph_authz::{
+    EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ListObjectsRequest,
+    ObjectRef, RelationName, RelationshipTuple, Subject, TenantId, TypeName,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let tenant = TenantId::new("acme")?;
+let anne = Subject::new("user", "anne")?;
+let store = InMemoryRelationshipStore::new();
+for id in ["2", "1"] {
+    store.insert(RelationshipTuple::new(
+        tenant.clone(),
+        ObjectRef::new("document", id)?,
+        RelationName::new("editor")?,
+        anne.clone(),
+    ))?;
+}
+let authorizer = FgaAuthz::new(
+    "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define editor: [user]\n    define viewer: [user] or editor\n",
+)?
+.with_store(store, EvaluationLimits::default());
+
+let request = ListObjectsRequest::new(
+    tenant,
+    anne,
+    TypeName::new("document")?,
+    RelationName::new("viewer")?,
+);
+let objects = authorizer.list_objects(&request).await?;
+assert_eq!(
+    objects,
+    [ObjectRef::new("document", "1")?, ObjectRef::new("document", "2")?]
+);
+# Ok(())
+# }
+```
+
+The list does not reimplement the check. A reverse traversal from the subject
+finds candidates: tuples naming the subject (and, for a concrete subject, its
+type's wildcard) through `ReverseLookupSession::tuples_by_subject_page`, a
+userset subject's own key, and then, to a fixpoint, the same-object relations
+that compute a reached relation (union and intersection operands, the base of
+a difference), tuples naming a reached userset, and tupleset tuples naming a
+reached object. Contextual tuples are read as extra edges; stored tuples are
+validated before they are followed, so one that drifted from the model fails
+the list. Conditions never prune candidates. Each candidate is then decided by
+the check evaluator on the same read session, sharing memoized decisions as a
+batch does, so subjects, wildcards, usersets, contexts and the
+error-versus-deny rules are exactly those of `check`. Denied candidates are
+omitted.
+
+A list never returns a partial result. Any candidate's check error fails it,
+and so does a hit on any limit: more distinct candidates than
+`EvaluationLimits::max_list_candidates` (default 1,000, at most 10,000;
+`AuthorizationError::ListCandidateLimitExceeded`), or a tuple, store-call,
+depth or work budget. The traversal has one set of those budgets and each
+candidate's check has its own. An unknown object type, relation or subject
+fails as it does for `check`. Unlike `check`, a list drops an exact repeat
+among its contextual tuples instead of rejecting it, as OpenFGA's ListObjects
+does. Both bundled stores implement reverse lookup: the in-memory store scans
+its snapshot, and `relgraph-authz-postgres` pages by `tuple_id` over its
+`MIGRATION_0002` subject index.
+
+## Listing users
+
+`list_users` answers OpenFGA's ListUsers: the subjects selected by one filter
+that hold a relation on one object, sorted by type, ID (a typed wildcard as
+`*`) and userset relation. It needs only a `RelationshipStore`, no reverse
+lookup. The filter is a `UserFilter`: a type (`user`, built with
+`UserFilter::new` or parsed from `"user"`) or a userset relation
+(`group#member`, `UserFilter::userset` or `"group#member"`). Parsing rejects
+any other form, such as `user:anne`, `user:*` or `a#b#c`, with
+`UserFilterError`; a filter type or relation absent from the model fails with
+`AuthorizationError::UnknownSubjectType` or `UnknownSubjectRelation`. The same
+example is compile-checked in the `list_users` documentation:
+
+```rust,no_run
+use relgraph_authz::{
+    EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ListUsersRequest, ObjectRef,
+    RelationName, RelationshipTuple, Subject, TenantId, TupleSubject, TypeName,
+    UserFilter,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let tenant = TenantId::new("acme")?;
+let document = ObjectRef::new("document", "1")?;
+let store = InMemoryRelationshipStore::new();
+store.insert(RelationshipTuple::new(
+    tenant.clone(),
+    document.clone(),
+    RelationName::new("editor")?,
+    Subject::new("user", "bob")?,
+))?;
+store.insert(RelationshipTuple::new(
+    tenant.clone(),
+    document.clone(),
+    RelationName::new("viewer")?,
+    TupleSubject::TypedWildcard(TypeName::new("user")?),
+))?;
+let authorizer = FgaAuthz::new(
+    "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define editor: [user]\n    define viewer: [user, user:*] or editor\n",
+)?
+.with_store(store, EvaluationLimits::default());
+
+let request = ListUsersRequest::new(
+    tenant,
+    document,
+    RelationName::new("viewer")?,
+    "user".parse::<UserFilter>()?,
+);
+let users = authorizer.list_users(&request).await?;
+assert_eq!(
+    users,
+    [
+        TupleSubject::TypedWildcard(TypeName::new("user")?),
+        Subject::new("user", "bob")?.into(),
+    ]
+);
+# Ok(())
+# }
+```
+
+As for ListObjects, the list does not reimplement the check. A forward
+expansion from the object finds candidates with `tuples_page`, following to a
+fixpoint the operands that can grant (union and intersection operands, the
+base of a difference, never its subtracted operand): computed usersets on the
+same object, the usersets that assignment tuples name, and the
+tuple-to-userset targets that tupleset tuples name. A type filter collects the
+concrete subjects and typed wildcards of its type that assignment tuples name.
+A subject granted only through a wildcard tuple is therefore listed as the
+wildcard (`user:*`), not by ID, as upstream does. A userset filter collects
+every reached userset of its relation, including the object's own userset when
+the filter names the listed relation (`group:eng#member` is a `member` of
+`group:eng`). Contextual tuples are read as extra edges, stored tuples are
+validated before they are followed, and conditions never prune candidates.
+
+A check scope fixes one subject, so each candidate is decided by its own check
+evaluator on the one read session: wildcards, usersets, contexts and the
+error-versus-deny rules are exactly those of a separate `check` with that
+subject. Denied candidates are omitted. The limits and failure rules are those
+of `list_objects`: no partial result, one budget set for the expansion, one
+per candidate decision, at most `max_list_candidates` distinct candidates, and
+exact repeats among the contextual tuples dropped.
+
+Because each candidate's decision is a check, a decisive allow masks an error
+in another branch, as in `check`. Upstream ListUsers instead reports a missing
+condition parameter from any branch it expands, even where upstream Check
+allows the same inputs, so for such inputs Relgraph lists the subject and
+OpenFGA errors (two ABAC corpus cases). Whether ListUsers should follow
+upstream here awaits a maintainer decision (`SKIP_LIST_PLAN.md` Task 8).
+
+## Userset and wildcard check subjects
+
+`CheckRequest::new` and `BatchCheckRequest::new` take any `TupleSubject`. A
+concrete `Subject` converts into one, so the usual call is unchanged. As in
+OpenFGA's Check, the subject may also be a userset or a typed wildcard:
+
+- A userset subject (`group:eng#member`) is allowed by a tuple naming that
+  exact userset, by membership of another userset (a tuple
+  `group:staff#member@group:eng#member`), through computed usersets and
+  tuple-to-userset as usual, and on its own object and relation
+  (`group:eng#member` is a `member` of `group:eng`, OpenFGA's
+  `IsSelfDefining`). A wildcard tuple never allows it.
+- A wildcard subject (`user:*`) is allowed only by a wildcard tuple of its
+  type, directly or through a userset; a tuple for a concrete user never
+  allows it.
+
+An unknown subject type fails with `AuthorizationError::UnknownSubjectType`
+and a userset relation its type does not define with
+`AuthorizationError::UnknownSubjectRelation` (the outer error of a batch).
+These subjects answer questions such as "can every member of this group view
+the document?". The Axum middleware and `RoutePolicy` always check the
+authenticated principal as a concrete subject.
 
 ## Contextual tuples
 
@@ -308,7 +493,7 @@ Build them only from trusted application state, never directly from
 unauthenticated request input. The Axum middleware and `RoutePolicy` have no
 way to fill them from an HTTP request (no `ContextBinding` source exists for
 them), and `filter_objects` never carries any; an application that needs them
-calls `check` or `batch_check` itself.
+calls `check`, `batch_check`, `list_objects` or `list_users` itself.
 
 Validation happens once per check or batch, after the request's object,
 relation and subject type are resolved and before the store is read. The whole
@@ -319,7 +504,7 @@ tuple (in request order) that names another tenant, fails
 `FgaAuthz::validate_tuple` (the error is kept in `ContextualTupleError::Model`),
 or exactly repeats an earlier contextual tuple. In a batch these are outer
 errors. OpenFGA has no tenants and accepts repeated contextual tuples; Relgraph
-rejects both.
+rejects both, except that `list_objects` and `list_users` drop a repeat.
 
 During evaluation, a relation's contextual tuples are read before its stored
 tuples, and a stored tuple equal to a contextual one (the same tenant, object,
@@ -401,18 +586,62 @@ separate from parser acceptance.
 
 The pinned CEL implementation is `cel-core = 0.5.1`. The supported condition
 types are `bool`, `int`, `uint`, `double`, `string`, `duration`, `timestamp`,
-and one-level `list<T>` or `map<T>` containers over those scalar types (map
-keys are strings). Timestamps use RFC3339 and durations use CEL/OpenFGA
-duration strings. The expression profile includes boolean, numeric, and string
-comparisons and arithmetic; field and index access; `has`, `size`,
-`startsWith`, `endsWith`, and `matches`; and scalar/time conversions `int`,
-`uint`, `double`, `string`, `bytes`, `duration`, and `timestamp`.
+`ipaddress`, and one-level `list<T>` or `map<T>` containers over those scalar
+types (map keys are strings). Timestamps use RFC3339, durations use CEL/OpenFGA
+duration strings, and IP addresses are strings. The expression profile includes
+boolean, numeric, and string comparisons and arithmetic; field and index
+access; `has`, `size`, `startsWith`, `endsWith`, and `matches`; and scalar/time
+conversions `int`, `uint`, `double`, `string`, `bytes`, `duration`, and
+`timestamp`.
+
+OpenFGA's `ipaddress` extension is implemented locally on top of `cel-core`
+(plan Decision D1), following `internal/condition/types/ipaddress.go` at
+OpenFGA `v1.21.0`. Every condition can use `ipaddress(string)`,
+`<ipaddress>.in_cidr(string)`, and `==` / `!=` between addresses (also through
+`in` on a `list<ipaddress>`). Addresses are unmapped, so `::ffff:192.0.2.1`
+equals `192.0.2.1` and matches IPv4 CIDRs. A CIDR may have host bits set; its
+prefix length is decimal without a sign or leading zero; an IPv4-mapped IPv6
+prefix of at least 96 bits is treated as the matching IPv4 prefix; IPv4
+addresses never match IPv6 prefixes and vice versa. A malformed address in a
+context is `InvalidConditionContext`, a malformed `ipaddress(...)` argument or
+CIDR is `ConditionEvaluationFailed`, and a missing value is
+`MissingConditionContext`. The `ipaddress.json` differential fixture checks
+these decisions against the pinned server. One difference is deliberate: IPv6
+zone identifiers such as `fe80::1%eth0` are rejected as malformed, while
+OpenFGA parses them (a zoned address there matches no CIDR unless it is
+IPv4-mapped). For condition cost, an address counts like its source string and
+each extension call like any other expression node; there is no OpenFGA cost
+parity.
+
+Inline condition expressions (`define viewer: [user with $expression]`,
+decision S3) follow OpenFGA `v1.21.0` (`internal/condition/inline.go`). A
+tuple for such a restriction has the condition name `$expression` and a
+context with two keys: `expression`, the CEL source (a non-empty string), and
+the optional `parameters`, a map from parameter name to type name such as
+`int` or `list<string>`. An identifier the expression uses without declaring
+it is a `string` parameter, as upstream infers. The expression is compiled with
+the same profile, `bool` result rule and cost estimate as a model condition:
+when `validate_tuple` / `write_tuple` checks the tuple, and on first use in a
+check or batch, which caches each distinct source for the rest of that check
+or batch. A malformed context, a type outside the profile, or an expression
+that does not compile to `bool` is `InvalidTuple`, both on write and as a
+strict read error. Parameter values come from the request (global context, or
+condition-scoped context under `$expression`); the stored context holds none,
+and any key other than `expression` and `parameters` is rejected (upstream
+ignores extra keys). The stored-context byte and element limits apply as for
+named conditions. Tuples that differ only in expression or parameter types are
+distinct tuples. `requirements` reports an inline restriction as the condition
+`$expression` with no parameters, and a `ContextBinding` cannot name it.
 
 `list.contains(value)` is not supported by the pinned compiler. Bytes as
-declared values, `any`, IP addresses, nested containers, custom/message types,
+declared values, `any`, nested containers, custom/message types, other
 extension functions, and comprehension macros are rejected during model
 construction. Parser support for a syntax form does not imply that the local
-authorization runtime can execute it.
+authorization runtime can execute it. The pinned checker is also more
+permissive than OpenFGA's in one known way: it accepts `==` / `!=` between
+operands of unrelated types (verified for an `ipaddress` and a string, and for
+an `int` and a string), which OpenFGA rejects when the model is written;
+locally an address compared with a string is simply unequal.
 
 ## Permanent differences from OpenFGA
 
@@ -428,22 +657,15 @@ gives the measured case counts at OpenFGA `v1.21.0`.
   hop. The evaluator's least-fixed-point memoization is sound only because
   such cycles never reach it (see
   [Supported runtime profile](#supported-runtime-profile)). Corpus impact:
-  three models and their checks (15 cases).
-- **Inline condition expressions.** A restriction such as
-  `define editor: [user with $expression]` takes its CEL expression and
-  parameter declarations from each tuple's condition context. The DSL parser
-  accepts the syntax, but runtime construction rejects it
-  (`RuntimeCapability::InlineConditionExpression`): Relgraph compiles and
-  type-checks every condition once, from the model, and does not treat stored
-  tuple data as code. Corpus impact: nine ABAC models and their checks (51
-  cases).
+  three models, their checks and list assertions (29 cases).
 - **Strict reads of tuples that no longer fit the model.** When a stored tuple
   stops matching the current model (its type restriction, condition or
   tupleset target was removed), OpenFGA silently ignores it during Check;
   Relgraph reports `AuthorizationError::InvalidTuple`, so drift is visible
   instead of changing decisions. Repair goes through the store directly.
-  Corpus impact: 24 checks in multi-stage tests that change the model after
-  writing tuples.
+  The list APIs decide candidates with the same check, so they fail the same
+  way. Corpus impact: 24 checks and 18 list assertions in multi-stage tests
+  that change the model after writing tuples.
 
 Two smaller deliberate differences have no corpus case: contextual tuples are
 checked against the request tenant and an exact repeat is rejected (see

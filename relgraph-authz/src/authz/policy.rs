@@ -13,7 +13,10 @@ use relgraph_dsl::{ConditionDefinition, ParameterType};
 use super::parameter_profile::{RuntimeParameterType, RuntimeScalarType};
 use serde_json::Value;
 
-use super::model::{CompiledExpression, CompiledModel, CompiledTargetRestriction};
+use super::conditions::INLINE_EXPRESSION_NAME;
+use super::model::{
+    CompiledExpression, CompiledModel, CompiledTargetCondition, CompiledTargetRestriction,
+};
 use super::{EntityId, FgaAuthz, Subject};
 
 /// A type/relation pair in the validated authorization model.
@@ -60,6 +63,8 @@ pub enum ContextValueType {
     Duration,
     /// RFC3339 timestamp string, converted to CEL timestamp at evaluation.
     Timestamp,
+    /// IP address string, converted to OpenFGA's CEL `ipaddress` at evaluation.
+    IpAddress,
     /// One-level list of scalar values.
     List(Box<Self>),
     /// One-level string-keyed map of scalar values.
@@ -76,6 +81,7 @@ impl ContextValueType {
             RuntimeScalarType::String => Self::String,
             RuntimeScalarType::Duration => Self::Duration,
             RuntimeScalarType::Timestamp => Self::Timestamp,
+            RuntimeScalarType::IpAddress => Self::IpAddress,
         };
 
         match RuntimeParameterType::from_dsl(value)? {
@@ -105,7 +111,7 @@ impl ContextValueType {
                 }
                 number.as_f64().is_some_and(f64::is_finite)
             }),
-            Self::String | Self::Duration | Self::Timestamp => value.is_string(),
+            Self::String | Self::Duration | Self::Timestamp | Self::IpAddress => value.is_string(),
             Self::List(inner) => value
                 .as_array()
                 .is_some_and(|values| values.iter().all(|value| inner.accepts(value))),
@@ -126,6 +132,7 @@ impl fmt::Display for ContextValueType {
             Self::String => f.write_str("string"),
             Self::Duration => f.write_str("duration"),
             Self::Timestamp => f.write_str("timestamp"),
+            Self::IpAddress => f.write_str("ipaddress"),
             Self::List(inner) => write!(f, "list<{inner}>"),
             Self::Map(inner) => write!(f, "map<{inner}>"),
         }
@@ -193,6 +200,12 @@ impl AssignmentRequirement {
 }
 
 /// A condition name and the typed parameters declared by its model definition.
+///
+/// An inline condition expression (`[user with $expression]`) is reported as
+/// the name `$expression` with no parameters: each of its tuples stores its own
+/// CEL source and parameter types, so the model declares none, and a
+/// [`ContextBinding`] cannot name it. Its inputs come from the request's
+/// global context, or its condition-scoped context under `$expression`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionRequirement {
     name: String,
@@ -993,12 +1006,17 @@ fn describe_compiled_expression(
                         Some(compiled.relation_name(relation_id).to_owned())
                     }
                 };
-                let condition = target
-                    .condition_id
-                    .map(|condition_id| {
-                        describe_condition(compiled.condition_definition(condition_id))
-                    })
-                    .transpose()?;
+                let condition = match target.condition {
+                    CompiledTargetCondition::Unconditioned => None,
+                    CompiledTargetCondition::Named(condition_id) => Some(describe_condition(
+                        compiled.condition_definition(condition_id),
+                    )?),
+                    // Each tuple stores its own expression and parameter types.
+                    CompiledTargetCondition::Inline => Some(ConditionRequirement {
+                        name: INLINE_EXPRESSION_NAME.to_owned(),
+                        parameters: Vec::new(),
+                    }),
+                };
                 assignments.push(AssignmentRequirement {
                     subject_type: compiled.type_name(target.type_id).to_owned(),
                     subject_relation,

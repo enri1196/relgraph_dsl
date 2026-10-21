@@ -99,9 +99,10 @@ The parser preserves condition-body bytes and stops at the first visible
 `RBRACE` token. It does not balance braces: a nested map's first unquoted `}`
 ends the condition, while an unmatched opening `{` can remain syntax-valid.
 The `$expression` condition marker is accepted by syntax and bounded static
-validation; `relgraph-authz` runtime construction rejects it
-(`InlineConditionExpression`, a permanent difference listed in that crate's
-README). Measured agreement with upstream's own language tests is in
+validation (`relation-conditions`), and `relgraph-authz` evaluates it from
+each tuple's stored expression (see that crate's README). As a condition
+name it is reserved: a constructed declaration or named reference using it is
+`ReservedConditionName`. Measured agreement with upstream's own language tests is in
 [Upstream language corpora](#upstream-language-corpora) below.
 
 Manifest YAML examples are under `manifest/`; modular composition examples are

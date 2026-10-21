@@ -5,9 +5,9 @@ mod common;
 
 use common::{block_on, request};
 use relgraph_authz::{
-    AuthorizationDecision, AuthorizationError, ConditionContext, EvaluationLimits, FgaAuthz,
-    InMemoryRelationshipStore, ObjectRef, RelationName, RelationshipTuple, Subject, TenantId,
-    TupleSubject,
+    AuthorizationDecision, AuthorizationError, ConditionContext, ConstructionError,
+    EvaluationLimits, FgaAuthz, InMemoryRelationshipStore, ObjectRef, RelationName,
+    RelationshipTuple, RuntimeCapability, Subject, TenantId, TupleSubject,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -344,4 +344,74 @@ fn wide_nested_groups_stay_within_default_limits() {
         decide(&authz, "zoe", "group", "child-0", "member").unwrap(),
         AuthorizationDecision::Deny
     );
+}
+
+/// The least-fixed-point rules above are sound only because construction
+/// rejects cycles through a `but not` subtracted operand (decision S2). These
+/// are the models of the skipped upstream stages
+/// `{false,true}_butnot_cycle_return_false::0` and
+/// `list_objects_expands_wildcard_tuple::2`.
+#[test]
+fn upstream_negation_cycle_models_are_rejected_at_construction() {
+    let butnot_cycle = concat!(
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n",
+        "    define restricted: [user, document#viewer]\n",
+        "    define viewer: [user] but not restricted\n",
+    );
+    // The cycle `group#member -> group#blocked -> group#member` shares its
+    // component with positive tuple-to-userset cycles and has an intersection
+    // as its base operand.
+    let wildcard_complex = concat!(
+        "model\nschema 1.1\ntype user\ntype folder\n  relations\n",
+        "    define parent: [folder]\n",
+        "    define owner: [group]\n",
+        "    define folder_reader: [user, group#member] or folder_reader from owner or folder_reader from parent\n",
+        "    define blocked: [user, user:*, group#member] or nblocked from parent\n",
+        "    define unblocked: [user, group#member]\n",
+        "    define nblocked: blocked but not unblocked\n",
+        "    define allowed: [user, user:*, group#member] or allowed from parent\n",
+        "    define super_allowed: [user, group#member] or super_allowed from parent\n",
+        "    define reader: folder_reader and allowed and super_allowed\n",
+        "    define can_read: reader but not nblocked\n",
+        "type group\n  relations\n",
+        "    define parent: [group]\n",
+        "    define allowed: [user, group#member] or allowed from parent\n",
+        "    define super_allowed: [user, group#super_allowed]\n",
+        "    define blocked: [user, group#member] or blocked from parent\n",
+        "    define og_member: [user] or member from parent\n",
+        "    define allowed_member: og_member and allowed and super_allowed\n",
+        "    define member: allowed_member but not blocked\n",
+        "    define folder_reader: [group#member] or folder_reader from parent\n",
+    );
+
+    for (definition, object_type, relation) in [
+        (butnot_cycle, "document", "viewer"),
+        (wildcard_complex, "group", "member"),
+    ] {
+        let Err(ConstructionError::UnsupportedCapabilities(diagnostics)) =
+            FgaAuthz::new(definition)
+        else {
+            panic!("expected runtime capability diagnostics for {definition}");
+        };
+        let rejected = diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let location = diagnostic.relation.as_ref().expect("diagnostic relation");
+                (
+                    diagnostic.capability.clone(),
+                    location.object_type.as_str(),
+                    location.relation.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rejected,
+            [(
+                RuntimeCapability::RecursiveDifference,
+                object_type,
+                relation
+            )],
+            "{definition}"
+        );
+    }
 }

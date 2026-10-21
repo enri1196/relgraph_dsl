@@ -372,6 +372,51 @@ pub trait RelationshipStore: Send + Sync {
     ) -> StoreFuture<'a, Result<Self::ReadSession, StoreError>>;
 }
 
+/// A read session that can also find stored tuples by their subject.
+///
+/// List operations such as
+/// [`FgaAuthz::list_objects`](crate::FgaAuthz::list_objects) need it; checks
+/// never call it, so check-only stores do not implement it.
+pub trait ReverseLookupSession: RelationshipReadSession {
+    /// Returns one page of the tuples in this session's tenant snapshot whose
+    /// object type is `object_type`, whose relation is `relation`, and whose
+    /// subject equals `subject` exactly.
+    ///
+    /// Matching is exact: a concrete subject does not match a typed wildcard
+    /// tuple, a typed wildcard matches only tuples naming that wildcard, and a
+    /// userset matches only tuples naming that userset. Callers that want
+    /// wildcard grants ask for the wildcard separately.
+    ///
+    /// The rules of [`RelationshipReadSession::tuples_page`] apply: the page
+    /// comes from the same tenant-scoped snapshot as the session's other
+    /// reads, holds no more than `maximum` tuples (a `maximum` of zero is an
+    /// error), keeps a stable order within the session, and a page with a
+    /// continuation holds at least one tuple. A continuation cursor is valid
+    /// only for this session and this object-type, relation and subject query.
+    fn tuples_by_subject_page<'a>(
+        &'a self,
+        object_type: &'a TypeName,
+        relation: &'a RelationName,
+        subject: &'a TupleSubject,
+        cursor: Option<StoreCursor>,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>>;
+}
+
+/// A relationship store whose read sessions support reverse lookup by subject.
+///
+/// Only the list methods require it. It is implemented for every
+/// [`RelationshipStore`] whose read session implements
+/// [`ReverseLookupSession`], so a store opts in by implementing that trait.
+pub trait ReverseLookupStore: RelationshipStore<ReadSession: ReverseLookupSession> {}
+
+impl<S> ReverseLookupStore for S
+where
+    S: RelationshipStore,
+    S::ReadSession: ReverseLookupSession,
+{
+}
+
 /// Optional tenant-scoped mutation capability for relationship stores.
 ///
 /// Insertions are strict: inserting an exact duplicate tuple returns
@@ -609,25 +654,23 @@ impl RelationshipReadSession for InMemoryReadSession {
             }
             let key = (self.tenant.clone(), object.clone(), relation.clone());
             let tuples = self.snapshot.get(&key).map_or(&[][..], Vec::as_slice);
-            let start = memory_cursor_offset(cursor, self.session_id, object, relation)?;
+            let context = memory_cursor_context(
+                OBJECT_CURSOR_PREFIX,
+                self.session_id,
+                &[
+                    object.type_name().as_str(),
+                    object.id().as_str(),
+                    relation.as_str(),
+                ],
+            )?;
+            let start = memory_cursor_offset(cursor, &context)?;
             if start > tuples.len() {
-                return Err(StoreError::new(
-                    StoreErrorKind::IncompleteRead,
-                    "relationship page cursor is outside the read-session snapshot",
-                ));
+                return Err(cursor_outside_snapshot());
             }
             let page_size = maximum.min(IN_MEMORY_PAGE_SIZE);
             let end = start.saturating_add(page_size).min(tuples.len());
             let next_cursor = if end < tuples.len() {
-                let mut bytes = memory_cursor_context(self.session_id, object, relation)?;
-                let offset = u64::try_from(end).map_err(|_| {
-                    StoreError::new(
-                        StoreErrorKind::Internal,
-                        "in-memory relationship cursor offset cannot be represented",
-                    )
-                })?;
-                bytes.extend_from_slice(&offset.to_be_bytes());
-                Some(StoreCursor::from_bytes(bytes))
+                Some(memory_cursor(context, end)?)
             } else {
                 None
             };
@@ -639,7 +682,92 @@ impl RelationshipReadSession for InMemoryReadSession {
     }
 }
 
+impl ReverseLookupSession for InMemoryReadSession {
+    /// Scans the session's snapshot. The snapshot is never mutated, so its
+    /// iteration order, and with it each cursor's offset, is stable for the
+    /// session; later writes publish a new snapshot this session never sees.
+    fn tuples_by_subject_page<'a>(
+        &'a self,
+        object_type: &'a TypeName,
+        relation: &'a RelationName,
+        subject: &'a TupleSubject,
+        cursor: Option<StoreCursor>,
+        maximum: usize,
+    ) -> StoreFuture<'a, Result<RelationshipPage, StoreError>> {
+        Box::pin(async move {
+            if maximum == 0 {
+                return Err(StoreError::new(
+                    StoreErrorKind::IncompleteRead,
+                    "relationship page size must be greater than zero",
+                ));
+            }
+            let mut fields = vec![object_type.as_str(), relation.as_str()];
+            match subject {
+                TupleSubject::Direct(subject) => {
+                    fields.extend([
+                        "direct",
+                        subject.type_name().as_str(),
+                        subject.id().as_str(),
+                    ]);
+                }
+                TupleSubject::Userset { object, relation } => fields.extend([
+                    "userset",
+                    object.type_name().as_str(),
+                    object.id().as_str(),
+                    relation.as_str(),
+                ]),
+                TupleSubject::TypedWildcard(type_name) => {
+                    fields.extend(["wildcard", type_name.as_str()]);
+                }
+            }
+            let context = memory_cursor_context(SUBJECT_CURSOR_PREFIX, self.session_id, &fields)?;
+            let start = memory_cursor_offset(cursor, &context)?;
+            let mut matching = self
+                .snapshot
+                .iter()
+                .filter(|((tenant, object, tuple_relation), _)| {
+                    tenant == &self.tenant
+                        && object.type_name() == object_type
+                        && tuple_relation == relation
+                })
+                .flat_map(|(_, tuples)| tuples)
+                .filter(|tuple| tuple.subject() == subject)
+                .skip(start);
+            let tuples: Vec<_> = matching
+                .by_ref()
+                .take(maximum.min(IN_MEMORY_PAGE_SIZE))
+                .cloned()
+                .collect();
+            // Cursors are issued only while matches remain, so a valid one
+            // never points at the end of the snapshot.
+            if start > 0 && tuples.is_empty() {
+                return Err(cursor_outside_snapshot());
+            }
+            let next_cursor = if matching.next().is_some() {
+                Some(memory_cursor(context, start + tuples.len())?)
+            } else {
+                None
+            };
+            Ok(RelationshipPage {
+                tuples,
+                next_cursor,
+            })
+        })
+    }
+}
+
 const IN_MEMORY_PAGE_SIZE: usize = 128;
+
+const OBJECT_CURSOR_PREFIX: &[u8] = b"relgraph-authz/in-memory-cursor/v1";
+
+const SUBJECT_CURSOR_PREFIX: &[u8] = b"relgraph-authz/in-memory-subject-cursor/v1";
+
+fn cursor_outside_snapshot() -> StoreError {
+    StoreError::new(
+        StoreErrorKind::IncompleteRead,
+        "relationship page cursor is outside the read-session snapshot",
+    )
+}
 
 static NEXT_IN_MEMORY_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -656,12 +784,16 @@ fn next_in_memory_session_id() -> Result<u64, StoreError> {
         })
 }
 
+/// Encodes the session and query a cursor belongs to: a query-kind prefix,
+/// the session ID, then each length-prefixed query field.
 fn memory_cursor_context(
+    prefix: &[u8],
     session_id: u64,
-    object: &ObjectRef,
-    relation: &RelationName,
+    fields: &[&str],
 ) -> Result<Vec<u8>, StoreError> {
-    fn append_field(bytes: &mut Vec<u8>, value: &str) -> Result<(), StoreError> {
+    let mut bytes = prefix.to_vec();
+    bytes.extend_from_slice(&session_id.to_be_bytes());
+    for value in fields {
         let length = u64::try_from(value.len()).map_err(|_| {
             StoreError::new(
                 StoreErrorKind::Internal,
@@ -670,29 +802,28 @@ fn memory_cursor_context(
         })?;
         bytes.extend_from_slice(&length.to_be_bytes());
         bytes.extend_from_slice(value.as_bytes());
-        Ok(())
     }
-
-    let mut bytes = b"relgraph-authz/in-memory-cursor/v1".to_vec();
-    bytes.extend_from_slice(&session_id.to_be_bytes());
-    append_field(&mut bytes, object.type_name().as_str())?;
-    append_field(&mut bytes, object.id().as_str())?;
-    append_field(&mut bytes, relation.as_str())?;
     Ok(bytes)
 }
 
-fn memory_cursor_offset(
-    cursor: Option<StoreCursor>,
-    session_id: u64,
-    object: &ObjectRef,
-    relation: &RelationName,
-) -> Result<usize, StoreError> {
+/// Appends a continuation offset to a query's cursor context.
+fn memory_cursor(mut context: Vec<u8>, offset: usize) -> Result<StoreCursor, StoreError> {
+    let offset = u64::try_from(offset).map_err(|_| {
+        StoreError::new(
+            StoreErrorKind::Internal,
+            "in-memory relationship cursor offset cannot be represented",
+        )
+    })?;
+    context.extend_from_slice(&offset.to_be_bytes());
+    Ok(StoreCursor::from_bytes(context))
+}
+
+fn memory_cursor_offset(cursor: Option<StoreCursor>, context: &[u8]) -> Result<usize, StoreError> {
     let Some(cursor) = cursor else {
         return Ok(0);
     };
-    let context = memory_cursor_context(session_id, object, relation)?;
     let bytes = cursor.as_bytes();
-    if bytes.len() != context.len() + std::mem::size_of::<u64>() || !bytes.starts_with(&context) {
+    if bytes.len() != context.len() + std::mem::size_of::<u64>() || !bytes.starts_with(context) {
         return Err(StoreError::new(
             StoreErrorKind::IncompleteRead,
             "relationship page cursor does not belong to this read-session query",

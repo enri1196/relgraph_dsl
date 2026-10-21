@@ -20,7 +20,13 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "authz"
 PINNED_VERSION = "v1.21.0"
 PINNED_IMAGE = "openfga/openfga:v1.21.0"
 PINNED_COMMIT = "ab557c5592670c899de35297e7aa067015f06502"
-FIXTURES = ("relationships.json", "conditions.json", "branch_errors.json", "recursion.json")
+FIXTURES = (
+    "relationships.json",
+    "conditions.json",
+    "branch_errors.json",
+    "recursion.json",
+    "ipaddress.json",
+)
 MODEL_FIXTURES = ("recursion_models.json",)
 
 

@@ -13,6 +13,31 @@ const OVERSIZED_WRITE_CONTEXT: &str = "relationship tuple condition context exce
 const IDENTITY_PREFIX: &[u8] = b"relgraph-authz.relationship-tuple";
 const IDENTITY_VERSION: u8 = 1;
 
+/// Returns a subject's `subject_kind`, `subject_type`, `subject_id` and
+/// `subject_relation` column values, the form both writes and reverse lookups
+/// bind.
+pub(crate) fn subject_columns(
+    subject: &TupleSubject,
+) -> (&'static str, &str, Option<&str>, Option<&str>) {
+    match subject {
+        TupleSubject::Direct(subject) => (
+            "direct",
+            subject.type_name().as_str(),
+            Some(subject.id().as_str()),
+            None,
+        ),
+        TupleSubject::Userset { object, relation } => (
+            "userset",
+            object.type_name().as_str(),
+            Some(object.id().as_str()),
+            Some(relation.as_str()),
+        ),
+        TupleSubject::TypedWildcard(type_name) => {
+            ("typed_wildcard", type_name.as_str(), None, None)
+        }
+    }
+}
+
 /// Owned representation of one database row. `tuple_id` is absent when the
 /// row is prepared for insertion and present when it is decoded from PostgreSQL.
 #[derive(Debug)]
@@ -56,23 +81,8 @@ impl TupleRow {
     /// Prepares a caller-supplied tuple for writing. An oversized condition
     /// context is rejected as invalid input rather than corrupt stored data.
     pub(crate) fn from_tuple(tuple: &RelationshipTuple) -> Result<Self, StoreError> {
-        let (subject_kind, subject_type, subject_id, subject_relation) = match tuple.subject() {
-            TupleSubject::Direct(subject) => (
-                "direct",
-                subject.type_name().as_str().to_owned(),
-                Some(subject.id().as_str().to_owned()),
-                None,
-            ),
-            TupleSubject::Userset { object, relation } => (
-                "userset",
-                object.type_name().as_str().to_owned(),
-                Some(object.id().as_str().to_owned()),
-                Some(relation.as_str().to_owned()),
-            ),
-            TupleSubject::TypedWildcard(type_name) => {
-                ("typed_wildcard", type_name.as_str().to_owned(), None, None)
-            }
-        };
+        let (subject_kind, subject_type, subject_id, subject_relation) =
+            subject_columns(tuple.subject());
 
         let (condition_name, context_json) = match tuple.condition() {
             None => (None, None),
@@ -91,9 +101,9 @@ impl TupleRow {
             object_id: tuple.object().id().as_str().to_owned(),
             relation: tuple.relation().as_str().to_owned(),
             subject_kind: subject_kind.to_owned(),
-            subject_type,
-            subject_id,
-            subject_relation,
+            subject_type: subject_type.to_owned(),
+            subject_id: subject_id.map(str::to_owned),
+            subject_relation: subject_relation.map(str::to_owned),
             condition_name,
             context_json,
             context_json_oversized: false,
@@ -357,6 +367,33 @@ mod tests {
     }
 
     #[test]
+    fn inline_condition_identity_covers_expression_and_parameter_types() {
+        let inline = |expression: &str, count_type: &str| {
+            tuple(TupleSubject::Direct(Subject::new("user", "alice").unwrap())).with_condition(
+                ConditionContext::new(
+                    "$expression",
+                    BTreeMap::from([
+                        ("expression".to_owned(), json!(expression)),
+                        ("parameters".to_owned(), json!({ "count": count_type })),
+                    ]),
+                )
+                .unwrap(),
+            )
+        };
+        let low = inline("count > 5", "int");
+        let high = inline("count > 50", "int");
+        let retyped = inline("count > 5", "uint");
+        let digest = |tuple: &RelationshipTuple| tuple_identity_digest(tuple).unwrap();
+        assert_ne!(digest(&low), digest(&high));
+        assert_ne!(digest(&low), digest(&retyped));
+        assert_eq!(digest(&low), digest(&inline("count > 5", "int")));
+        // The existing row shape holds the source; no migration is needed.
+        let row = TupleRow::from_tuple(&low).unwrap();
+        assert_eq!(row.condition_name.as_deref(), Some("$expression"));
+        assert_eq!(round_trip(&low), low);
+    }
+
+    #[test]
     fn conditional_tuple_round_trips_including_empty_context() {
         let base = tuple(TupleSubject::Direct(Subject::new("user", "alice").unwrap()));
         let empty = base.clone().with_condition(context(BTreeMap::new()));
@@ -537,6 +574,35 @@ mod tests {
         assert!(bytes.into_iter().sum::<usize>() + 128 < 2_704);
         assert_eq!(round_trip(&fixture), fixture);
         assert!(TenantId::new("é".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn maximum_multibyte_identifiers_fit_the_subject_lookup_index_budget() {
+        let name = || "ß".repeat(64);
+        let fixture = RelationshipTuple::new(
+            TenantId::new(name()).unwrap(),
+            ObjectRef::new(name(), "x").unwrap(),
+            RelationName::new(name()).unwrap(),
+            TupleSubject::Userset {
+                object: ObjectRef::new(name(), "é".repeat(128)).unwrap(),
+                relation: RelationName::new(name()).unwrap(),
+            },
+        );
+        let row = TupleRow::from_tuple(&fixture).unwrap();
+        let bytes = [
+            row.tenant.len(),
+            row.object_type.len(),
+            row.relation.len(),
+            "typed_wildcard".len(),
+            row.subject_type.len(),
+            row.subject_id.as_ref().unwrap().len(),
+            row.subject_relation.as_ref().unwrap().len(),
+        ];
+        assert_eq!(bytes, [128, 128, 128, 14, 128, 256, 128]);
+        // Index columns plus `tuple_id` and per-column headers stay well
+        // inside PostgreSQL's B-tree entry limit.
+        assert!(bytes.into_iter().sum::<usize>() + 8 + 128 < 2_704);
+        assert_eq!(round_trip(&fixture), fixture);
     }
 
     #[test]

@@ -1,18 +1,23 @@
+use super::conditions::{
+    INLINE_EXPRESSION_NAME, InlineConditionCache, PreparedConditionContext, RequestValueCache,
+};
 use super::model::{
     CompiledExpression, CompiledModel, CompiledTargetRange, CompiledTargetRestriction,
 };
 use super::request::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, CheckScope,
-    ContextualTupleError, EntityId, EvaluationLimits, MAX_CONTEXTUAL_TUPLES, ObjectRef,
-    RelationName,
+    ContextualTupleError, EntityId, EvaluationLimits, ListObjectsRequest, ListUsersRequest,
+    MAX_CONTEXTUAL_TUPLES, ObjectRef, RelationName, TenantId, UserFilter,
 };
 use super::store::{
-    RelationshipReadSession, RelationshipStore, RelationshipTuple, StoreCursor, StoreError,
-    StoreErrorKind, TupleSubject,
+    RelationshipReadSession, RelationshipStore, RelationshipTuple, ReverseLookupStore, StoreCursor,
+    StoreError, StoreErrorKind, TupleSubject,
 };
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+
+mod list;
 
 type EvalFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AuthorizationError>> + Send + 'a>>;
 
@@ -41,11 +46,43 @@ struct ContextualTuples {
     by_object: HashMap<ObjectRef, HashMap<RelationName, Vec<RelationshipTuple>>>,
 }
 
+/// What preparing contextual tuples does with an exact repeat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repeats {
+    /// Checks and batches reject it.
+    Reject,
+    /// Lists drop it (S4e), as OpenFGA's ListObjects does.
+    Drop,
+}
+
 impl ContextualTuples {
     /// Rejects an oversized set, a tuple of another tenant, a tuple that does
     /// not fit the model, and an exact repeat, in request order.
     fn prepare(compiled: &CompiledModel, scope: &CheckScope) -> Result<Self, AuthorizationError> {
-        let tuples = scope.contextual_tuples();
+        Self::prepare_with(
+            compiled,
+            scope.tenant(),
+            scope.contextual_tuples(),
+            Repeats::Reject,
+        )
+    }
+
+    /// Validates a list request's `tuples` like [`Self::prepare`], but keeps
+    /// only the first of exact repeats instead of rejecting them.
+    fn prepare_for_list(
+        compiled: &CompiledModel,
+        tenant: &TenantId,
+        tuples: &[RelationshipTuple],
+    ) -> Result<Self, AuthorizationError> {
+        Self::prepare_with(compiled, tenant, tuples, Repeats::Drop)
+    }
+
+    fn prepare_with(
+        compiled: &CompiledModel,
+        tenant: &TenantId,
+        tuples: &[RelationshipTuple],
+        repeats: Repeats,
+    ) -> Result<Self, AuthorizationError> {
         if tuples.len() > MAX_CONTEXTUAL_TUPLES {
             return Err(AuthorizationError::ContextualTupleLimitExceeded {
                 maximum_tuples: MAX_CONTEXTUAL_TUPLES,
@@ -54,14 +91,19 @@ impl ContextualTuples {
         let mut prepared = Self::default();
         for (index, tuple) in tuples.iter().enumerate() {
             let invalid = |reason| AuthorizationError::InvalidContextualTuple { index, reason };
-            if tuple.tenant() != scope.tenant() {
+            if tuple.tenant() != tenant {
                 return Err(invalid(ContextualTupleError::TenantMismatch));
             }
             compiled
                 .validate_tuple(tuple)
                 .map_err(|error| invalid(ContextualTupleError::Model(Box::new(error))))?;
             if let Some(first_index) = tuples[..index].iter().position(|earlier| earlier == tuple) {
-                return Err(invalid(ContextualTupleError::Duplicate { first_index }));
+                match repeats {
+                    Repeats::Reject => {
+                        return Err(invalid(ContextualTupleError::Duplicate { first_index }));
+                    }
+                    Repeats::Drop => continue,
+                }
             }
             prepared
                 .by_object
@@ -96,15 +138,24 @@ enum AssignmentMembership {
 
 /// Tuple metadata validated before evaluating an assignment page.
 struct PreparedAssignmentTuple {
-    condition_context: Option<super::conditions::PreparedConditionContext>,
+    condition: Option<PreparedTupleCondition>,
     membership: AssignmentMembership,
 }
 
 /// Tuple metadata validated before evaluating a tupleset page.
 struct PreparedTuplesetTuple {
-    condition_context: Option<super::conditions::PreparedConditionContext>,
+    condition: Option<PreparedTupleCondition>,
     target_object: ObjectRef,
     computed_relation_id: Option<usize>,
+}
+
+/// A conditioned tuple's validated condition and stored context.
+struct PreparedTupleCondition {
+    /// The tuple's inline condition in the evaluator's cache, or `None` for a
+    /// model condition, which is looked up by name.
+    inline_id: Option<usize>,
+    /// Stored parameter values; an inline condition stores none.
+    context: PreparedConditionContext,
 }
 
 /// Evaluates one structured check against one tenant-scoped store snapshot.
@@ -115,7 +166,7 @@ pub(crate) async fn check<S: RelationshipStore>(
     request: &CheckRequest,
 ) -> Result<AuthorizationDecision, AuthorizationError> {
     let relation_id = resolve_relation(compiled, request.object(), request.relation())?;
-    validate_subject_type(compiled, request.scope())?;
+    let subject_userset = resolve_subject(compiled, request.scope())?;
     let contextual = ContextualTuples::prepare(compiled, request.scope())?;
 
     // The session and evaluator are owned by this future. Dropping a cancelled
@@ -125,7 +176,14 @@ pub(crate) async fn check<S: RelationshipStore>(
         .begin_read(request.tenant())
         .await
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
-    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope(), contextual);
+    let mut evaluator = Evaluator::new(
+        compiled,
+        session,
+        limits,
+        request.scope(),
+        contextual,
+        subject_userset,
+    );
     evaluator
         .check_item(request.object().clone(), relation_id)
         .await
@@ -147,7 +205,7 @@ pub(crate) async fn batch_check<S: RelationshipStore>(
             maximum_items: limits.max_batch_items(),
         });
     }
-    validate_subject_type(compiled, request.scope())?;
+    let subject_userset = resolve_subject(compiled, request.scope())?;
     let contextual = ContextualTuples::prepare(compiled, request.scope())?;
     if request.items().is_empty() {
         return Ok(Vec::new());
@@ -158,7 +216,14 @@ pub(crate) async fn batch_check<S: RelationshipStore>(
         .begin_read(request.tenant())
         .await
         .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
-    let mut evaluator = Evaluator::new(compiled, session, limits, request.scope(), contextual);
+    let mut evaluator = Evaluator::new(
+        compiled,
+        session,
+        limits,
+        request.scope(),
+        contextual,
+        subject_userset,
+    );
     let mut results = Vec::with_capacity(request.items().len());
     for (object, relation) in request.items() {
         let result = match resolve_relation(compiled, object, relation) {
@@ -168,6 +233,156 @@ pub(crate) async fn batch_check<S: RelationshipStore>(
         results.push(result);
     }
     Ok(results)
+}
+
+/// Lists the objects of one type on which the scope's subject holds a
+/// relation, from one snapshot.
+///
+/// The reverse traversal in [`list`] finds candidates with its own budgets;
+/// each candidate is then decided by [`Evaluator::check_item`], exactly as a
+/// batch item is, with a shared memo and fresh per-candidate budgets. Any
+/// candidate error, and any budget or candidate-limit hit, fails the list.
+pub(crate) async fn list_objects<S: ReverseLookupStore>(
+    compiled: &CompiledModel,
+    store: &S,
+    limits: EvaluationLimits,
+    request: &ListObjectsRequest,
+) -> Result<Vec<ObjectRef>, AuthorizationError> {
+    let object_type = request.object_type().as_str();
+    let type_id = compiled
+        .type_id(object_type)
+        .ok_or_else(|| AuthorizationError::UnknownObjectType(object_type.to_owned()))?;
+    let relation_id = compiled
+        .relation_id(type_id, request.relation().as_str())
+        .ok_or_else(|| AuthorizationError::UnknownRelation {
+            object_type: object_type.to_owned(),
+            relation: request.relation().as_str().to_owned(),
+        })?;
+    let subject_userset = resolve_subject(compiled, request.scope())?;
+    let contextual = ContextualTuples::prepare_for_list(
+        compiled,
+        request.tenant(),
+        request.contextual_tuples(),
+    )?;
+
+    // Cancellation drops the session and evaluator as it does for `check`.
+    let session = store
+        .begin_read(request.tenant())
+        .await
+        .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
+    let mut candidates = list::object_candidates(
+        compiled,
+        &session,
+        limits,
+        request.scope(),
+        &contextual,
+        subject_userset.as_ref(),
+        relation_id,
+    )
+    .await?;
+    candidates.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
+
+    let mut evaluator = Evaluator::new(
+        compiled,
+        session,
+        limits,
+        request.scope(),
+        contextual,
+        subject_userset,
+    );
+    let mut allowed = Vec::new();
+    for object in candidates {
+        if evaluator.check_item(object.clone(), relation_id).await? == AuthorizationDecision::Allow
+        {
+            allowed.push(object);
+        }
+    }
+    Ok(allowed)
+}
+
+/// Lists the subjects selected by a filter that hold a relation on one
+/// object, from one snapshot.
+///
+/// The forward expansion in [`list`] finds candidates with its own budgets.
+/// A scope fixes its checked subject, so each candidate is then decided by
+/// its own [`Evaluator`] (S4e): a fresh memo and fresh budgets, exactly as a
+/// separate `check` with that subject, on the one shared read session. Any
+/// candidate error, and any budget or candidate-limit hit, fails the list.
+pub(crate) async fn list_users<S: RelationshipStore>(
+    compiled: &CompiledModel,
+    store: &S,
+    limits: EvaluationLimits,
+    request: &ListUsersRequest,
+) -> Result<Vec<TupleSubject>, AuthorizationError> {
+    let relation_id = resolve_relation(compiled, request.object(), request.relation())?;
+    let filter = resolve_filter(compiled, request.filter())?;
+    let mut contextual = ContextualTuples::prepare_for_list(
+        compiled,
+        request.tenant(),
+        request.contextual_tuples(),
+    )?;
+
+    // Cancellation drops the session and evaluator as it does for `check`.
+    let mut session = store
+        .begin_read(request.tenant())
+        .await
+        .map_err(|error| map_store_error(error, limits.max_tuples_scanned()))?;
+    let mut candidates = list::user_candidates(
+        compiled,
+        &session,
+        limits,
+        request.tenant(),
+        &contextual,
+        filter,
+        request.object(),
+        relation_id,
+    )
+    .await?;
+    candidates.sort_by(list::subject_order);
+
+    let mut allowed = Vec::new();
+    for subject in candidates {
+        let scope = request.scope_for(subject.clone());
+        let subject_userset = resolve_subject(compiled, &scope)?;
+        let mut evaluator = Evaluator::new(
+            compiled,
+            session,
+            limits,
+            &scope,
+            contextual,
+            subject_userset,
+        );
+        let decision = evaluator
+            .check_item(request.object().clone(), relation_id)
+            .await?;
+        (session, contextual) = evaluator.into_parts();
+        if decision == AuthorizationDecision::Allow {
+            allowed.push(subject);
+        }
+    }
+    Ok(allowed)
+}
+
+/// Resolves a ListUsers filter to the compiled type or userset relation it
+/// selects; an unknown type or relation fails like an unknown check subject.
+fn resolve_filter(
+    compiled: &CompiledModel,
+    filter: &UserFilter,
+) -> Result<list::FilterTarget, AuthorizationError> {
+    let type_name = filter.type_name().as_str();
+    let type_id = compiled
+        .type_id(type_name)
+        .ok_or_else(|| AuthorizationError::UnknownSubjectType(type_name.to_owned()))?;
+    let Some(relation) = filter.relation() else {
+        return Ok(list::FilterTarget::Type(type_id));
+    };
+    compiled
+        .relation_id(type_id, relation.as_str())
+        .map(list::FilterTarget::Userset)
+        .ok_or_else(|| AuthorizationError::UnknownSubjectRelation {
+            subject_type: type_name.to_owned(),
+            relation: relation.as_str().to_owned(),
+        })
 }
 
 /// Resolves a checked object's relation to its compiled relation ID.
@@ -188,16 +403,37 @@ fn resolve_relation(
         })
 }
 
-/// Rejects a checked subject whose type is absent from the model.
-fn validate_subject_type(
+/// Rejects a checked subject whose type, or userset relation, is absent from
+/// the model, as OpenFGA's Check does.
+///
+/// For a userset subject, returns the memo key of the userset itself: OpenFGA
+/// allows a userset subject on its own object and relation (`IsSelfDefining`).
+fn resolve_subject(
     compiled: &CompiledModel,
     scope: &CheckScope,
-) -> Result<(), AuthorizationError> {
-    let subject_type_name = scope.subject().type_name().as_str();
-    compiled
+) -> Result<Option<EvaluationKey>, AuthorizationError> {
+    let subject_type_name = match scope.subject() {
+        TupleSubject::Direct(subject) => subject.type_name(),
+        TupleSubject::Userset { object, .. } => object.type_name(),
+        TupleSubject::TypedWildcard(type_name) => type_name,
+    }
+    .as_str();
+    let type_id = compiled
         .type_id(subject_type_name)
-        .map(|_| ())
-        .ok_or_else(|| AuthorizationError::UnknownSubjectType(subject_type_name.to_owned()))
+        .ok_or_else(|| AuthorizationError::UnknownSubjectType(subject_type_name.to_owned()))?;
+    let TupleSubject::Userset { object, relation } = scope.subject() else {
+        return Ok(None);
+    };
+    let relation_id = compiled
+        .relation_id(type_id, relation.as_str())
+        .ok_or_else(|| AuthorizationError::UnknownSubjectRelation {
+            subject_type: subject_type_name.to_owned(),
+            relation: relation.as_str().to_owned(),
+        })?;
+    Ok(Some(EvaluationKey {
+        relation_id,
+        object_id: object.id().clone(),
+    }))
 }
 
 /// One memo key; tenant, subject, contexts, and contextual tuples are fixed by
@@ -238,6 +474,8 @@ struct Evaluator<'a, S> {
     limits: EvaluationLimits,
     scope: &'a CheckScope,
     contextual: ContextualTuples,
+    /// For a userset subject, the key of that userset, which grants itself.
+    subject_userset: Option<EvaluationKey>,
     completed: HashMap<EvaluationKey, bool>,
     /// DFS index of every key that is in flight or awaiting its cycle root.
     unresolved: HashMap<EvaluationKey, usize>,
@@ -249,7 +487,9 @@ struct Evaluator<'a, S> {
     tuples_scanned: usize,
     store_calls: usize,
     work_units: usize,
-    request_values: super::conditions::RequestValueCache,
+    request_values: RequestValueCache,
+    /// Inline conditions compiled from stored tuples, shared across a batch.
+    inline_conditions: InlineConditionCache,
 }
 
 impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
@@ -260,6 +500,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         limits: EvaluationLimits,
         scope: &'a CheckScope,
         contextual: ContextualTuples,
+        subject_userset: Option<EvaluationKey>,
     ) -> Self {
         Self {
             compiled,
@@ -267,6 +508,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             limits,
             scope,
             contextual,
+            subject_userset,
             completed: HashMap::new(),
             unresolved: HashMap::new(),
             unresolved_stack: Vec::new(),
@@ -275,8 +517,15 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             tuples_scanned: 0,
             store_calls: 0,
             work_units: 0,
-            request_values: super::conditions::RequestValueCache::default(),
+            request_values: RequestValueCache::default(),
+            inline_conditions: InlineConditionCache::default(),
         }
+    }
+
+    /// Ends this scope's evaluation and returns its read session and
+    /// contextual tuples, so another scope can decide on the same snapshot.
+    fn into_parts(self) -> (S, ContextualTuples) {
+        (self.session, self.contextual)
     }
 
     /// Resolves one top-level item with fresh budgets and the shared memo.
@@ -321,6 +570,9 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 relation_id,
                 object_id: object.id().clone(),
             };
+            if self.subject_userset.as_ref() == Some(&key) {
+                return Ok(true);
+            }
             if let Some(decision) = self.completed.get(&key) {
                 return Ok(*decision);
             }
@@ -464,9 +716,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         } => self.evaluate_relation(object, relation_id, depth + 1).await,
                     };
                     let result = match membership {
-                        Ok(true) => {
-                            self.evaluate_tuple_condition(tuple, prepared.condition_context)
-                        }
+                        Ok(true) => self.evaluate_tuple_condition(tuple, prepared.condition),
                         other => other,
                     };
                     match result {
@@ -510,7 +760,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     self.prepare_tupleset_page(&tuples, &object, tupleset_relation_id, edge_range)?;
                 for (tuple, prepared) in tuples.iter().zip(prepared_tuples) {
                     let PreparedTuplesetTuple {
-                        condition_context,
+                        condition,
                         target_object,
                         computed_relation_id,
                     } = prepared;
@@ -523,7 +773,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                         .evaluate_relation(target_object, computed_relation_id, depth + 1)
                         .await;
                     let result = match membership {
-                        Ok(true) => self.evaluate_tuple_condition(tuple, condition_context),
+                        Ok(true) => self.evaluate_tuple_condition(tuple, condition),
                         other => other,
                     };
                     match result {
@@ -556,16 +806,29 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         let mut prepared_tuples = Vec::with_capacity(tuples.len());
         let checked = self.scope.subject();
         for tuple in tuples {
-            let condition_context = self.validate_tuple(tuple, object, relation_id)?;
+            let condition = self.validate_tuple(tuple, object, relation_id)?;
             let restriction = self.compiled.validate_assignment_subject(tuple, targets)?;
-            let membership = match tuple.subject() {
-                TupleSubject::Direct(subject) => AssignmentMembership::Known(
-                    subject.type_name() == checked.type_name() && subject.id() == checked.id(),
-                ),
-                TupleSubject::TypedWildcard(type_name) => {
+            // OpenFGA semantics: a wildcard tuple grants a concrete subject of
+            // its type and the equal wildcard subject, never a userset subject;
+            // a tuple naming the checked userset grants it directly.
+            let membership = match (tuple.subject(), checked) {
+                (TupleSubject::Direct(subject), TupleSubject::Direct(checked)) => {
+                    AssignmentMembership::Known(subject == checked)
+                }
+                (TupleSubject::Direct(_), _) => AssignmentMembership::Known(false),
+                (TupleSubject::TypedWildcard(type_name), TupleSubject::Direct(checked)) => {
                     AssignmentMembership::Known(type_name == checked.type_name())
                 }
-                TupleSubject::Userset { object, .. } => {
+                (TupleSubject::TypedWildcard(type_name), TupleSubject::TypedWildcard(checked)) => {
+                    AssignmentMembership::Known(type_name == checked)
+                }
+                (TupleSubject::TypedWildcard(_), TupleSubject::Userset { .. }) => {
+                    AssignmentMembership::Known(false)
+                }
+                (subject @ TupleSubject::Userset { .. }, checked) if subject == checked => {
+                    AssignmentMembership::Known(true)
+                }
+                (TupleSubject::Userset { object, .. }, _) => {
                     let CompiledTargetRestriction::Userset(relation_id) = restriction else {
                         unreachable!("a userset subject validates as a userset restriction");
                     };
@@ -576,7 +839,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                 }
             };
             prepared_tuples.push(PreparedAssignmentTuple {
-                condition_context,
+                condition,
                 membership,
             });
         }
@@ -593,7 +856,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     ) -> Result<Vec<PreparedTuplesetTuple>, AuthorizationError> {
         let mut prepared_tuples = Vec::with_capacity(tuples.len());
         for tuple in tuples {
-            let condition_context = self.validate_tuple(tuple, object, tupleset_relation_id)?;
+            let condition = self.validate_tuple(tuple, object, tupleset_relation_id)?;
             let TupleSubject::Direct(tuple_subject) = tuple.subject() else {
                 return Err(AuthorizationError::InvalidTuple(
                     "tupleset tuple subject must be a direct object",
@@ -607,7 +870,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
                     let target = self.compiled.target(edge.target_id);
                     Some(target.type_id) == subject_type_id
                         && matches!(target.restriction, CompiledTargetRestriction::Direct)
-                        && self.compiled.condition_matches(target.condition_id, tuple)
+                        && self.compiled.condition_matches(target.condition, tuple)
                 });
             let Some(edge) = compatible_edge else {
                 return Err(AuthorizationError::InvalidTuple(
@@ -620,7 +883,7 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             )
             .map_err(|_| AuthorizationError::InvalidTuple("invalid tupleset subject"))?;
             prepared_tuples.push(PreparedTuplesetTuple {
-                condition_context,
+                condition,
                 target_object,
                 computed_relation_id: edge.computed_relation_id,
             });
@@ -628,13 +891,15 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
         Ok(prepared_tuples)
     }
 
-    /// Validates tuple ownership and prepares its stored condition context.
+    /// Validates tuple ownership and prepares its condition: a model
+    /// condition's stored context, or an inline condition compiled (once per
+    /// check or batch) from the CEL source the tuple stores.
     fn validate_tuple(
         &mut self,
         tuple: &RelationshipTuple,
         object: &ObjectRef,
         relation_id: usize,
-    ) -> Result<Option<super::conditions::PreparedConditionContext>, AuthorizationError> {
+    ) -> Result<Option<PreparedTupleCondition>, AuthorizationError> {
         if tuple.tenant() != self.scope.tenant() {
             return Err(AuthorizationError::InvalidTuple(
                 "tuple belongs to a different tenant",
@@ -648,13 +913,27 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
             ));
         }
         if let Some(context) = tuple.condition() {
-            let condition = self.compiled.condition(context.name().as_str()).ok_or(
-                AuthorizationError::InvalidTuple(
-                    "tuple condition is absent from the authorization model",
-                ),
-            )?;
             let mut work = 0;
-            let prepared = condition.validate_stored_context(context.values(), &mut work);
+            let prepared = if context.name().as_str() == INLINE_EXPRESSION_NAME {
+                self.inline_conditions
+                    .resolve(context.values(), &mut work)
+                    .map(|inline_id| PreparedTupleCondition {
+                        inline_id: Some(inline_id),
+                        context: PreparedConditionContext::default(),
+                    })
+            } else {
+                let condition = self.compiled.condition(context.name().as_str()).ok_or(
+                    AuthorizationError::InvalidTuple(
+                        "tuple condition is absent from the authorization model",
+                    ),
+                )?;
+                condition
+                    .validate_stored_context(context.values(), &mut work)
+                    .map(|context| PreparedTupleCondition {
+                        inline_id: None,
+                        context,
+                    })
+            };
             self.charge_work(work)?;
             return prepared.map(Some);
         }
@@ -664,19 +943,29 @@ impl<'a, S: RelationshipReadSession> Evaluator<'a, S> {
     fn evaluate_tuple_condition(
         &mut self,
         tuple: &RelationshipTuple,
-        prepared_context: Option<super::conditions::PreparedConditionContext>,
+        prepared: Option<PreparedTupleCondition>,
     ) -> Result<bool, AuthorizationError> {
         let Some(context) = tuple.condition() else {
             return Ok(true);
         };
-        let condition = self.compiled.condition(context.name().as_str()).ok_or(
-            AuthorizationError::InvalidTuple(
-                "tuple condition is absent from the authorization model",
+        let compiled = self.compiled;
+        let (condition, stored_values) = match prepared {
+            Some(PreparedTupleCondition {
+                inline_id: Some(inline_id),
+                context,
+            }) => (self.inline_conditions.get(inline_id), Some(context)),
+            prepared => (
+                compiled.condition(context.name().as_str()).ok_or(
+                    AuthorizationError::InvalidTuple(
+                        "tuple condition is absent from the authorization model",
+                    ),
+                )?,
+                prepared.map(|prepared| prepared.context),
             ),
-        )?;
+        };
         let mut work = 0;
         let evaluation = condition.evaluate(
-            prepared_context,
+            stored_values,
             self.scope.condition_context(context.name().as_str()),
             self.scope.context(),
             &mut self.request_values,
@@ -876,6 +1165,7 @@ mod tests {
             EvaluationLimits::default(),
             request.scope(),
             contextual,
+            None,
         );
 
         let object = request.object().clone();

@@ -30,8 +30,9 @@ environment variables.
 The migration function demonstrates a small application-owned migration
 ledger. It serializes concurrent startup runners with a transaction-scoped
 advisory lock, records the migration in the same transaction as the DDL, and
-does nothing when the version is already recorded. In an application with a
-migration framework, register `MIGRATION_0001` with that framework's ledger.
+skips each migration already recorded. In an application with a migration
+framework, register `MIGRATION_0001` and then `MIGRATION_0002` with that
+framework's ledger.
 Run migrations as a deployment/startup step with the DDL role, then close that
 pool and serve requests with a separate runtime role.
 
@@ -46,7 +47,7 @@ use relgraph_authz::{
     CheckRequest, EvaluationLimits, FgaAuthz, ObjectRef, RelationName,
     RelationshipTuple, RelationshipWriteStore, Subject, TenantId,
 };
-use relgraph_authz_postgres::{MIGRATION_0001, PostgresRelationshipStore};
+use relgraph_authz_postgres::{MIGRATION_0001, MIGRATION_0002, PostgresRelationshipStore};
 use sqlx::{PgPool, postgres::{PgConnectOptions, PgPoolOptions, PgSslMode}};
 
 const MODEL: &str = r#"
@@ -60,7 +61,10 @@ type document
     define viewer: [user]
 "#;
 
-const MIGRATION_KEY: &str = "relgraph-authz/0001_relationship_tuples";
+const MIGRATIONS: [(&str, &str); 2] = [
+    ("relgraph-authz/0001_relationship_tuples", MIGRATION_0001),
+    ("relgraph-authz/0002_subject_lookup_index", MIGRATION_0002),
+];
 
 fn pool(
     url: &str,
@@ -116,21 +120,23 @@ async fn apply_migration(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     .execute(&mut *transaction)
     .await?;
 
-    let already_applied: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM app_metadata.schema_migrations WHERE migration_key = $1)",
-    )
-    .bind(MIGRATION_KEY)
-    .fetch_one(&mut *transaction)
-    .await?;
+    for (migration_key, migration) in MIGRATIONS {
+        let already_applied: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM app_metadata.schema_migrations WHERE migration_key = $1)",
+        )
+        .bind(migration_key)
+        .fetch_one(&mut *transaction)
+        .await?;
 
-    if !already_applied {
-        sqlx::raw_sql(MIGRATION_0001)
-            .execute(&mut *transaction)
-            .await?;
-        sqlx::query("INSERT INTO app_metadata.schema_migrations (migration_key) VALUES ($1)")
-            .bind(MIGRATION_KEY)
-            .execute(&mut *transaction)
-            .await?;
+        if !already_applied {
+            sqlx::raw_sql(migration)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("INSERT INTO app_metadata.schema_migrations (migration_key) VALUES ($1)")
+                .bind(migration_key)
+                .execute(&mut *transaction)
+                .await?;
+        }
     }
 
     transaction.commit().await?;
@@ -192,8 +198,16 @@ itself.
 ## Schema migration and database roles
 
 `MIGRATION_0001` creates the fixed `relgraph_authz.relationship_tuples`
-table queried by the adapter. Apply it transactionally with your application's
-migration ledger. Databases created by an earlier mismatched migration are not
+table queried by the adapter. `MIGRATION_0002` adds
+`relationship_tuples_subject_lookup_idx` on `(tenant, object_type, relation,
+subject_kind, subject_type, COALESCE(subject_id, ''), COALESCE(subject_relation,
+''), tuple_id)`, which serves the list operations' reverse lookup by subject
+(`ReverseLookupSession::tuples_by_subject_page`) as one keyset range scan per
+page. Apply both in order, transactionally, with your application's migration
+ledger. On a large existing table the plain `CREATE INDEX` blocks writes while
+it builds; schedule it, or build the same index `CONCURRENTLY` outside a
+transaction and, once it is valid, record the migration key instead of running
+`MIGRATION_0002`. Databases created by an earlier mismatched migration are not
 upgraded automatically and must be reconciled or recreated before using this
 version. Store construction does not migrate the database. PostgreSQL 14+ is
 the supported minimum.
@@ -232,7 +246,10 @@ just because `TenantId::new` accepts its format.
 
 Each `FgaAuthz::check` owns one read-only repeatable-read snapshot, established
 before the store returns its session. Tuple pages and subsequent object/relation
-lookups for that check share the snapshot. The session holds one pooled
+lookups for that check share the snapshot, as do a batch's items and every
+reverse lookup and candidate check of one `list_objects` or `list_users` call.
+Reverse-lookup pages follow the same keyset `tuple_id` order, and their cursors
+bind to the session, tenant, object type, relation and exact subject. The session holds one pooled
 connection until the check completes; cancellation drops the SQLx transaction,
 whose rollback cleanup is asynchronous. Size the pool for the expected number
 of simultaneous checks plus writes and other database work, within the server

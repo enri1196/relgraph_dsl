@@ -19,18 +19,18 @@ OpenFGA's own test corpora are vendored unmodified and replayed offline by
 `cargo test` (`relgraph-dsl` target `upstream_corpus`, `relgraph-authz` target
 `upstream_check`). Every case that does not pass has a reviewed skip-list
 entry with a reason; the tests fail on an unlisted failure and on a stale
-entry. Measured on 2026-10-18:
+entry. Measured on 2026-10-20:
 
 | Corpus (pin) | Cases | Pass | Not passing, by reason |
 | --- | ---: | ---: | --- |
 | `openfga/language` syntax cases (`fbc6298`) | 81 | 79 | 2 deliberate |
 | `openfga/language` semantic cases (`fbc6298`) | 93 (7 skipped upstream) | 84 | 2 deliberate |
 | `openfga/language` `fga.mod` cases (`fbc6298`) | 10 | 9 | 1 unsupported (JSON model output) |
-| `openfga/openfga` `consolidated_1_1_tests.yaml` (`v1.21.0`) | 1380 | 767 | 569 ListObjects/ListUsers (no list API), 36 deliberate, 8 userset/wildcard check subjects |
-| `openfga/openfga` `abac_tests.yaml` (`v1.21.0`) | 505 | 261 | 179 ListObjects/ListUsers, 51 inline conditions, 7 `ipaddress`, 3 deliberate, 4 userset check subjects |
+| `openfga/openfga` `consolidated_1_1_tests.yaml` (`v1.21.0`) | 1380 | 1316 | 64 deliberate |
+| `openfga/openfga` `abac_tests.yaml` (`v1.21.0`) | 505 | 494 | 7 deliberate, 4 list cases awaiting a maintainer decision |
 
-Counting only Check, `ctxCheck` (upstream's contextual-tuple replay) and model
-cases, the Check corpora pass 767 of 811 and 261 of 326. The per-corpus tables
+The cases are Check, `ctxCheck` (upstream's contextual-tuple replay), model,
+ListObjects and ListUsers assertions; 712 of the 748 list assertions pass. The per-corpus tables
 and every skip reason are in
 [`relgraph-dsl/tests/fixtures/openfga/README.md`](relgraph-dsl/tests/fixtures/openfga/README.md#upstream-language-corpora)
 and
