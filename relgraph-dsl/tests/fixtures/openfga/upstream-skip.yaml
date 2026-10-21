@@ -7,24 +7,24 @@ entries:
   reason: semantic-divergence
   tag: deliberate
   task: permanent
-  justification: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]. Both reject the duplicate type; upstream stops at it, while Relgraph also reports follow-on issues (DuplicateRelation, UnknownTuplesetRelation) from the relations of the second `account` block
+  justification: 'S6: upstream expects [duplicated-error]; Relgraph validation [DuplicateType, DuplicateRelation, UnknownTuplesetRelation]. Both reject the duplicate type; upstream stops at it, while Relgraph also reports follow-on issues from the second `account` block: its `viewer` repeats a relation of `account`, and `member from group` names a tupleset relation absent from the first `account` declaration, which alone resolves references (`validate_schema_with_context`)'
 - case: dsl-semantic-validation-cases.yaml::model 1.1 should raise error if none of the children has such relation
   reason: semantic-divergence
   tag: deliberate
   task: permanent
-  justification: upstream expects [invalid-relation-on-tupleset x4]; Relgraph validation [UnknownComputedRelation, UnknownComputedRelation]. Both reject for the same rule; upstream reports one error per tupleset target type that lacks the relation, Relgraph one per tuple-to-userset reference (diagnostic granularity only)
+  justification: 'S6: upstream expects [invalid-relation-on-tupleset x4]; Relgraph validation [UnknownComputedRelation, UnknownComputedRelation]. Both reject for the same rule; upstream reports one error per tupleset target type that lacks the relation, Relgraph one per tuple-to-userset reference when no target type defines it (`Validator::check_tuple_to_userset`; diagnostic granularity only)'
 - case: dsl-syntax-validation-cases.yaml::valid syntax (1)
   reason: semantic-divergence
   tag: deliberate
   task: permanent
-  justification: 'upstream accepts; Relgraph validation [EmptyModel]. The model declares no type; `validate_schema` rejects it as EmptyModel, matching the OpenFGA API (`WriteAuthorizationModelRequest.type_definitions` has `min_items: 1`), while the language validator accepts it'
+  justification: 'S7: upstream accepts; Relgraph validation [EmptyModel]. The model declares no type; `validate_schema` rejects it as EmptyModel, matching the OpenFGA API (`WriteAuthorizationModelRequest.type_definitions` has `min_items: 1`), while the language validator accepts it. Decision recorded in relgraph-dsl/tests/fixtures/openfga/README.md (skip-listed groups); the `base_type_count == 0` check of `validate_schema_with_context` (relgraph-dsl/src/validation.rs, behind `validate_schema`) implements it'
 - case: 'dsl-syntax-validation-cases.yaml::valid syntax (2): comment preceding model'
   reason: semantic-divergence
   tag: deliberate
   task: permanent
-  justification: 'upstream accepts; Relgraph validation [EmptyModel]. The model declares no type; `validate_schema` rejects it as EmptyModel, matching the OpenFGA API (`WriteAuthorizationModelRequest.type_definitions` has `min_items: 1`), while the language validator accepts it'
+  justification: 'S7: upstream accepts; Relgraph validation [EmptyModel]. The model declares no type; `validate_schema` rejects it as EmptyModel, matching the OpenFGA API (`WriteAuthorizationModelRequest.type_definitions` has `min_items: 1`), while the language validator accepts it. Decision recorded in relgraph-dsl/tests/fixtures/openfga/README.md (skip-listed groups); the `base_type_count == 0` check of `validate_schema_with_context` (relgraph-dsl/src/validation.rs, behind `validate_schema`) implements it'
 - rule: fga-mod-json-output
   reason: unsupported-feature
   tag: json-model
   task: permanent
-  justification: Relgraph has no OpenFGA JSON model output, so the expected `json` of fga.mod transformer cases is not compared (plan Task 2 step 4; revisit if Decision D3 adopts JSON models).
+  justification: 'S5: JSON models stay out and Relgraph input stays DSL text, so Relgraph has no OpenFGA JSON model output and the expected `json` of fga.mod transformer cases is not compared (plan Task 2 step 4; S5 settles Decision D3 of CONFORMANCE_PLAN.md).'

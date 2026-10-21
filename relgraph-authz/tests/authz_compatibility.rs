@@ -143,6 +143,7 @@ async fn checked_in_openfga_cases_match_the_offline_runtime() {
         "conditions.json",
         "branch_errors.json",
         "recursion.json",
+        "ipaddress.json",
     ] {
         let fixture = read_json(fixture_file);
         assert_eq!(fixture["server"]["version"], "v1.21.0");
@@ -204,6 +205,7 @@ async fn checked_in_cases_match_individual_checks_when_batched() {
         "conditions.json",
         "branch_errors.json",
         "recursion.json",
+        "ipaddress.json",
     ] {
         let fixture = read_json(fixture_file);
         let definition = model_definition(&fixture, fixture_file);

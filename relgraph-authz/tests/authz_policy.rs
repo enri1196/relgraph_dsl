@@ -263,6 +263,66 @@ fn typed_double_context_rejects_lossy_integer_conversions() {
     assert!(ContextValue::new(ContextValueType::Double, json!(1.25)).is_ok());
 }
 
+#[test]
+fn ipaddress_parameters_bind_as_ip_address_strings() {
+    let model = FgaAuthz::new("model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with in_network]\ncondition in_network(user_ip: ipaddress, allowed: list<ipaddress>) { user_ip in allowed }\n").unwrap();
+    let requirements = model.requirements("document", "viewer").unwrap();
+    let RequirementExpression::DirectAssignment(targets) = requirements
+        .relations()
+        .get(&RelationKey::new("document", "viewer"))
+        .unwrap()
+        .expression()
+    else {
+        panic!("document#viewer is direct assignment");
+    };
+    let parameters = targets[0].condition().unwrap().parameters();
+    let types = parameters
+        .iter()
+        .map(|parameter| (parameter.name(), parameter.value_type().clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        types,
+        [
+            ("user_ip", ContextValueType::IpAddress),
+            (
+                "allowed",
+                ContextValueType::List(Box::new(ContextValueType::IpAddress))
+            ),
+        ]
+    );
+    assert_eq!(ContextValueType::IpAddress.to_string(), "ipaddress");
+
+    assert!(
+        model
+            .validate_policy(base_policy().bind_context(ContextBinding::new(
+                "in_network",
+                "user_ip",
+                provider(ContextValueType::IpAddress, json!("192.0.2.1")),
+            )))
+            .is_ok()
+    );
+    assert_eq!(
+        model
+            .validate_policy(base_policy().bind_context(ContextBinding::new(
+                "in_network",
+                "user_ip",
+                provider(ContextValueType::String, json!("192.0.2.1")),
+            )))
+            .err(),
+        Some(PolicyError::ProviderTypeMismatch {
+            condition: "in_network".into(),
+            parameter: "user_ip".into(),
+            expected: ContextValueType::IpAddress,
+            actual: ContextValueType::String,
+        })
+    );
+
+    // Like durations and timestamps, the JSON shape is checked here and the
+    // address itself when the condition converts it.
+    assert!(ContextValue::new(ContextValueType::IpAddress, json!("192.0.2.1")).is_ok());
+    assert!(ContextValue::new(ContextValueType::IpAddress, json!(3_221_225_985_u64)).is_err());
+}
+
 #[derive(Clone)]
 struct ExtensionPrincipal(Subject, TenantId);
 

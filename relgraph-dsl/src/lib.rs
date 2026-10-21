@@ -34,9 +34,13 @@
 //! restrictions and operands, unused conditions, and relation entry points. It
 //! does not compile, evaluate, or type-check CEL; decide which cycles the
 //! authorization runtime can evaluate; enforce server resource limits; or claim
-//! complete OpenFGA server validation. Inline `$expression` conditions are
-//! accepted by syntax and bounded validation, though a server may reject them in
-//! a particular context.
+//! complete OpenFGA server validation. Inline `$expression` conditions
+//! ([`RelationCondition::InlineExpression`]) are accepted by syntax and bounded
+//! validation, though a server may reject them in a particular context. The
+//! name `$expression` is reserved for them, as the pinned lexer makes it a token
+//! of its own: a manually constructed condition declaration or
+//! `RelationCondition::Named` reference with that name is
+//! `ReservedConditionName`.
 //!
 //! The following [`ValidationIssue`] rules follow the pinned `openfga/language`
 //! validator. They reject models that earlier releases of this crate accepted:

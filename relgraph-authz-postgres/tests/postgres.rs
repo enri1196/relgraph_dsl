@@ -10,7 +10,7 @@ use relgraph_authz::{
     RelationName, RelationshipReadSession, RelationshipStore, RelationshipTuple,
     RelationshipWriteStore, StoreErrorKind, Subject, TenantId, TupleSubject,
 };
-use relgraph_authz_postgres::{MIGRATION_0001, PostgresRelationshipStore};
+use relgraph_authz_postgres::{MIGRATION_0001, MIGRATION_0002, PostgresRelationshipStore};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, PgPool};
 
@@ -161,10 +161,12 @@ impl TestDatabase {
 
     async fn apply_migration(&self) -> Result<(), ()> {
         let mut transaction = self.admin_database_pool.begin().await.map_err(|_| ())?;
-        sqlx::raw_sql(MIGRATION_0001)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ())?;
+        for migration in [MIGRATION_0001, MIGRATION_0002] {
+            sqlx::raw_sql(migration)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| ())?;
+        }
         transaction.commit().await.map_err(|_| ())
     }
 

@@ -1,8 +1,9 @@
 use relgraph_authz::{
     AuthorizationDecision, AuthorizationError, BatchCheckRequest, CheckRequest, ConditionContext,
-    EvaluationLimits, FgaAuthz, ObjectRef, RelationName, RelationshipPage, RelationshipReadSession,
-    RelationshipStore, RelationshipTuple, RelationshipWriteStore, StoreCursor, StoreError,
-    StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject, TypeName,
+    EvaluationLimits, FgaAuthz, ListObjectsRequest, ListUsersRequest, ObjectRef, RelationName,
+    RelationshipPage, RelationshipReadSession, RelationshipStore, RelationshipTuple,
+    RelationshipWriteStore, ReverseLookupSession, ReverseLookupStore, StoreCursor, StoreError,
+    StoreErrorKind, StoreFuture, Subject, TenantId, TupleSubject, TypeName, UserFilter,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -12,10 +13,12 @@ use std::sync::{Arc, Mutex};
 /// one newly constructed store.
 pub async fn run_store_contracts<S>(store: S)
 where
-    S: RelationshipStore + RelationshipWriteStore,
+    S: ReverseLookupStore + RelationshipWriteStore,
 {
     let store = SharedStore(Arc::new(store));
     complete_reads_and_pages(&store).await;
+    reverse_lookup_pages(&store).await;
+    list_operations_match_the_contract_fixtures(&store).await;
     strict_writes_and_context_identity(&store).await;
     subject_variants_round_trip(&store).await;
     change_sets_are_atomic(&store).await;
@@ -209,6 +212,430 @@ where
             .await,
         StoreErrorKind::IncompleteRead,
     );
+}
+
+/// Reads every page of one reverse lookup, checking the paging contract.
+async fn all_subject_pages<R: ReverseLookupSession>(
+    session: &R,
+    object_type: &TypeName,
+    relation: &RelationName,
+    subject: &TupleSubject,
+    maximum: usize,
+) -> Vec<RelationshipTuple> {
+    let mut tuples = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = session
+            .tuples_by_subject_page(object_type, relation, subject, cursor, maximum)
+            .await
+            .unwrap();
+        assert!(page.tuples.len() <= maximum);
+        tuples.extend(page.tuples.iter().cloned());
+        match page.next_cursor {
+            Some(next) => {
+                assert!(!page.tuples.is_empty(), "a continued page holds tuples");
+                cursor = Some(next);
+            }
+            None => return tuples,
+        }
+    }
+}
+
+/// Orders tuples by object ID, the order-independent form both adapters are
+/// compared in (each keeps its own stable order within a session).
+fn by_object_id(mut tuples: Vec<RelationshipTuple>) -> Vec<RelationshipTuple> {
+    tuples.sort_by(|left, right| {
+        left.object()
+            .id()
+            .as_str()
+            .cmp(right.object().id().as_str())
+    });
+    tuples
+}
+
+async fn reverse_lookup_pages<S>(store: &S)
+where
+    S: ReverseLookupStore + RelationshipWriteStore,
+{
+    let tenant_a = tenant("contract-reverse");
+    let document = TypeName::new("document").unwrap();
+    let viewer = relation("viewer");
+    let anne = TupleSubject::Direct(subject("user", "anne"));
+    let star_id = TupleSubject::Direct(subject("user", "*"));
+    let wildcard = TupleSubject::TypedWildcard(TypeName::new("user").unwrap());
+    let userset = TupleSubject::Userset {
+        object: object("group", "eng"),
+        relation: relation("member"),
+    };
+    let anne_tuples = ["r1", "r2", "r3"]
+        .map(|id| tuple("contract-reverse", "document", id, "viewer", anne.clone()));
+    let star_id_tuple = tuple(
+        "contract-reverse",
+        "document",
+        "r1",
+        "viewer",
+        star_id.clone(),
+    );
+    let wildcard_tuple = tuple(
+        "contract-reverse",
+        "document",
+        "r2",
+        "viewer",
+        wildcard.clone(),
+    );
+    let userset_tuple = tuple(
+        "contract-reverse",
+        "document",
+        "r3",
+        "viewer",
+        userset.clone(),
+    );
+    let unrelated = [
+        tuple("contract-reverse", "document", "r1", "editor", anne.clone()),
+        tuple("contract-reverse", "folder", "r1", "viewer", anne.clone()),
+        tuple(
+            "contract-reverse",
+            "document",
+            "r4",
+            "viewer",
+            subject("user", "bob"),
+        ),
+        tuple(
+            "contract-reverse",
+            "document",
+            "r5",
+            "viewer",
+            TupleSubject::Userset {
+                object: object("group", "eng"),
+                relation: relation("owner"),
+            },
+        ),
+    ];
+    let foreign = tuple(
+        "contract-reverse-other",
+        "document",
+        "r9",
+        "viewer",
+        anne.clone(),
+    );
+    for tuple in anne_tuples
+        .iter()
+        .chain([&star_id_tuple, &wildcard_tuple, &userset_tuple])
+        .chain(&unrelated)
+    {
+        store.insert_tuple(&tenant_a, tuple).await.unwrap();
+    }
+    store
+        .insert_tuple(foreign.tenant(), &foreign)
+        .await
+        .unwrap();
+
+    let session = store.begin_read(&tenant_a).await.unwrap();
+    // A write after `begin_read` stays invisible to the session.
+    let late = tuple("contract-reverse", "document", "r6", "viewer", anne.clone());
+    store.insert_tuple(&tenant_a, &late).await.unwrap();
+
+    // Matching is exact per subject form, tenant, object type and relation.
+    let all_anne = all_subject_pages(&session, &document, &viewer, &anne, 10).await;
+    assert_eq!(by_object_id(all_anne.clone()), anne_tuples);
+    for (subject, expected) in [
+        (&star_id, &star_id_tuple),
+        (&wildcard, &wildcard_tuple),
+        (&userset, &userset_tuple),
+    ] {
+        assert_eq!(
+            all_subject_pages(&session, &document, &viewer, subject, 10).await,
+            [expected.clone()]
+        );
+    }
+    assert!(
+        all_subject_pages(
+            &session,
+            &document,
+            &viewer,
+            &TupleSubject::Direct(subject("user", "nobody")),
+            10,
+        )
+        .await
+        .is_empty()
+    );
+
+    // Pages of one tuple return the same tuples in the same stable order.
+    assert_eq!(
+        all_subject_pages(&session, &document, &viewer, &anne, 1).await,
+        all_anne
+    );
+    let first_page = session
+        .tuples_by_subject_page(&document, &viewer, &anne, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first_page.tuples, all_anne[..2]);
+    let cursor = first_page.next_cursor.expect("one tuple remains");
+    let final_page = session
+        .tuples_by_subject_page(&document, &viewer, &anne, Some(cursor.clone()), 2)
+        .await
+        .unwrap();
+    assert_eq!(final_page.tuples, all_anne[2..]);
+    assert!(final_page.next_cursor.is_none());
+
+    // Size and cursor rules match `tuples_page`.
+    assert_store_error(
+        session
+            .tuples_by_subject_page(&document, &viewer, &anne, None, 0)
+            .await,
+        StoreErrorKind::IncompleteRead,
+    );
+    assert_store_error(
+        session
+            .tuples_by_subject_page(
+                &document,
+                &viewer,
+                &anne,
+                Some(StoreCursor::from_bytes(vec![0xff; 16_384])),
+                1,
+            )
+            .await,
+        StoreErrorKind::IncompleteRead,
+    );
+    let other_session = store.begin_read(&tenant_a).await.unwrap();
+    let other_tenant_session = store
+        .begin_read(&tenant("contract-reverse-other"))
+        .await
+        .unwrap();
+    for (session, object_type, relation, subject) in [
+        (&other_session, &document, &viewer, &anne),
+        (&other_tenant_session, &document, &viewer, &anne),
+        (&session, &TypeName::new("folder").unwrap(), &viewer, &anne),
+        (&session, &document, &relation("editor"), &anne),
+        (&session, &document, &viewer, &star_id),
+        (&session, &document, &viewer, &wildcard),
+        (&session, &document, &viewer, &userset),
+    ] {
+        assert_store_error(
+            session
+                .tuples_by_subject_page(object_type, relation, subject, Some(cursor.clone()), 1)
+                .await,
+            StoreErrorKind::IncompleteRead,
+        );
+    }
+
+    // Object-query and subject-query cursors are not interchangeable.
+    let object_page = session
+        .tuples_page(&object("document", "r1"), &viewer, None, 1)
+        .await
+        .unwrap();
+    let object_cursor = object_page
+        .next_cursor
+        .expect("document:r1 has two viewers");
+    assert_store_error(
+        session
+            .tuples_by_subject_page(&document, &viewer, &anne, Some(object_cursor), 1)
+            .await,
+        StoreErrorKind::IncompleteRead,
+    );
+    assert_store_error(
+        session
+            .tuples_page(&object("document", "r1"), &viewer, Some(cursor), 1)
+            .await,
+        StoreErrorKind::IncompleteRead,
+    );
+
+    // Tenants are isolated, and a new session sees the later write.
+    assert_eq!(
+        all_subject_pages(&other_tenant_session, &document, &viewer, &anne, 10).await,
+        [foreign]
+    );
+    let current = store.begin_read(&tenant_a).await.unwrap();
+    let mut expected = anne_tuples.to_vec();
+    expected.push(late);
+    assert_eq!(
+        by_object_id(all_subject_pages(&current, &document, &viewer, &anne, 10).await),
+        expected
+    );
+}
+
+const LIST_MODEL: &str = "model\n  schema 1.1\ntype user\ntype group\n  relations\n    define member: [user]\ntype folder\n  relations\n    define viewer: [user, group#member]\ntype document\n  relations\n    define parent: [folder]\n    define owner: [user]\n    define blocked: [user]\n    define viewer: [user, user:*, group#member] or owner or viewer from parent\n    define visible: viewer but not blocked\n";
+
+/// Runs ListObjects and ListUsers over one fixture, so every adapter answers
+/// the same list assertions through its reverse lookup and pages.
+async fn list_operations_match_the_contract_fixtures<S>(store: &SharedStore<S>)
+where
+    S: ReverseLookupStore + RelationshipWriteStore,
+{
+    let tenant_name = "contract-lists";
+    let tenant_a = tenant(tenant_name);
+    let eng_member = || TupleSubject::Userset {
+        object: object("group", "eng"),
+        relation: relation("member"),
+    };
+    let mut fixture = vec![
+        tuple(
+            tenant_name,
+            "group",
+            "eng",
+            "member",
+            subject("user", "anne"),
+        ),
+        tuple(
+            tenant_name,
+            "group",
+            "eng",
+            "member",
+            subject("user", "bob"),
+        ),
+        tuple(tenant_name, "folder", "f1", "viewer", eng_member()),
+        tuple(
+            tenant_name,
+            "folder",
+            "f2",
+            "viewer",
+            subject("user", "carol"),
+        ),
+        tuple(
+            tenant_name,
+            "document",
+            "d1",
+            "parent",
+            subject("folder", "f1"),
+        ),
+        tuple(
+            tenant_name,
+            "document",
+            "d2",
+            "parent",
+            subject("folder", "f2"),
+        ),
+        tuple(
+            tenant_name,
+            "document",
+            "d3",
+            "owner",
+            subject("user", "anne"),
+        ),
+        tuple(
+            tenant_name,
+            "document",
+            "d4",
+            "viewer",
+            TupleSubject::TypedWildcard(TypeName::new("user").unwrap()),
+        ),
+        tuple(tenant_name, "document", "d5", "viewer", eng_member()),
+        tuple(
+            tenant_name,
+            "document",
+            "d1",
+            "blocked",
+            subject("user", "bob"),
+        ),
+    ];
+    // More grants than one store page (128), so the generator follows cursors.
+    let bulk_ids = (0..130)
+        .map(|index| format!("bulk-{index:03}"))
+        .collect::<Vec<_>>();
+    for id in &bulk_ids {
+        fixture.push(tuple(
+            tenant_name,
+            "document",
+            id,
+            "owner",
+            subject("user", "dave"),
+        ));
+    }
+    store.apply_changes(&tenant_a, &fixture, &[]).await.unwrap();
+    let foreign = tuple(
+        "contract-lists-other",
+        "document",
+        "d9",
+        "owner",
+        subject("user", "anne"),
+    );
+    store
+        .insert_tuple(foreign.tenant(), &foreign)
+        .await
+        .unwrap();
+
+    let authz = FgaAuthz::new(LIST_MODEL)
+        .expect("list model compiles")
+        .with_store(store.clone(), EvaluationLimits::default());
+    let authz = &authz;
+    let list_objects = move |tenant_id: &str, list_subject: TupleSubject, relation_name: &str| {
+        let request = ListObjectsRequest::new(
+            tenant(tenant_id),
+            list_subject,
+            TypeName::new("document").unwrap(),
+            relation(relation_name),
+        );
+        async move {
+            authz
+                .list_objects(&request)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|object| object.id().as_str().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    let user = |id: &str| TupleSubject::Direct(subject("user", id));
+
+    for (list_subject, relation_name, expected) in [
+        (user("anne"), "viewer", vec!["d1", "d3", "d4", "d5"]),
+        (user("bob"), "viewer", vec!["d1", "d4", "d5"]),
+        (user("bob"), "visible", vec!["d4", "d5"]),
+        (user("carol"), "viewer", vec!["d2", "d4"]),
+        (user("erin"), "viewer", vec!["d4"]),
+        (eng_member(), "viewer", vec!["d1", "d5"]),
+    ] {
+        assert_eq!(
+            list_objects(tenant_name, list_subject.clone(), relation_name).await,
+            expected,
+            "{list_subject:?} {relation_name}"
+        );
+    }
+    let mut dave_expected = bulk_ids.clone();
+    dave_expected.push("d4".to_owned());
+    dave_expected.sort();
+    assert_eq!(
+        list_objects(tenant_name, user("dave"), "viewer").await,
+        dave_expected
+    );
+    assert_eq!(
+        list_objects("contract-lists-other", user("anne"), "viewer").await,
+        ["d9"]
+    );
+
+    let tenant_a = &tenant_a;
+    let list_users = move |object_id: &str, relation_name: &str, filter: UserFilter| {
+        let request = ListUsersRequest::new(
+            tenant_a.clone(),
+            object("document", object_id),
+            relation(relation_name),
+            filter,
+        );
+        async move { authz.list_users(&request).await.unwrap() }
+    };
+    let users = || UserFilter::new(TypeName::new("user").unwrap());
+    let group_members = || UserFilter::userset(TypeName::new("group").unwrap(), relation("member"));
+    for (object_id, relation_name, filter, expected) in [
+        ("d1", "viewer", users(), vec![user("anne"), user("bob")]),
+        ("d1", "visible", users(), vec![user("anne")]),
+        ("d3", "viewer", users(), vec![user("anne")]),
+        (
+            "d4",
+            "viewer",
+            users(),
+            vec![TupleSubject::TypedWildcard(TypeName::new("user").unwrap())],
+        ),
+        ("d2", "viewer", users(), vec![user("carol")]),
+        ("d1", "viewer", group_members(), vec![eng_member()]),
+        ("d5", "viewer", group_members(), vec![eng_member()]),
+        ("d3", "viewer", group_members(), vec![]),
+    ] {
+        assert_eq!(
+            list_users(object_id, relation_name, filter).await,
+            expected,
+            "document:{object_id} {relation_name}"
+        );
+    }
 }
 
 async fn strict_writes_and_context_identity<S>(store: &S)

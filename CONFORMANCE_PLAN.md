@@ -317,22 +317,35 @@ READMEs. Validation: `cargo fmt --check`, `cargo check --workspace
 --all-targets --all-features`, all plan test commands and clippy on both
 crates pass (live PostgreSQL tests not run).
 
-## Measured priorities (from Task 4)
+## Measured priorities (from Task 4, updated by `SKIP_LIST_PLAN.md` Task 11)
 
-Non-passing cases by owner after Task 4 (see the fixtures READMEs for the
-tables). Task numbers are kept stable because skip entries reference them;
-work them in roughly this order of corpus impact:
+Task numbers are kept stable because skip entries reference them. Every owner
+in the Task 4 baseline is done: Tasks 5, 6, 7, 9, 12 and 13 here, and Tasks 3
+and 8 of `SKIP_LIST_PLAN.md`. Their counts are in each task's Result. As
+measured on 2026-10-21 (`upstream_check` and `upstream_corpus` with
+`--nocapture`), the pass rates are:
+
+| Corpus file | Pass | Skip-listed | By kind |
+| --- | ---: | ---: | --- |
+| `consolidated_1_1_tests.yaml` | 1316/1380 | 64 | check 333/364, ctxCheck 284/286, listObjects 258/272, listUsers 283/297, model 158/161 |
+| `abac_tests.yaml` | 494/505 | 11 | check 149/152, ctxCheck 137/137, listObjects 79/82, listUsers 92/97, model 37/37 |
+| `dsl-semantic-validation-cases.yaml` | 84/93 | 2 | 7 upstream skips |
+| `dsl-syntax-validation-cases.yaml` | 79/81 | 2 | |
+| `fga-mod-transformer-cases.yaml` | 9/10 | 1 | JSON output not run |
+
+Of the 748 list assertions, 712 pass (listObjects 337/354, listUsers 375/394).
+Each of the 80 non-passing cases is a permanent, recorded divergence. No case
+has an open owner:
 
 | Owner | Cases | Area |
 | --- | ---: | --- |
-| Deferred list-API plan | 748 | every `listObjects` / `listUsers` assertion |
-| Task 5 | 40 | missing DSL validation rules (17 entry-point, 14 repeated operand/restriction, 4 reserved names, 3 unused condition, 2 naming rule) |
-| Task 12 (new) | 8 | comments the upstream DSL pipeline strips before parsing |
-| Task 7 | 9 | contextual tuples (plus upstream's `_ctxTuples` replay of every single-stage test, not yet counted) |
-| Task 13 (new) | 6 | userset / wildcard check subjects |
-| Task 6 | 2 | manifest tightening |
-| Tasks 8-9 | 4 | one `ipaddress` stage; no other CEL feature fails in the corpora, so CEL work is low priority by corpus numbers |
-| permanent | 72 | deliberate divergences (24 strict-read checks, 13 negation-cycle cases, 4 DSL) and 30 inline-condition cases, 1 JSON-output rule case |
+| permanent, S1 | 42 | strict reads of drifted stored tuples: 24 checks, 18 list assertions |
+| permanent, S2 | 29 | negation-cycle stages: 3 models, 10 checks, 2 `ctxCheck`, 14 list assertions |
+| permanent, S4f | 2 | ListUsers where upstream reports a branch's missing condition parameter that a decisive allow masks in Relgraph |
+| permanent, S4g | 2 | list error code for an invalid contextual tuple (2000 upstream, 2027 here, as upstream Check) |
+| permanent, S6 | 2 | DSL diagnostic granularity (duplicate type follow-ons, one diagnostic per tuple-to-userset reference) |
+| permanent, no decision ID | 2 | DSL `EmptyModel` (record in the DSL fixtures README; upstream accepts) |
+| permanent, S5 (D3) | 1 | JSON-output rule case |
 
 ## Task 5 [DONE]: Semantic validation parity
 
@@ -537,7 +550,8 @@ sign-off recorded in D1 before Task 9 starts.
 
 Result: D1 holds the comparison and recommends option D (keep `cel-core =0.5.1`
 and add OpenFGA's `ipaddress` / `in_cidr` extension locally, no new
-dependency); maintainer sign-off is **pending**, so Task 9 stays blocked.
+dependency); maintainer sign-off was pending when this task finished (it was
+recorded in D1 on 2026-10-19).
 Only one skip entry is CEL-related (the `ipaddress` ABAC stage, 7 cases);
 `cel-core` 0.5.1 is its latest release, so no upgrade exists. The extension
 was prototyped in the scratchpad only (nothing committed to the workspace).
@@ -546,7 +560,7 @@ The Task 8 premise was corrected in a separate commit: comprehension macros,
 ones. No production code changed; `cargo fmt --check`, `cargo check
 --workspace --all-targets --all-features` and the Check corpus test pass.
 
-## Task 9 [TODO]: CEL coverage implementation
+## Task 9 [DONE]: CEL coverage implementation
 
 **Depends on:** Task 8. **Blocked by:** Decision D1 recorded and approved.
 
@@ -561,6 +575,46 @@ asserts a cost limit.
 
 **Acceptance:** CEL skip entries shrink as recorded in D1; all authz tests and
 no-feature / `axum` builds green; docs updated.
+
+Result: option D implemented with no new dependency. New `authz/ipaddress.rs`
+(`IpAddress` as an opaque `MessageValue`, CEL type `IPAddress` as upstream
+names it, `string_to_ipaddress` and member `ipaddr_in_cidr` overloads
+registered in every condition's environment); `RuntimeScalarType::IpAddress`
+(scalar, `list<ipaddress>`, `map<ipaddress>`), `ContextValueType::IpAddress`
+(a JSON string, shape-checked like durations), `ipaddress` / `in_cidr` in
+`supported_function`, and JSON string to address conversion in context
+preparation. Semantics follow `internal/condition/types/ipaddress.go` at
+`v1.21.0` (read from the tag): addresses and IPv4-mapped prefixes of 96+ bits
+are unmapped, prefix lengths follow `netip.ParsePrefix` (no sign or leading
+zero, host bits allowed), a malformed CIDR or `ipaddress(...)` argument is
+`ConditionEvaluationFailed`, a malformed context address
+`InvalidConditionContext`. IPv6 zone identifiers are rejected (documented
+difference; OpenFGA parses them). Stored-context precedence and the bool
+result rule are unchanged; cost: an address is charged like its string and
+each call is one expression node (no corpus case asserts a cost). The
+`ipaddress` skip entry is gone: ABAC 265 to 272 of 505 (check 128/152,
+ctxCheck 116/137, model 28/37), consolidated unchanged at 775/1380, 2000
+cases 64/64; the `ipaddress` tag stays in the vocabulary unused. Tests:
+`ipaddress.rs` unit tests (upstream `ipaddress_test.go` cases, netip parsing
+edges), `tests/authz_ipaddress.rs` (6), a policy test, and the
+`ipaddress.json` / `ipaddress.fga` fixture (20 cases, incl. the zone case with
+separate local/server expectations) added to `authz_compatibility.rs` and the
+Docker runner, which passed all 72 cases against `openfga/openfga:v1.21.0`
+(digest `sha256:2113c664…`, `linux/arm64`). A scratch probe of 600
+address/CIDR/function cases against that server agreed locally except for the
+28 zone-identifier cases. Found while probing (pre-existing, not fixed): the
+`cel-core` checker accepts `==` between unrelated types (`int == string`,
+`ipaddress == string`), which OpenFGA rejects at model write; documented in
+the authz README and pinned by a test. Two tests that used `ipaddress` as the
+unsupported example were updated (the modular one now uses a comprehension
+macro; the parameter-type one was removed, since every DSL-valid parameter
+type is now supported). Docs: authz README profile, fixtures README,
+workspace README table, `AGENTS.md`. Validation: `cargo fmt --check`,
+`cargo check --workspace --all-targets --all-features`, all plan test
+commands (including `relgraph-authz` without features and with `axum`, and
+`cargo test -p relgraph-authz-postgres --lib`) and `cargo clippy --workspace
+--all-targets --all-features -- -D warnings` pass; live PostgreSQL tests not
+run.
 
 ## Task 10 [DONE]: Record permanent divergences
 
@@ -632,6 +686,13 @@ Task 9 (blocked on D1) will change the ABAC row. Validation: `cargo fmt
 --check`, `cargo check --workspace --all-targets --all-features`, and the
 corpus, checksum and `conformance` tests pass (docs-only change).
 
+Rerun (2026-10-19, after Task 9, the last open task): corpus tables
+re-measured. Language corpora unchanged (syntax 79/81, semantic 84 of 86 run,
+fga.mod 9/10); consolidated unchanged (775/1380); ABAC 265 to 272 of 505. The
+workspace README table, the authz fixtures README table and skip-group notes,
+and the authz README profile were updated by Task 9; the DSL fixtures README
+needed no change.
+
 ## Task 12 [DONE]: DSL comment handling parity
 
 **Depends on:** Task 4.
@@ -682,7 +743,7 @@ READMEs, workspace README table, `AGENTS.md`. Validation: `cargo fmt --check`,
 `cargo check --workspace --all-targets --all-features`, clippy on the DSL
 crate, and all plan test commands pass (live PostgreSQL tests not run).
 
-## Task 13 [PROGRESS]: Userset and wildcard check subjects
+## Task 13 [DONE]: Userset and wildcard check subjects
 
 **Depends on:** Task 4.
 
@@ -700,11 +761,37 @@ entries `permanent` with a justification.
 
 **Acceptance:** the 6 entries pass or are permanent with a justification.
 
+Result: decided yes and implemented (no maintainer decision recorded; OpenFGA
+parity and the plan's design constraints favoured it). `CheckRequest::new` /
+`BatchCheckRequest::new` take `impl Into<TupleSubject>` (`Subject` converts,
+so concrete callers are unchanged; `subject()` now returns `&TupleSubject`).
+The subject lives in `CheckScope`, so memo keys stay `(relation, object)` per
+scope. Semantics follow OpenFGA `v1.21.0` (`internal/graph/check.go`,
+`pkg/tuple`): a wildcard tuple grants concrete subjects of its type and the
+equal wildcard, never a userset subject; a concrete tuple grants only that
+subject; a tuple naming the checked userset grants it; userset tuples expand
+as before; and `resolve_subject` gives the userset's own key, which
+`evaluate_relation` allows (`IsSelfDefining`). New
+`AuthorizationError::UnknownSubjectRelation` (mapped to 2000 by the runner).
+The Axum middleware and `RoutePolicy` still pass the concrete principal. All 12
+`userset-subject` entries are gone (6 checks, 6 `ctxCheck` replays; batch
+replay agrees): consolidated 767 to 775 of 1380, ABAC 261 to 265 of 505; 2000
+cases 62/62. Tests: `tests/authz_check_subjects.rs` (7: userset via exact,
+nested and tuple-to-userset paths, self-defining incl. computed userset,
+wildcards vs usersets, wildcard subjects, difference, unknown type/relation
+errors incl. batch outer error, batch vs individual). Docs: authz README
+section, fixtures README, workspace README table, `AGENTS.md`. Validation:
+`cargo fmt --check`, `cargo check` and clippy (workspace, all features), and
+all plan test commands pass, including `relgraph-authz` without features and
+with `axum` and `cargo test -p relgraph-authz-postgres --lib` (live PostgreSQL
+tests not run).
+
 ## Decisions
 
 - **D1 (CEL route):** recommendation written by Task 8 (2026-10-18), below.
-  **Maintainer sign-off: pending, not recorded.** Task 9 stays blocked until
-  the maintainer records approval (or a different choice) here.
+  **Maintainer sign-off: option D approved by the maintainer on 2026-10-19**
+  ("im ok with option D", given in conversation). Task 9 is unblocked and
+  implements option D.
 
   *Corpus need (Task 8 step 1).* One skip entry is CEL-related:
   `abac_tests.yaml::nested_indirect_relation_with_condition::0`
@@ -756,16 +843,18 @@ entries `permanent` with a justification.
   `std::net` cannot parse but Go's `netip` accepts, and document it; add a
   hand-written authz fixture and a Docker differential fixture for
   `ipaddress` / `in_cidr`; remove the `ipaddress` skip entry (ABAC expected
-  261 to 268 of 505). Revisit option B only if a later need (comprehension
+  265 to 272 of 505, counted after Task 13). Revisit option B only if a later need (comprehension
   macros with runtime cost limits, broader cel-spec conformance) appears and
   cel-rust has gained a type checker.
 - **D2 (CI):** the repository has no CI today (`.github/` is absent). The corpus
   runners are plain `cargo test` targets. Whether to add a workflow that runs
   the validation commands is _undecided_; it is not part of this plan.
-- **D3 (JSON models):** _undecided_. Whether the OpenFGA JSON `AuthorizationModel`
-  becomes a first-class input (`Schema` ↔ JSON, `FgaAuthz::from_json_model`,
-  and a DSL printer for the transformer corpus) or stays out. The Check corpora
-  do not need it; only the language transformer and `json-validation` data do.
+- **D3 (JSON models):** settled by S5 of `SKIP_LIST_PLAN.md` (approved
+  2026-10-19): JSON models stay out, and Relgraph input stays DSL text. The
+  question was whether the OpenFGA JSON `AuthorizationModel` becomes a
+  first-class input (`Schema` ↔ JSON, `FgaAuthz::from_json_model`, and a DSL
+  printer for the transformer corpus) or stays out. The Check corpora do not
+  need it; only the language transformer and `json-validation` data do.
 
 ## Deferred to separate plans
 

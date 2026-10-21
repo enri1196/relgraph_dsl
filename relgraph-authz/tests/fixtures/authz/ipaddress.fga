@@ -1,0 +1,32 @@
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define network_viewer: [user with in_network]
+    define pinned_viewer: [user with pinned_address]
+    define allowlist_viewer: [user with allowlisted]
+    define site_viewer: [user with office_site]
+    define literal_viewer: [user with literal_range]
+
+condition in_network(user_ip: ipaddress, cidr: string) {
+  user_ip.in_cidr(cidr)
+}
+
+condition pinned_address(user_ip: ipaddress, granted_ip: ipaddress) {
+  user_ip == granted_ip
+}
+
+condition allowlisted(user_ip: ipaddress, allowed: list<ipaddress>) {
+  user_ip in allowed
+}
+
+condition office_site(sites: map<ipaddress>, cidr: string) {
+  sites["office"].in_cidr(cidr)
+}
+
+condition literal_range(user_ip: ipaddress) {
+  user_ip.in_cidr("198.51.100.0/24") && user_ip != ipaddress("198.51.100.13")
+}

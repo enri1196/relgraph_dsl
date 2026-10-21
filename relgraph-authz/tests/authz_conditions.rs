@@ -480,15 +480,6 @@ fn invalid_cel_undeclared_variables_and_unsupported_syntax_fail_construction() {
     ));
 }
 
-#[test]
-fn unsupported_condition_parameter_types_fail_construction() {
-    let unsupported = "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with allowed]\ncondition allowed(address: ipaddress) { address == \"192.0.2.1\" }\n";
-    assert!(matches!(
-        FgaAuthz::new(unsupported),
-        Err(ConstructionError::ConditionCompilation { .. })
-    ));
-}
-
 struct NoopWake;
 
 impl Wake for NoopWake {

@@ -1,0 +1,529 @@
+{
+  "server": {
+    "image": "openfga/openfga:v1.21.0",
+    "version": "v1.21.0",
+    "commit": "ab557c5592670c899de35297e7aa067015f06502",
+    "image_digest": "sha256:2113c664a486b5da8d7a2cdab479e0d4e30639c80fd2c000540f645c1dbc1e55"
+  },
+  "model_file": "ipaddress.fga",
+  "model": {
+    "schema_version": "1.1",
+    "type_definitions": [
+      {
+        "type": "user"
+      },
+      {
+        "type": "document",
+        "relations": {
+          "network_viewer": {
+            "this": {}
+          },
+          "pinned_viewer": {
+            "this": {}
+          },
+          "allowlist_viewer": {
+            "this": {}
+          },
+          "site_viewer": {
+            "this": {}
+          },
+          "literal_viewer": {
+            "this": {}
+          }
+        },
+        "metadata": {
+          "relations": {
+            "network_viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user",
+                  "condition": "in_network"
+                }
+              ]
+            },
+            "pinned_viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user",
+                  "condition": "pinned_address"
+                }
+              ]
+            },
+            "allowlist_viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user",
+                  "condition": "allowlisted"
+                }
+              ]
+            },
+            "site_viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user",
+                  "condition": "office_site"
+                }
+              ]
+            },
+            "literal_viewer": {
+              "directly_related_user_types": [
+                {
+                  "type": "user",
+                  "condition": "literal_range"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "conditions": {
+      "in_network": {
+        "name": "in_network",
+        "expression": "user_ip.in_cidr(cidr)",
+        "parameters": {
+          "user_ip": {
+            "type_name": "TYPE_NAME_IPADDRESS"
+          },
+          "cidr": {
+            "type_name": "TYPE_NAME_STRING"
+          }
+        }
+      },
+      "pinned_address": {
+        "name": "pinned_address",
+        "expression": "user_ip == granted_ip",
+        "parameters": {
+          "user_ip": {
+            "type_name": "TYPE_NAME_IPADDRESS"
+          },
+          "granted_ip": {
+            "type_name": "TYPE_NAME_IPADDRESS"
+          }
+        }
+      },
+      "allowlisted": {
+        "name": "allowlisted",
+        "expression": "user_ip in allowed",
+        "parameters": {
+          "user_ip": {
+            "type_name": "TYPE_NAME_IPADDRESS"
+          },
+          "allowed": {
+            "type_name": "TYPE_NAME_LIST",
+            "generic_types": [
+              {
+                "type_name": "TYPE_NAME_IPADDRESS"
+              }
+            ]
+          }
+        }
+      },
+      "office_site": {
+        "name": "office_site",
+        "expression": "sites[\"office\"].in_cidr(cidr)",
+        "parameters": {
+          "sites": {
+            "type_name": "TYPE_NAME_MAP",
+            "generic_types": [
+              {
+                "type_name": "TYPE_NAME_IPADDRESS"
+              }
+            ]
+          },
+          "cidr": {
+            "type_name": "TYPE_NAME_STRING"
+          }
+        }
+      },
+      "literal_range": {
+        "name": "literal_range",
+        "expression": "user_ip.in_cidr(\"198.51.100.0/24\") && user_ip != ipaddress(\"198.51.100.13\")",
+        "parameters": {
+          "user_ip": {
+            "type_name": "TYPE_NAME_IPADDRESS"
+          }
+        }
+      }
+    }
+  },
+  "tenant": "tenant-a",
+  "tuples": [
+    {
+      "user": "user:anne",
+      "relation": "network_viewer",
+      "object": "document:office",
+      "condition": {
+        "name": "in_network",
+        "context": {
+          "cidr": "192.168.0.0/24"
+        }
+      }
+    },
+    {
+      "user": "user:anne",
+      "relation": "network_viewer",
+      "object": "document:request-cidr",
+      "condition": {
+        "name": "in_network"
+      }
+    },
+    {
+      "user": "user:anne",
+      "relation": "pinned_viewer",
+      "object": "document:pinned",
+      "condition": {
+        "name": "pinned_address",
+        "context": {
+          "granted_ip": "::ffff:203.0.113.7"
+        }
+      }
+    },
+    {
+      "user": "user:anne",
+      "relation": "allowlist_viewer",
+      "object": "document:allowlist",
+      "condition": {
+        "name": "allowlisted",
+        "context": {
+          "allowed": [
+            "192.0.2.1",
+            "198.51.100.7",
+            "2001:db8::7"
+          ]
+        }
+      }
+    },
+    {
+      "user": "user:anne",
+      "relation": "site_viewer",
+      "object": "document:sites",
+      "condition": {
+        "name": "office_site",
+        "context": {
+          "cidr": "2001:db8:100::/40"
+        }
+      }
+    },
+    {
+      "user": "user:anne",
+      "relation": "literal_viewer",
+      "object": "document:literal",
+      "condition": {
+        "name": "literal_range"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "ipv4-address-in-stored-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office",
+        "context": {
+          "user_ip": "192.168.0.1"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "ipv4-address-outside-stored-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office",
+        "context": {
+          "user_ip": "192.168.1.0"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "ipv4-mapped-ipv6-address-matches-ipv4-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office",
+        "context": {
+          "user_ip": "::ffff:192.168.0.9"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "stored-cidr-takes-precedence-over-request",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office",
+        "context": {
+          "user_ip": "10.0.0.1",
+          "cidr": "10.0.0.0/8"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "missing-ipaddress-context-is-an-error",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office"
+      },
+      "expected": {
+        "local_error": "MissingConditionContext",
+        "server_error_contains": "context"
+      }
+    },
+    {
+      "id": "malformed-request-address-is-a-context-error",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:office",
+        "context": {
+          "user_ip": "192.168.01.1"
+        }
+      },
+      "expected": {
+        "local_error": "InvalidConditionContext",
+        "server_error_contains": "context"
+      }
+    },
+    {
+      "id": "cidr-host-bits-are-ignored",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "192.168.0.1",
+          "cidr": "192.168.0.77/24"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "ipv4-mapped-ipv6-cidr-matches-ipv4-address",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "192.168.0.1",
+          "cidr": "::ffff:192.168.0.0/120"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "ipv4-address-never-matches-ipv6-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "192.168.0.1",
+          "cidr": "::/0"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "ipv6-address-in-ipv6-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "2001:db8::1",
+          "cidr": "2001:db8::/32"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "malformed-cidr-is-an-evaluation-error",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "192.168.0.1",
+          "cidr": "192.168.0.0/33"
+        }
+      },
+      "expected": {
+        "local_error": "ConditionEvaluationFailed",
+        "server_error_contains": "condition"
+      }
+    },
+    {
+      "id": "ipv6-zone-identifier-is-rejected-locally",
+      "request": {
+        "user": "user:anne",
+        "relation": "network_viewer",
+        "object": "document:request-cidr",
+        "context": {
+          "user_ip": "fe80::1%eth0",
+          "cidr": "fe80::/10"
+        }
+      },
+      "expected": {
+        "local_error": "InvalidConditionContext",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "stored-ipaddress-matches-unmapped-request-address",
+      "request": {
+        "user": "user:anne",
+        "relation": "pinned_viewer",
+        "object": "document:pinned",
+        "context": {
+          "user_ip": "203.0.113.7"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "stored-ipaddress-takes-precedence-over-request",
+      "request": {
+        "user": "user:anne",
+        "relation": "pinned_viewer",
+        "object": "document:pinned",
+        "context": {
+          "user_ip": "203.0.113.8",
+          "granted_ip": "203.0.113.8"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "address-in-stored-ipaddress-list",
+      "request": {
+        "user": "user:anne",
+        "relation": "allowlist_viewer",
+        "object": "document:allowlist",
+        "context": {
+          "user_ip": "2001:DB8:0::7"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "address-absent-from-stored-ipaddress-list",
+      "request": {
+        "user": "user:anne",
+        "relation": "allowlist_viewer",
+        "object": "document:allowlist",
+        "context": {
+          "user_ip": "198.51.100.8"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "ipaddress-map-value-in-stored-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "site_viewer",
+        "object": "document:sites",
+        "context": {
+          "sites": {
+            "office": "2001:db8:1ff::1",
+            "home": "198.51.100.1"
+          }
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "ipaddress-map-value-outside-stored-cidr",
+      "request": {
+        "user": "user:anne",
+        "relation": "site_viewer",
+        "object": "document:sites",
+        "context": {
+          "sites": {
+            "office": "2001:db8:200::1"
+          }
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    },
+    {
+      "id": "ipaddress-literal-conversion-and-inequality-allow",
+      "request": {
+        "user": "user:anne",
+        "relation": "literal_viewer",
+        "object": "document:literal",
+        "context": {
+          "user_ip": "198.51.100.20"
+        }
+      },
+      "expected": {
+        "local": "allow",
+        "server": "allow"
+      }
+    },
+    {
+      "id": "ipaddress-literal-conversion-and-inequality-deny",
+      "request": {
+        "user": "user:anne",
+        "relation": "literal_viewer",
+        "object": "document:literal",
+        "context": {
+          "user_ip": "198.51.100.13"
+        }
+      },
+      "expected": {
+        "local": "deny",
+        "server": "deny"
+      }
+    }
+  ]
+}

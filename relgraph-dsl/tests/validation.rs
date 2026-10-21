@@ -1,6 +1,6 @@
 use relgraph_dsl::ast::{
-    ConditionDefinition, ConditionParameter, ParameterType, Relation, RelationDefinitionBody,
-    RelationExpression, Schema, SchemaHeader, TypeDefinition,
+    ConditionDefinition, ConditionParameter, ParameterType, Relation, RelationCondition,
+    RelationDefinitionBody, RelationExpression, Schema, SchemaHeader, TypeDefinition,
 };
 use relgraph_dsl::diagnostics::{SourceLocation, SourceSpan, ValidationError};
 use relgraph_dsl::{ValidationIssue, parse_fga_schema, validate_schema};
@@ -462,6 +462,54 @@ fn rejects_reserved_type_and_relation_names_at_their_declarations() {
     assert_standalone_location(
         issue(&errors, ValidationIssue::ReservedRelationName),
         schema.type_definitions[1].relations[0].span.clone(),
+    );
+}
+
+#[test]
+fn reserves_the_inline_expression_condition_name() {
+    // The pinned semantic cases accept `$expression` restrictions, alone and
+    // beside a named condition on the same type, without declaring it.
+    for source in [
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user, user with cond1, user with $expression]\n\ncondition cond1(x: int) {\n  x < 100\n}\n",
+        "model\nschema 1.1\ntype user\ntype group\n  relations\n    define member: [user]\ntype document\n  relations\n    define viewer: [group#member with $expression]\n",
+    ] {
+        assert_eq!(validate_source(source), Ok(()), "{source}");
+    }
+
+    // The parser cannot produce the name as an identifier; constructed trees
+    // that declare or reference it by name are rejected at the declaration
+    // and at the referencing relation.
+    let mut schema = parse(
+        "model\nschema 1.1\ntype user\ntype document\n  relations\n    define viewer: [user with cond1]\n\ncondition cond1(x: int) {\n  x < 100\n}\n",
+    );
+    schema.condition_definitions[0].name = "$expression".into();
+    let RelationExpression::DirectAssignment(targets) = &mut schema.type_definitions[1].relations
+        [0]
+    .definition
+    .expression
+    else {
+        panic!("expected a direct assignment");
+    };
+    targets[0].condition = Some(RelationCondition::Named("$expression".into()));
+    let errors = validate_schema(&schema).unwrap_err();
+    assert_eq!(
+        codes(&errors),
+        ["ReservedConditionName", "ReservedConditionName"]
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.message.contains("$expression"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error.location.span == schema.condition_definitions[0].span })
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error.location.span == schema.type_definitions[1].relations[0].span })
     );
 }
 
